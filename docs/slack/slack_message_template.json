@@ -1,0 +1,77 @@
+{
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "🚨 New Incident Alert: Triage Hub",
+        "emoji": true
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Service:*\n`payment-gateway`"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Severity:*\n🔴 CRITICAL"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*AI Confidence Score:*\n🎯 92%"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Tenant / Environment:*\n`tenant-abc-prod`"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*🔍 Root Cause Diagnosis:*\nTheo phân tích từ hệ thống, Database `rds-payment-main` đang bị cạn kiệt Connection Pool (Vượt quá 1000 active connections) gây ra tình trạng Timeout."
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*🛠️ Remediation Suggested:*\n1. Nâng cấp tạm thời (Scale up) RDS instance lên `db.r5.xlarge`.\n2. Chạy lệnh kill các connection đang bị treo."
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "🎫 View Jira Ticket",
+            "emoji": true
+          },
+          "url": "https://your-company.atlassian.net/browse/INC-999",
+          "action_id": "open_jira_ticket_action"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "⏱️ Alert generated at: 2026-06-23 15:30:00 UTC | Triage Hub System"
+        }
+      ]
+    }
+  ]
+}
