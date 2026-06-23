@@ -4,11 +4,11 @@
      Status: Draft (W11 T2-T3) → Final (W11 T6 Pack #1) → Refined (W12 T4 Pack #2)
      Word target: 800-1500 từ -->
 
-## 1. Đề tài context
+## 1. Đề tài context (Owner: Tiến)
 
 <!-- Refer Nhóm AI's 01_requirements.md - restate ngắn gọn (1 paragraph) -->
 
-## 2. Infra non-functional requirements
+## 2. Infra non-functional requirements (Owner: Tiến)
 
 | NFR | Target | Justification |
 |---|---|---|
@@ -20,14 +20,14 @@
 | Onboarding SLA | < 30 min | Sales requirement |
 | Security baseline | IAM least-priv + audit 90d | Compliance |
 
-## 3. Differentiation angle (KEY)
+## 3. Differentiation angle (KEY) (Owner: Tiến)
 
 - **Angle chọn**: <serverless-first / K8s-heavy / managed-services / event-driven hybrid>
 - **Why this angle**: <pick 1-2 axis: cost / reliability / ops / scalability - explain>
 - **Trade-off chấp nhận**: <vd: cold start latency cho cost saving>
 - **Locked T3 W11**: <date - show "fastest-commit wins" enforcement>
 
-## 4. Comparison với 2 nhóm cùng task force
+## 4. Comparison với 2 nhóm cùng task force (Owner: Tiến)
 
 | Aspect | My angle | Nhóm khác A | Nhóm khác B |
 |---|---|---|---|
@@ -38,13 +38,13 @@
 | Latency profile | cold start risk | consistent low | medium |
 | **Win axis** | <cost> | <reliability> | <ops simplicity> |
 
-## 5. Constraints
+## 5. Constraints (Owner: Tiến)
 
 - **AWS only** (no multi-cloud)
 - **Region**: <ap-southeast-1 default>
 - **Budget**: $X / 2 tuần build
 - **Code freeze**: T4 W12 18h
 
-## 6. Open questions
+## 6. Open questions (Owner: Tiến)
 
 - [ ] Q1: ... - *To resolve with Nhóm AI by T4 W11*

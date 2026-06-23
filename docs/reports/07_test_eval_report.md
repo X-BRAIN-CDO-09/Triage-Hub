@@ -4,7 +4,7 @@
      Status: NEW (W12 T4 Pack #2 only)
      Word target: 1000-1800 từ -->
 
-## 1. Test coverage
+## 1. Test coverage (Owner: Khang)
 
 | Test type | Tool | Coverage / Scope |
 |---|---|---|
@@ -14,7 +14,7 @@
 | Load test | <k6 / Locust> | Sustained 100 RPS for 10 min |
 | Chaos test | <Litmus / manual> | 3 curveball scenarios |
 
-## 2. SLO evidence
+## 2. SLO evidence (Owner: Khang & Nhật)
 
 | SLO | Target | Measured | Window | Pass/Fail |
 |---|---|---|---|---|
@@ -27,7 +27,7 @@
 
 <!-- Nếu có SLO miss, phân tích root cause -->
 
-## 3. Load test results
+## 3. Load test results (Owner: Khang)
 
 ### 3.1 Test setup
 
@@ -48,7 +48,7 @@
 
 <!-- DB connection pool? AI engine throttle? Compute? -->
 
-## 4. Security test
+## 4. Security test (Owner: Huy)
 
 ### 4.1 Penetration touch points
 
@@ -65,7 +65,7 @@
 - **HIGH findings**: ≤ 3 with documented mitigation
 - **Report**: `<repo>/security/scan-results.json`
 
-## 5. Multi-tenant isolation test
+## 5. Multi-tenant isolation test (Owner: Khang & Huy)
 
 <!-- Critical - multi-tenant data leak = cap T3 per playbook §10.4 -->
 
@@ -78,7 +78,7 @@
 
 **All tests must pass** - any leak = SEV1 incident.
 
-## 6. Failure analysis
+## 6. Failure analysis (Owner: Khang)
 
 ### 6.1 Failures encountered during 2-week build
 

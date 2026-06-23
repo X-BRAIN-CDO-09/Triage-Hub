@@ -4,7 +4,7 @@
      Status: Skeleton (W11 T6 Pack #1) → Measured actual (W12 T4 Pack #2)
      Word target: 800-1500 từ -->
 
-## 1. Cost model per tenant (forecast)
+## 1. Cost model per tenant (forecast) (Owner: Tiến)
 
 | Component | Unit cost | Tenant avg usage | $/tenant/month |
 |---|---|---|---|
@@ -16,7 +16,7 @@
 | Observability | $X/log GB | Y GB | $Z |
 | **Total / tenant / month** | | | **$N** |
 
-## 2. Cost at scale
+## 2. Cost at scale (Owner: Tiến)
 
 | Tenant count | Monthly total cost | Avg per-tenant |
 |---|---|---|
@@ -26,7 +26,7 @@
 
 *Lưu ý: per-tenant cost giảm dần do shared fixed cost amortize.*
 
-## 3. Cost optimization applied
+## 3. Cost optimization applied (Owner: Tiến)
 
 - ☐ Spot instances cho non-critical workload (~70% saving)
 - ☐ Reserved capacity cho baseline
@@ -37,7 +37,7 @@
 - ☐ Log retention tiering
 - ☐ Data transfer optimization (VPC endpoints to avoid NAT)
 
-## 4. Cost vs alternatives (cùng task force)
+## 4. Cost vs alternatives (cùng task force) (Owner: Tiến)
 
 | Angle | $/tenant/month forecast | Why diff |
 |---|---|---|
@@ -45,7 +45,7 @@
 | Nhóm khác A: <angle> | $X | <lý do> |
 | Nhóm khác B: <angle> | $Y | <lý do> |
 
-## 5. Measured actual (Pack #2 only - fill in W12)
+## 5. Measured actual (Pack #2 only - fill in W12) (Owner: Tiến & Thi)
 
 ### 5.1 2-week capstone spend
 
@@ -77,13 +77,13 @@
 | Total AI cost | $X |
 | **Cost per correct decision** | **$X / M** |
 
-## 6. Cost guardrails
+## 6. Cost guardrails (Owner: Tiến)
 
 - Monthly budget alert at 70%, 90%, 100%
 - Per-tenant quota enforced via API rate limit
 - Bedrock daily spend cap (CloudWatch alarm)
 
-## 7. Cost recommendations for production
+## 7. Cost recommendations for production (Owner: Tiến)
 
 - Reserved capacity sau 3 tháng usage baseline
 - Savings Plan cho Fargate

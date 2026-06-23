@@ -4,7 +4,7 @@
      Status: Draft (W11 T3-T4) → Final (W11 T6 Pack #1) → Updated (W12 T4 Pack #2)
      Word target: 1500-2500 từ -->
 
-## 1. Architecture diagram
+## 1. Architecture diagram (Owner: Tiến)
 
 ```mermaid
 graph TB
@@ -24,7 +24,7 @@ graph TB
 
 *Caption: <giải thích flow + tại sao layout này>*
 
-## 2. Component table
+## 2. Component table (Owner: Tiến)
 
 | Component | AWS Service | Reason | Cost note |
 |---|---|---|---|
@@ -35,7 +35,7 @@ graph TB
 | Event bus | <EventBridge / Kinesis / SQS> | <why> | $X |
 | Observability | <CloudWatch / Grafana> | <why> | $X |
 
-## 3. Differentiation angle deep-dive
+## 3. Differentiation angle deep-dive (Owner: Tiến)
 
 ### 3.1 Why this angle?
 
@@ -54,7 +54,7 @@ graph TB
 
 <!-- Honest về trade-off. Reviewer thích honesty hơn là "everything is great" -->
 
-## 4. Multi-tenant approach
+## 4. Multi-tenant approach (Owner: Tiến)
 
 ### 4.1 Tenant model
 
@@ -84,7 +84,7 @@ graph TB
 - **Rate limiting**: API Gateway usage plan / custom Lambda
 - **Resource reservation**: <vd dedicated Fargate task for enterprise tier>
 
-## 5. Alternatives considered
+## 5. Alternatives considered (Owner: Tiến)
 
 ### 5.1 Compute layer
 
@@ -98,13 +98,13 @@ graph TB
 - **Option B**: ...
 - ✅ **Chosen**: ...
 
-## 6. Scaling strategy
+## 6. Scaling strategy (Owner: Tiến)
 
 - **Vertical**: <CPU/memory bump triggers>
 - **Horizontal**: <auto-scaling rules>
 - **Triggers**: target CPU 70% / request count / queue depth
 
-## 7. Failure modes + recovery
+## 7. Failure modes + recovery (Owner: Tiến)
 
 | Failure | Detection | Recovery | RTO | RPO |
 |---|---|---|---|---|
