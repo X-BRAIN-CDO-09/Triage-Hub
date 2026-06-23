@@ -6,13 +6,13 @@ Chào mừng bạn đến với dự án Triage Hub! Để đảm bảo mã ngu�
 
 ## 1. Quy tắc đặt tên Branch (Nhánh)
 
-Trước khi bắt đầu code một tính năng hay sửa một lỗi, hãy tạo một nhánh mới từ nhánh `main` mới nhất:
+Trước khi bắt đầu code một tính năng hay sửa một lỗi, hãy tạo một nhánh mới từ nhánh **`develop`** mới nhất:
 
 * **Tính năng mới:** `feature/<tên-thành-viên>-<tên-ngắn-của-task>`
   * *Ví dụ:* `feature/phong-jira-api`, `feature/hoang-slack-bot`
 * **Sửa lỗi thường:** `bugfix/<tên-thành-viên>-<tên-lỗi>`
   * *Ví dụ:* `bugfix/hoang-slack-button-payload`
-* **Sửa lỗi khẩn cấp (Hotfix):** `hotfix/<tên-lỗi>`
+* **Sửa lỗi khẩn cấp (Hotfix):** `hotfix/<tên-lỗi>` (nhánh này tạo từ `main`)
 
 ---
 
@@ -37,10 +37,11 @@ Commit message là nhật ký của dự án, giúp cả nhóm và Mentor dễ d
 
 ## 3. Quy trình gửi và duyệt Pull Request (PR)
 
-1. **Tuyệt đối không push trực tiếp vào nhánh `main`** (nhánh `main` đã được bảo vệ).
-2. Tạo nhánh feature/bugfix tương ứng, code và chạy thử kỹ càng ở local.
+1. **Tuyệt đối không push trực tiếp vào nhánh `develop` và `main`** (cả hai nhánh đã được cấu hình bảo vệ).
+2. Tạo nhánh feature/bugfix tương ứng từ **`develop`**, code và chạy thử kỹ càng ở local.
 3. Push nhánh đó lên remote GitHub.
-4. Tạo Pull Request (PR) từ nhánh của bạn vào `main`.
+4. Tạo Pull Request (PR) từ nhánh của bạn vào **`develop`**.
 5. Điền đầy đủ thông tin vào biểu mẫu PR mẫu tự động sinh ra (Mô tả, link Jira task, kết quả test local).
 6. Tag hoặc thông báo cho Tech Lead và các bạn trong nhóm để review.
-7. Yêu cầu ít nhất **1 approval** để có thể merge PR vào `main`.
+7. Yêu cầu ít nhất **1 approval** để có thể merge PR vào **`develop`**.
+8. Cuối mỗi tuần hoặc trước buổi chấm, Tech Lead sẽ chịu trách nhiệm merge từ **`develop`** vào **`main`** và tạo tag `final`.
