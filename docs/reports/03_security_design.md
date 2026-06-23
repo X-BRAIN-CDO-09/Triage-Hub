@@ -13,7 +13,7 @@
 
 ---
 
-## 1. Network Security
+## 1. Network Security (Owner: Huy)
 
 ### 1.1 Network Diagram
 
@@ -53,7 +53,7 @@ graph TB
 
 ---
 
-## 2. IAM & Access Control
+## 2. IAM & Access Control (Owner: Huy)
 
 ### 2.1 Service Roles
 
@@ -77,7 +77,7 @@ graph TB
 
 ---
 
-## 3. Secrets Management
+## 3. Secrets Management (Owner: Huy)
 
 ### 3.1 Secrets Inventory
 
@@ -102,7 +102,7 @@ graph TB
 
 ---
 
-## 4. Encryption
+## 4. Encryption (Owner: Huy)
 
 ### 4.1 At Rest
 
@@ -126,7 +126,7 @@ graph TB
 
 ---
 
-## 5. Audit Logging
+## 5. Audit Logging (Owner: Huy)
 
 ### 5.1 What to Log
 
@@ -152,7 +152,7 @@ graph TB
 
 ---
 
-## 6. Container & K8s Security (chỉ áp dụng nếu CDO chọn K8s angle)
+## 6. Container & K8s Security (chỉ áp dụng nếu CDO chọn K8s angle) (Owner: Huy)
 
 - Image scan: Trivy trong CI, fail-on HIGH/CRITICAL CVE.
 - Image signing: Cosign sign trong CI, admission webhook verify (Phase 2 nếu chưa kịp).
@@ -162,7 +162,7 @@ graph TB
 
 ---
 
-## 7. Compliance Touchpoints
+## 7. Compliance Touchpoints (Owner: Huy)
 
 <!-- Ngắn gọn. Capstone không phải compliance audit. -->
 
@@ -176,7 +176,7 @@ Document mapping ở level "control → AWS service được dùng" là đủ. K
 
 ---
 
-## 8. Open Questions
+## 8. Open Questions (Owner: Huy)
 
 <!-- Câu hỏi security thực sự ambiguous - phải decide nhưng chưa đủ data. -->
 

@@ -4,7 +4,7 @@
      Status: Draft (W11 T4) → Final (W11 T6 Pack #1) → Working (W12 T4 Pack #2)
      Word target: 1200-2000 từ -->
 
-## 1. IaC strategy
+## 1. IaC strategy (Owner: Kiên)
 
 ### 1.1 Tool choice
 
@@ -35,7 +35,7 @@ infra/
 - State lock via DynamoDB
 - Plan-on-PR + apply-on-merge gate
 
-## 2. CI/CD pipeline
+## 2. CI/CD pipeline (Owner: Kiên)
 
 ### 2.1 Pipeline stages
 
@@ -59,7 +59,7 @@ PR opened ──► Build ──► Test ──► Scan ──► Plan ──►
 - `feature/*` = feature branches
 - PR required for merge to `main` + approval
 
-## 3. GitOps
+## 3. GitOps (Owner: Kiên)
 
 ### 3.1 Tool
 
@@ -82,7 +82,7 @@ PR opened ──► Build ──► Test ──► Scan ──► Plan ──►
 - Daily drift report → Slack channel
 - Manual approval cho destructive change
 
-## 4. Deployment strategy
+## 4. Deployment strategy (Owner: Kiên)
 
 ### 4.1 Strategy
 
@@ -99,7 +99,7 @@ PR opened ──► Build ──► Test ──► Scan ──► Plan ──►
 - **Secondary**: Terraform state rollback (if infra change)
 - **Target RTO**: < 60s
 
-## 5. Environment separation
+## 5. Environment separation (Owner: Kiên)
 
 | Env | Purpose | Account | Auto-deploy |
 |---|---|---|---|
@@ -107,13 +107,13 @@ PR opened ──► Build ──► Test ──► Scan ──► Plan ──►
 | Staging | Pre-prod integration | <account-2> | On merge to `develop` |
 | Prod | Real tenant traffic | <account-3> | On merge to `main` + manual approval |
 
-## 6. Secrets in pipeline
+## 6. Secrets in pipeline (Owner: Kiên)
 
 - CI accesses secrets via OIDC + IAM assume-role (no static keys in CI)
 - Secret scanning trên PR (Gitleaks / TruffleHog)
 - Block merge if secret detected
 
-## 7. Tenant onboarding deployment
+## 7. Tenant onboarding deployment (Owner: Kiên)
 
 ```
 1. POST /tenants → trigger Step Function
@@ -125,7 +125,7 @@ PR opened ──► Build ──► Test ──► Scan ──► Plan ──►
 
 Total time target: < 30 min.
 
-## 8. Observability stack
+## 8. Observability stack (Owner: Nhật)
 
 | Component | Tool |
 |---|---|
@@ -135,7 +135,7 @@ Total time target: < 30 min.
 | Dashboards | CloudWatch / Grafana |
 | Alerts | CloudWatch Alarms / Alertmanager |
 
-## 9. Open questions
+## 9. Open questions (Owner: Kiên)
 
 - [ ] Q1: ...
 

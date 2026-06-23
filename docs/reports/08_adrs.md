@@ -28,7 +28,7 @@
 
 ---
 
-## ADR-001 - <Short title, e.g., "Lambda over Fargate for compute layer">
+## ADR-001 - <Short title, e.g., "Lambda over Fargate for compute layer"> (Owner: Tiến)
 
 - **Status**: Accepted | Proposed | Superseded by ADR-NNN | Rejected
 - **Date**: 2026-MM-DD
