@@ -50,18 +50,28 @@
       "type": "divider"
     },
     {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*🤖 AI Assignment Suggestion:*\nDựa trên 5 ticket gần nhất, gợi ý gán ticket này cho *[ 👤 @SuggestedUser ]* vì đây là SME của module payment-gateway."
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
       "type": "actions",
       "elements": [
         {
           "type": "button",
           "text": {
             "type": "plain_text",
-            "text": "✅ Acknowledge",
+            "text": "👤 Confirm & Assign",
             "emoji": true
           },
           "style": "primary",
-          "value": "incident_12345",
-          "action_id": "acknowledge_incident_action"
+          "value": "assign_incident_12345",
+          "action_id": "assign_incident_action"
         },
         {
           "type": "button",
