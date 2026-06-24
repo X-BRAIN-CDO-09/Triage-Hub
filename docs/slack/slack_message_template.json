@@ -43,7 +43,7 @@
       "type": "section",
       "text": {
         "type": "mrkdwn",
-        "text": "*🛠️ Remediation Suggested:*\n1. Nâng cấp tạm thời (Scale up) RDS instance lên `db.r5.xlarge`.\n2. Chạy lệnh kill các connection đang bị treo."
+        "text": "*🛠️ Remediation Suggested:*\n1. Nâng cấp tạm thời (Scale up) RDS instance lên `db.r5.xlarge`.\n2. Chạy lệnh kill các connection đang bị treo: `SELECT pg_terminate_backend(pid)...`"
       }
     },
     {
@@ -52,6 +52,17 @@
     {
       "type": "actions",
       "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "✅ Acknowledge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "incident_12345",
+          "action_id": "acknowledge_incident_action"
+        },
         {
           "type": "button",
           "text": {
