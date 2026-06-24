@@ -21,17 +21,6 @@ resource "aws_security_group" "ec2_sg" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "SSH from anywhere"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    # SUGGEST: Không mở SSH 0.0.0.0/0 — đã có SSM Session Manager (IAM role đã attach)
-    # Restrict về IP cụ thể hoặc xóa hẳn ingress port 22
-    # Tham khảo: TERRAFORM_BEST_PRACTICES.md §8
-  }
-
-  ingress {
     description = "HTTP"
     from_port   = 80
     to_port     = 80
@@ -56,9 +45,9 @@ resource "aws_security_group" "ec2_sg" {
   }
 
   ingress {
-    description = "Argo CD UI/API Port Forwarding Default"
-    from_port   = 8080
-    to_port     = 8080
+    description = "Grafana"
+    from_port   = 3000
+    to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -79,8 +68,7 @@ resource "aws_security_group" "ec2_sg" {
 # EC2 Instance for Customer App (deployed as Spot Instance)
 resource "aws_instance" "spot_instance" {
   ami                         = data.aws_ami.ubuntu.id
-  instance_type               = "t3.large"
-  # SUGGEST: Dùng var.instance_type thay hardcode — module không nên quyết định instance size
+  instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
@@ -99,69 +87,11 @@ resource "aws_instance" "spot_instance" {
     }
   }
 
-  # SUGGEST: Tách user_data ra file scripts/setup.sh và dùng templatefile()
-  # Ví dụ: user_data = base64encode(templatefile("${path.module}/scripts/setup.sh", { ... }))
-  # Lý do: 55 dòng bash inline khó maintain + không highlight syntax
-  # Tham khảo: TERRAFORM_BEST_PRACTICES.md §11
-  user_data = <<-EOF
-              #!/bin/bash
-              # Wait for internet connectivity
-              sleep 10
-              apt-get update -y
-              apt-get install -y curl unzip
-
-              # Install AWS CLI v2
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-              unzip awscliv2.zip
-              ./aws/install
-              rm -rf awscliv2.zip aws
-
-              # Install Argo Rollouts CLI plugin
-              curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
-              chmod +x ./kubectl-argo-rollouts-linux-amd64
-              mv ./kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
-
-              # Export PATH to ensure /usr/local/bin is available
-              export PATH=$PATH:/usr/local/bin
-
-              # 1. Install K3s (BẺ KHÓA dải cổng sang 80-40000 và cấp quyền đọc config)
-              export K3S_KUBECONFIG_MODE="644"
-              curl -sfL https://get.k3s.io | sh -s - --disable traefik --kube-apiserver-arg="service-node-port-range=80-40000"
-
-              # Wait for K3s/kubectl to be fully up
-              export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-              until kubectl get nodes; do
-                sleep 5
-              done
-
-              # Sao chép kubeconfig cho ubuntu user để gõ kubectl không cần sudo/export
-              mkdir -p /home/ubuntu/.kube
-              cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
-              chown -R ubuntu:ubuntu /home/ubuntu/.kube
-
-              # 2. Fix CoreDNS loops/upstream DNS forwarder (đợi configmap xuất hiện rồi mới patch)
-              until kubectl get configmap coredns -n kube-system; do
-                sleep 5
-              done
-              kubectl get configmap coredns -n kube-system -o yaml | sed 's/forward \. \/etc\/resolv\.conf/forward . 1.1.1.1 8.8.8.8/g' | kubectl apply -f -
-              kubectl rollout restart deployment coredns -n kube-system
-
-              # 3. Create Argo CD namespace and install
-              kubectl create namespace argocd
-              kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-
-              # 4. Đợi dịch vụ argocd-server được tạo xong rồi mới ÉP sang NodePort cổng 8080
-              until kubectl get svc argocd-server -n argocd; do
-                sleep 5
-              done
-              kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort", "ports": [{"name": "https", "port": 443, "nodePort": 8080}]}}'
-
-              # 5. Cài đặt Helm tự động
-              curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-              EOF
+  user_data_replace_on_change = true
+  user_data                   = file("${path.module}/scripts/setup.sh")
 
   tags = {
-    Name = "t3-xlarge-spot-instance"
+    Name = "t3-large-spot-instance"
   }
 }
 
