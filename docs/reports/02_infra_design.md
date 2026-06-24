@@ -199,6 +199,8 @@ Inject qua **ESO** (External Secrets Operator) từ Secrets Manager → K8s Secr
 - `/v1/triage` direct sample requests chạy ✓
 ## 9. Slack Alert & Interactive Assignment Architecture (Owner: Hoàng)
 
+![Slack Architecture](../assets/Slack-Integration.drawio.png)
+
 ### 9.1 Slack Interactive Flow
 Hệ thống áp dụng kiến trúc **"AI Suggestion + Human-in-the-loop"** thay vì Auto-assign hoàn toàn để kiểm soát rủi ro phân công nhầm người. 
 - **Notification Lambda**: Nhận `ticket_payload` từ AI, bóc tách `suggested_assignee` và tạo Slack Block Kit JSON có kèm nút **[Confirm & Assign]**.
