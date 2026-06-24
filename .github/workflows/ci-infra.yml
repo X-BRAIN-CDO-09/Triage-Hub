@@ -58,7 +58,23 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform format check
-        run: terraform fmt -check -recursive -diff capstone/tf-1/devops/infra
+        run: |
+          set +e
+          terraform fmt -check -recursive -diff capstone/tf-1/devops/infra
+          FMT_EXIT=$?
+          set -e
+
+          echo ""
+          echo "========================================="
+          echo "Terraform fmt exit code: $FMT_EXIT"
+          echo "0 = formatted, 3 = formatting changes needed"
+          echo "========================================="
+
+          if [ "$FMT_EXIT" -eq 3 ]; then
+            echo "::error::Terraform files are not formatted. Run: terraform fmt -recursive capstone/tf-1/devops/infra"
+          fi
+
+          exit "$FMT_EXIT"
 
       - name: Terraform validate modules
         run: |
