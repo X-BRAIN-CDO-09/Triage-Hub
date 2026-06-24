@@ -56,7 +56,29 @@
 
 ---
 
-## ADR-003 - ...
+## ADR-003 - EKS (Kubernetes) cho AI Engine Runtime thay vì ECS Fargate (Owner: Thi)
+
+- **Status**: Accepted
+- **Date**: 2026-06-24
+- **Scope**: Chỉ áp dụng cho **AI Engine Runtime module** (KAN-203/204/205) — host `tf1-api` + `tf1-worker`. KHÔNG ghi đè compute choice của các service khác (do ADR-001 quyết).
+- **Context**:
+  - AI team handoff (`handoff-1.txt:88-100`) và `deployment-contract.md:33` **recommend ECS Fargate** cho engine ("ít sửa code hơn Lambda").
+  - Tuy nhiên đề Phase 2 (`W11_W12_capstone_announcement.md`) **không bắt buộc** compute target — mỗi CDO chọn 1 *differentiation angle* và defend. Recommend của AI team là gợi ý vận hành, **không phải ràng buộc kiến trúc**.
+  - Engine cần: multi-tenant isolation mạnh (namespace-per-tenant), policy-as-code admission (Cosign verify, OPA), GitOps + canary, autoscaling 2 chiều (pod + node), secrets injection chuẩn (ESO/IRSA). Đây là các capability K8s-native.
+- **Decision**: Chọn **Amazon EKS (managed node group)** làm runtime cho AI Engine, deploy qua **ArgoCD (app-of-apps) + Argo Rollouts canary**. Đây là angle khác biệt so với teammate (serverless/Fargate).
+- **Consequence**:
+  - ✅ Multi-tenant isolation end-to-end: Namespace + ResourceQuota + LimitRange + NetworkPolicy + RBAC + Pod Security `restricted` — sâu hơn Fargate task-level.
+  - ✅ Supply-chain enforcement tại admission: Sigstore `policy-controller` chặn pod nếu image chưa Cosign-sign; Gatekeeper/OPA chặn root, hostNetwork, thiếu resource limit.
+  - ✅ GitOps declarative + canary 10→50→100% auto-rollback (Argo Rollouts) — reproducible, audit-friendly.
+  - ✅ Autoscaling 2 lớp: HPA (CPU 70% + custom ALB req/pod=100) + Cluster Autoscaler — tận dụng tốt cho alert bursty.
+  - ✅ Tái dùng được stack đã học ở lab `aws-sercurity` + `w9/lab-final` (ArgoCD, ESO, Gatekeeper, Cosign, kube-prometheus-stack).
+  - ⚠️ Ops overhead cao hơn Fargate: phải quản control plane add-ons, node group, K8s upgrade.
+  - ⚠️ Fixed cost cao hơn (node luôn chạy min 2) so với Fargate scale-to-task — chấp nhận cho demo, bù bằng đúng angle.
+  - ⚠️ Cần push-back để `deployment-contract.md` trở thành **compute-agnostic** (contract chỉ nên chốt I/O + port 8080 + `/healthz`, không chốt runtime) — đưa vào co-design.
+- **Alternatives considered**:
+  - **ECS Fargate** (AI team recommend): vận hành nhẹ, ít YAML, predictable. Rejected vì isolation chỉ ở task-level, không có admission policy-as-code, autoscaling chỉ 1 chiều, và **không tạo differentiation** so với teammate cũng dùng serverless.
+  - **AWS Lambda**: rejected — engine có FastAPI long-running + background consumer + ML deps (numpy/scikit-learn), không hợp model 15-phút/stateless (`handoff-1.txt:88-93`).
+- **Compatibility note**: Quyết định này **không đổi I/O contract**. Engine vẫn expose port 8080, health `/healthz`, `POST /v1/triage` sync p99 < 2s, nhận `incident_seed.v1`. Container image y hệt bản Fargate — chỉ khác lớp orchestration.
 
 ---
 
