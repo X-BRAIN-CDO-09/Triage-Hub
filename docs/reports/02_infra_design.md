@@ -6,21 +6,7 @@
 
 ## 1. Architecture diagram (Owner: Tiến)
 
-```mermaid
-graph TB
-    subgraph "VPC"
-        subgraph "Public subnet"
-            ALB[Application Load Balancer]
-        end
-        subgraph "Private subnet"
-            APP[Compute Layer]
-            DB[(Database)]
-        end
-    end
-    User --> ALB --> APP --> DB
-    APP --> AI[AI Engine endpoint]
-    APP --> SM[Secrets Manager]
-```
+![Architecture Diagram](../assets/infra-architecture.png)
 
 *Caption: <giải thích flow + tại sao layout này>*
 
@@ -130,21 +116,8 @@ Engine chạy **private hoàn toàn** (no internet route); mọi egress đi qua 
 
 ### 8.2 Architecture
 
-```mermaid
-graph TB
-    SEED["incident_seed.v1<br/>(from CDO)"] --> BUF["SQS Buffer + DLQ"]
-    BUF --> WK["tf1-worker (Pod)<br/>consume seed"]
-    WK -->|sync /v1/triage| ALB["Internal ALB"]
-    ALB --> API["tf1-api (Pod)<br/>FastAPI /v1/triage + report"]
-    API -->|read-only| CTX["Context backend<br/>Prometheus/Loki/deploy/ownership"]
-    API -->|InvokeModel / InvokeAgent| BR["Bedrock + AgentCore (VPCe)"]
-    API -->|audit| S3[("S3 Object Lock")]
-    API -->|state| DDB[("DynamoDB")]
-    WK -->|report| S3R[("S3 report + CloudFront")]
-    WK -->|Slack/Jira payload| DQ["SQS Dispatch Queue"]
-    DQ --> DISP["Lambda Dispatcher (NAT)"]
-    DISP --> SAAS["Slack / Jira"]
-```
+![AI Engine Architecture](../assets/aiengine-architecture.png)
+
 
 *Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock/AgentCore, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
 
@@ -242,26 +215,8 @@ Hệ thống áp dụng kiến trúc **"AI Suggestion + Human-in-the-loop"** tha
 
 ### 9.3 Sequence Diagram
 Sơ đồ trình tự xử lý luồng tương tác 2 chiều giữa con người, Slack và hệ thống Triage-Hub:
-```mermaid
-sequenceDiagram
-    participant AI as AI Engine
-    participant L1 as Notification Lambda
-    participant S as Slack
-    participant U as Tech Lead (Human)
-    participant GW as API Gateway
-    participant L2 as Callback Lambda
-    participant J as Jira API
 
-    AI->>L1: Emit triage_report & ticket_payload
-    L1->>S: POST /chat.postMessage (Block Kit UI)
-    S->>U: Hiển thị cảnh báo & Gợi ý (AI Suggestion)
-    U->>S: Bấm nút [Confirm & Assign]
-    S->>GW: POST Webhook Payload
-    GW->>L2: Trigger function
-    L2->>J: POST /rest/api/3/issue/.../assignee
-    J-->>L2: 200 OK
-    L2-->>S: 200 OK (Update message UI)
-```
+![Slack Sequence Diagram](../assets/slack-sequence.png)
 
 ### 9.4 Security & Authentication
 Do API Gateway phải mở dạng Public (để Slack gọi vào), kiến trúc bảo mật áp dụng các lớp phòng thủ sau:
