@@ -224,6 +224,58 @@ Inject qua **ESO** (External Secrets Operator) từ Secrets Manager → K8s Secr
 - Invalid seed → DLQ/error path, no silent drop ✓
 - Context chỉ trong scope tenant/service/time-window ✓
 - `/v1/triage` direct sample requests chạy ✓
+## 9. Slack Alert & Interactive Assignment Architecture (Owner: Hoàng)
+
+### 9.1 Slack Interactive Flow
+Hệ thống áp dụng kiến trúc **"AI Suggestion + Human-in-the-loop"** thay vì Auto-assign hoàn toàn để kiểm soát rủi ro phân công nhầm người. 
+- **Notification Lambda**: Nhận `ticket_payload` từ AI, bóc tách `suggested_assignee` và tạo Slack Block Kit JSON có kèm nút **[Confirm & Assign]**.
+- **API Gateway**: Đóng vai trò là Public Webhook Endpoint để nhận tín hiệu click chuột từ nền tảng Slack.
+- **Callback Lambda**: Bóc tách event từ Slack, trích xuất `jira_issue_key` và gọi REST API của Jira để tự động gán việc cho nhân sự được đề xuất.
+
+### 9.2 Component Deep-Dive
+| Component | AWS Service | Purpose in Slack Flow |
+|---|---|---|
+| Slack Notifier | Lambda | Gửi tin báo sự cố 1 chiều lên Slack Channel |
+| Slack Webhook | API Gateway | Nhận payload tương tác (POST request) từ người dùng Slack |
+| Slack Callback | Lambda | Xử lý sự kiện bấm nút [Confirm & Assign] và gọi Jira API |
+| Token Storage | Secrets Manager | Lưu trữ an toàn Bot Token (Slack) và API Token (Jira) |
+
+### 9.3 Sequence Diagram
+Sơ đồ trình tự xử lý luồng tương tác 2 chiều giữa con người, Slack và hệ thống Triage-Hub:
+```mermaid
+sequenceDiagram
+    participant AI as AI Engine
+    participant L1 as Notification Lambda
+    participant S as Slack
+    participant U as Tech Lead (Human)
+    participant GW as API Gateway
+    participant L2 as Callback Lambda
+    participant J as Jira API
+
+    AI->>L1: Emit triage_report & ticket_payload
+    L1->>S: POST /chat.postMessage (Block Kit UI)
+    S->>U: Hiển thị cảnh báo & Gợi ý (AI Suggestion)
+    U->>S: Bấm nút [Confirm & Assign]
+    S->>GW: POST Webhook Payload
+    GW->>L2: Trigger function
+    L2->>J: POST /rest/api/3/issue/.../assignee
+    J-->>L2: 200 OK
+    L2-->>S: 200 OK (Update message UI)
+```
+
+### 9.4 Security & Authentication
+Do API Gateway phải mở dạng Public (để Slack gọi vào), kiến trúc bảo mật áp dụng các lớp phòng thủ sau:
+- **Slack Signature Verification:** API Gateway (hoặc Lambda Callback) sử dụng `Slack Signing Secret` (lưu tại Secrets Manager) để xác thực Header `X-Slack-Signature`. Chỉ những request xuất phát từ chính nền tảng Slack mới được phép thực thi.
+- **Least-privilege IAM:** Hàm Lambda chỉ được cấp quyền tối thiểu: `secretsmanager:GetSecretValue` và quyền ghi log CloudWatch. Ngăn chặn triệt để rủi ro tấn công leo thang đặc quyền.
+
+### 9.5 Edge Cases & Failure Recovery
+Các tình huống ngoại lệ được thiết kế để đảm bảo luồng "Human-in-the-loop" không trở thành "điểm đứt gãy" (single point of failure):
+
+| Rủi ro (Failure Mode) | Cách xử lý (Mitigation) |
+|---|---|
+| Người dùng bấm nút 2 lần liên tiếp (Double-click) | Slack Block Kit hỗ trợ cấu trúc tự động vô hiệu hóa nút sau khi click. Lambda cũng kiểm tra state của Jira trước khi gán. |
+| Jira API sập (Downtime) | Lambda catch lỗi HTTP 5xx, trả về thông báo lỗi dạng ephemeral message cập nhật thẳng vào Slack để báo team assign tay. |
+| Slack yêu cầu timeout 3s | API Gateway được cấu hình để phản hồi `200 OK` ngay lập tức về cho Slack. Logic gọi API Jira được Lambda xử lý bất đồng bộ, tránh lỗi Timeout hiển thị cho user. |
 
 ## Related documents
 
