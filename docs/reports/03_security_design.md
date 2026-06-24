@@ -185,6 +185,68 @@ Document mapping ở level "control → AWS service được dùng" là đủ. K
 
 ---
 
+## 9. AI Engine Runtime Security — EKS angle (KAN-203 / KAN-204) (Owner: Thi)
+
+<!-- Scope: security baseline cho AI Engine chạy trên EKS. Bổ sung cho §1/§2/§6, không ghi đè.
+     Ground truth: ADR-003 (EKS angle), 02_infra_design.md §8, contracts của AI team. -->
+
+> Engine chạy **private hoàn toàn, no internet route**. Mọi egress qua VPC Endpoint; SaaS (Slack/Jira) chỉ ra ngoài qua Lambda Dispatcher + NAT (đường ngoại lệ).
+
+### 9.1 Supply-chain security (KAN-203)
+
+Pipeline đóng gói image của AI team đảm bảo **không image nào chạy mà chưa quét + chưa ký**:
+
+| Control | Tool | Gate |
+|---|---|---|
+| Image scan | Trivy | **fail-on HIGH/CRITICAL** trong CI |
+| Image signing | Cosign (Sigstore keyless) | sign sau khi scan pass |
+| Registry | ECR private, `IMMUTABLE` tag, `scan_on_push` | không overwrite tag |
+| Admission verify | Sigstore `policy-controller` / Cluster Image Policy | **chặn pod** nếu chữ ký không hợp lệ trước khi chạy |
+| Base image | distroless, non-root, `EXPOSE 8080` | giảm attack surface |
+
+→ Tái dùng stack từ lab `aws-sercurity`.
+
+### 9.2 IAM — IRSA least-privilege (KAN-204)
+
+Mỗi ServiceAccount map 1 IAM Role (IRSA) qua STS, **không** static credential trong pod:
+
+| Permission | Resource scope | Dùng bởi |
+|---|---|---|
+| `bedrock:InvokeModel` | specific model ARN | tf1-api (khi `AI_MODE=hybrid`) |
+| `secretsmanager:GetSecretValue` | `tf1/ai-engine/*` ARN | ESO |
+| `s3:PutObject` | audit bucket ARN only | tf1-api (ghi audit) |
+| `dynamodb:GetItem/PutItem/Query` | state table ARN only | tf1-api/worker |
+
+Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager), `ai-api-contract.md` (auth fallback).
+
+### 9.3 Secrets injection — ESO (External Secrets Operator)
+
+- Pull từ Secrets Manager qua **VPC Endpoint** → tạo K8s Secret. **No hardcode, no static `valueFrom`**.
+- Engine giữ: `BEDROCK` credentials, `SERVICE_AUTH_TOKEN`.
+- **`SLACK_WEBHOOK_URL` KHÔNG ở engine** — nằm ở Lambda Dispatcher (engine không có internet để gọi `hooks.slack.com`).
+
+### 9.4 In-cluster guardrails
+
+| Control | Cấu hình |
+|---|---|
+| **Gatekeeper (OPA)** | block root user, require resource limits, deny hostNetwork, max replicas |
+| **RBAC** | `developer` / `sre` / `viewer` (xem §2.2) |
+| **NetworkPolicy** | deny-all default + explicit ingress/egress allow |
+| **Pod Security Standard** | `restricted`, enforce ở namespace level |
+| **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange |
+
+### 9.5 Network egress model
+
+- AWS service: **VPC Endpoint** — Bedrock, Secrets Manager, SQS, CloudWatch Logs, ECR (api/dkr), STS (Interface); S3, DynamoDB (Gateway, free).
+- SaaS: engine emit payload → SQS Dispatch Queue → **Lambda Dispatcher (NAT)** → Slack/Jira. NAT **chỉ** cho dispatcher, không cho engine.
+
+### 9.6 Audit immutability
+
+- AI decision audit ghi vào **S3 Object Lock (Governance mode, 90 ngày, KMS-encrypted)** — immutable, khớp §5.2.
+- DynamoDB **chỉ** giữ state/config/dedup/rate-limit, **không** dùng cho audit log.
+
+---
+
 ## Related documents
 
 - `02_infra_design.md` - infrastructure layout (network diagram source of truth)
