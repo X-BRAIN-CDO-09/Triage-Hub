@@ -26,6 +26,9 @@ resource "aws_security_group" "ec2_sg" {
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    # SUGGEST: Không mở SSH 0.0.0.0/0 — đã có SSM Session Manager (IAM role đã attach)
+    # Restrict về IP cụ thể hoặc xóa hẳn ingress port 22
+    # Tham khảo: TERRAFORM_BEST_PRACTICES.md §8
   }
 
   ingress {
@@ -77,6 +80,7 @@ resource "aws_security_group" "ec2_sg" {
 resource "aws_instance" "spot_instance" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = "t3.large"
+  # SUGGEST: Dùng var.instance_type thay hardcode — module không nên quyết định instance size
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
@@ -95,6 +99,10 @@ resource "aws_instance" "spot_instance" {
     }
   }
 
+  # SUGGEST: Tách user_data ra file scripts/setup.sh và dùng templatefile()
+  # Ví dụ: user_data = base64encode(templatefile("${path.module}/scripts/setup.sh", { ... }))
+  # Lý do: 55 dòng bash inline khó maintain + không highlight syntax
+  # Tham khảo: TERRAFORM_BEST_PRACTICES.md §11
   user_data = <<-EOF
               #!/bin/bash
               # Wait for internet connectivity

@@ -1,3 +1,7 @@
+# SUGGEST: Dùng for_each thay count cho subnets
+# Lý do: count dựa trên index → xóa/thêm phần tử sẽ destroy+recreate resource không liên quan
+# Tham khảo: TERRAFORM_BEST_PRACTICES.md §1
+
 resource "aws_vpc" "this" {
   cidr_block           = var.cidr_block
   enable_dns_hostnames = true
@@ -21,6 +25,9 @@ resource "aws_internet_gateway" "this" {
   }
 }
 
+# SUGGEST: Dùng for_each = var.public_subnets thay count = length(var.public_subnets)
+# Khi đổi type từ list(string) → map(object({cidr_block, availability_zone, type}))
+# Ví dụ: for_each = var.public_subnets → each.value.cidr_block, each.value.availability_zone
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnets)
   vpc_id                  = aws_vpc.this.id
@@ -30,9 +37,11 @@ resource "aws_subnet" "public" {
 
   tags = {
     Name = "${var.vpc_name}-public-${count.index + 1}"
+    # SUGGEST: Nếu dùng for_each → Name = "${var.vpc_name}-${each.key}"
   }
 }
 
+# SUGGEST: Tương tự public subnets — dùng for_each thay count
 resource "aws_subnet" "private" {
   count             = length(var.private_subnets)
   vpc_id            = aws_vpc.this.id
@@ -87,6 +96,8 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public[0].id
 }
 
+# SUGGEST: Tách private route table per-NAT (nếu có nhiều AZ với NAT riêng)
+# Hiện tại dùng 1 route table chung cho tất cả private subnets → OK cho MVP
 resource "aws_route_table" "private" {
   count  = length(var.private_subnets) > 0 ? 1 : 0
   vpc_id = aws_vpc.this.id
