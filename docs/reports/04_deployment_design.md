@@ -155,13 +155,11 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 
 | Component | Tool |
 |---|---|
-| Metrics | CloudWatch for AWS services; Prometheus for EKS AI engine metrics |
-| Logs | CloudWatch Logs for Lambda/API; Kubernetes logs for AI engine |
-| Traces | OpenTelemetry -> X-Ray if time permits |
-| Dashboards | CloudWatch dashboard for AWS flow; Grafana for AI engine runtime |
-| Alerts | CloudWatch Alarms for SQS/DLQ/Lambda; Alertmanager for EKS metrics if deployed |
-
-Required signals: API 4xx/5xx and latency, Lambda duration/errors/throttles, SQS visible messages and oldest message age, DLQ depth, AI engine readiness/restarts/latency, Jira/Slack/Bedrock timeout and fallback counts, S3/DynamoDB audit write success.
+| Metrics | CloudWatch + Prometheus |
+| Logs | CloudWatch Logs  |
+| Traces | OpenTelemetry → X-Ray |
+| Dashboards | CloudWatch / Grafana |
+| Alerts | CloudWatch Alarms + Alertmanager |
 
 ## 9. Open questions (Owner: Kiên)
 
