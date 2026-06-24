@@ -129,11 +129,11 @@ Total time target: < 30 min.
 
 | Component | Tool |
 |---|---|
-| Metrics | CloudWatch / Prometheus |
-| Logs | CloudWatch Logs / Loki |
-| Traces | OpenTelemetry → X-Ray / Jaeger |
+| Metrics | CloudWatch + Prometheus |
+| Logs | CloudWatch Logs  |
+| Traces | OpenTelemetry → X-Ray |
 | Dashboards | CloudWatch / Grafana |
-| Alerts | CloudWatch Alarms / Alertmanager |
+| Alerts | CloudWatch Alarms + Alertmanager |
 
 ## 9. Open questions (Owner: Kiên)
 
