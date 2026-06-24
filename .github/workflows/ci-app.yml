@@ -1,0 +1,393 @@
+name: App CI/CD
+
+on:
+  push:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/app/**"
+      - ".github/workflows/ci-app.yml"
+  pull_request:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/app/**"
+      - ".github/workflows/ci-app.yml"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy changed artifacts after build"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  PYTHON_VERSION: "3.12"
+  APP_ROOT: capstone/tf-1/devops/app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  detect-changes:
+    name: Detect app changes
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.filter.outputs.app }}
+      ai_engine: ${{ steps.filter.outputs.ai_engine }}
+      lambdas: ${{ steps.filter.outputs.lambdas }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Filter paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'capstone/tf-1/devops/app/**'
+            ai_engine:
+              - 'capstone/tf-1/devops/app/ai-engine/**'
+              - 'capstone/tf-1/devops/app/shared/**'
+            lambdas:
+              - 'capstone/tf-1/devops/app/alert-ingestion/**'
+              - 'capstone/tf-1/devops/app/context-collector/**'
+              - 'capstone/tf-1/devops/app/jira-dispatcher/**'
+              - 'capstone/tf-1/devops/app/jira-connector/**'
+              - 'capstone/tf-1/devops/app/slack-dispatcher/**'
+              - 'capstone/tf-1/devops/app/slack-notifier/**'
+              - 'capstone/tf-1/devops/app/shared/**'
+            shared:
+              - 'capstone/tf-1/devops/app/shared/**'
+
+  lint-test:
+    name: Lint, unit test, secret scan
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python QA tools
+        run: python -m pip install --upgrade ruff pytest bandit
+
+      - name: Ruff lint
+        run: |
+          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
+            ruff check "$APP_ROOT" --output-format=github
+          else
+            echo "No Python source found under $APP_ROOT; skipping ruff."
+          fi
+
+      - name: Ruff format check
+        run: |
+          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
+            ruff format --check "$APP_ROOT"
+          else
+            echo "No Python source found under $APP_ROOT; skipping format check."
+          fi
+
+      - name: Bandit security scan
+        run: |
+          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
+            bandit -r "$APP_ROOT" -ll
+          else
+            echo "No Python source found under $APP_ROOT; skipping bandit."
+          fi
+
+      - name: Run unit tests
+        run: |
+          TEST_PATHS=$(find "$APP_ROOT" -type d -name tests -print)
+          TEST_FILES=$(find "$APP_ROOT" -type f -name 'test_*.py' -print)
+          if [ -n "$TEST_PATHS$TEST_FILES" ]; then
+            pytest "$APP_ROOT" -v --tb=short
+          else
+            echo "No tests found yet; skipping pytest for skeleton repository."
+          fi
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-ai-image:
+    name: Build and push AI engine image
+    needs: [detect-changes, lint-test]
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
+      (needs.detect-changes.outputs.ai_engine == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.image.outputs.image_uri }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
+        run: |
+          set -euo pipefail
+          DOCKERFILE="$APP_ROOT/ai-engine/Dockerfile"
+          SHORT_SHA="${IMAGE_TAG::12}"
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA"
+
+          if [ ! -f "$DOCKERFILE" ]; then
+            echo "AI engine Dockerfile not found at $DOCKERFILE; skipping image build."
+            echo "image_uri=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          docker build \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -t "$IMAGE_URI" \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
+            "$APP_ROOT/ai-engine"
+
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image with Trivy
+        if: steps.image.outputs.image_uri != ''
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.image.outputs.image_uri }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Push image
+        if: steps.image.outputs.image_uri != ''
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
+        run: |
+          SHORT_SHA="${IMAGE_TAG::12}"
+          docker push "$IMAGE_URI"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "Pushed $IMAGE_URI"
+
+  package-lambdas:
+    name: Package Lambda dispatchers
+    needs: [detect-changes, lint-test]
+    if: needs.detect-changes.outputs.lambdas == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: alert-ingestion
+            source_dir: alert-ingestion
+            fallback_dir: ""
+            function_suffix: alert-ingestion
+          - id: context-collector
+            source_dir: context-collector
+            fallback_dir: ""
+            function_suffix: context-collector
+          - id: jira-dispatcher
+            source_dir: jira-dispatcher
+            fallback_dir: jira-connector
+            function_suffix: jira-dispatcher
+          - id: slack-dispatcher
+            source_dir: slack-dispatcher
+            fallback_dir: slack-notifier
+            function_suffix: slack-dispatcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Lambda zip
+        id: zip
+        run: |
+          set -euo pipefail
+          SRC="$APP_ROOT/${{ matrix.source_dir }}"
+          if [ ! -d "$SRC" ] && [ -n "${{ matrix.fallback_dir }}" ]; then
+            SRC="$APP_ROOT/${{ matrix.fallback_dir }}"
+          fi
+
+          if [ ! -d "$SRC" ] || ! find "$SRC" -type f ! -name '.gitkeep' -print -quit | grep -q .; then
+            echo "No source for ${{ matrix.id }}; skipping package."
+            echo "artifact=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p build/${{ matrix.id }}/python
+          cp -R "$SRC"/. "build/${{ matrix.id }}/"
+          if [ -d "$APP_ROOT/shared" ]; then
+            cp -R "$APP_ROOT/shared" "build/${{ matrix.id }}/shared"
+          fi
+
+          if [ -f "build/${{ matrix.id }}/requirements.txt" ]; then
+            python -m pip install -r "build/${{ matrix.id }}/requirements.txt" -t "build/${{ matrix.id }}/"
+          fi
+
+          cd "build/${{ matrix.id }}"
+          zip -qr "../../${{ matrix.id }}.zip" .
+          cd ../..
+          echo "artifact=${{ matrix.id }}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Lambda artifact
+        if: steps.zip.outputs.artifact != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-${{ matrix.id }}
+          path: ${{ steps.zip.outputs.artifact }}
+          retention-days: 7
+
+  deploy-lambdas:
+    name: Deploy Lambda dispatchers
+    needs: package-lambdas
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+    runs-on: ubuntu-latest
+    environment: dev
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: alert-ingestion
+            function_suffix: alert-ingestion
+          - id: context-collector
+            function_suffix: context-collector
+          - id: jira-dispatcher
+            function_suffix: jira-dispatcher
+          - id: slack-dispatcher
+            function_suffix: slack-dispatcher
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Lambda artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: lambda-${{ matrix.id }}
+          path: .
+
+      - name: Update Lambda code
+        env:
+          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub-dev' }}
+        run: |
+          set -euo pipefail
+          ZIP_FILE="${{ matrix.id }}.zip"
+          FUNCTION_NAME="$LAMBDA_PREFIX-${{ matrix.function_suffix }}"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "No artifact for ${{ matrix.id }}; skipping deploy."
+            exit 0
+          fi
+
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --zip-file "fileb://$ZIP_FILE" \
+            --publish
+
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "Updated $FUNCTION_NAME"
+
+  deploy-ai-engine:
+    name: Deploy AI engine to EKS
+    needs: build-ai-image
+    if: |
+      needs.build-ai-image.outputs.image_uri != '' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Roll out image
+        env:
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'triage-hub' }}
+          K8S_DEPLOYMENT: ${{ vars.K8S_AI_DEPLOYMENT || 'ai-engine' }}
+          K8S_CONTAINER: ${{ vars.K8S_AI_CONTAINER || 'ai-engine' }}
+          IMAGE_URI: ${{ needs.build-ai-image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EKS_CLUSTER_NAME" ]; then
+            echo "EKS_CLUSTER_NAME is not set; skipping EKS rollout."
+            exit 0
+          fi
+
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl -n "$K8S_NAMESPACE" set image "deployment/$K8S_DEPLOYMENT" "$K8S_CONTAINER=$IMAGE_URI"
+          kubectl -n "$K8S_NAMESPACE" rollout status "deployment/$K8S_DEPLOYMENT" --timeout=5m
+
+  smoke-test:
+    name: Smoke test triage flow
+    needs: [deploy-lambdas, deploy-ai-engine]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify API Gateway health
+        env:
+          TRIAGE_API_URL: ${{ vars.TRIAGE_API_URL }}
+        run: |
+          if [ -z "$TRIAGE_API_URL" ]; then
+            echo "TRIAGE_API_URL is not set; skipping API smoke test."
+            exit 0
+          fi
+          curl --fail --show-error --silent "$TRIAGE_API_URL/health"
+
+      - name: Verify SQS buffers and DLQs
+        env:
+          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-alert-buffer,triage-context-buffer,triage-slack-buffer' }}
+        run: |
+          IFS=',' read -ra QUEUES <<< "$QUEUE_NAMES"
+          for queue in "${QUEUES[@]}"; do
+            aws sqs get-queue-url --queue-name "$queue" >/dev/null
+            echo "Queue exists: $queue"
+          done
