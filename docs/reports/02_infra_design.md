@@ -277,6 +277,89 @@ Các tình huống ngoại lệ được thiết kế để đảm bảo luồng
 | Jira API sập (Downtime) | Lambda catch lỗi HTTP 5xx, trả về thông báo lỗi dạng ephemeral message cập nhật thẳng vào Slack để báo team assign tay. |
 | Slack yêu cầu timeout 3s | API Gateway được cấu hình để phản hồi `200 OK` ngay lập tức về cho Slack. Logic gọi API Jira được Lambda xử lý bất đồng bộ, tránh lỗi Timeout hiển thị cho user. |
 
+## 10. Jira Integration Layer (Owner: Khang)
+
+### 10.1 Architecture
+
+![Jira Integration Architecture](../assets/Jira-Integration.drawio.png)
+
+Kiến trúc áp dụng nguyên tắc **Jira-First**: AI Engine gửi diagnosis payload qua API Gateway → EventBridge. `jira-dispatcher` consume event, tra cứu `account_id` do AI đề xuất từ DynamoDB, tạo Jira ticket, và **chỉ khi thành công** mới emit `slack.notify` event. `slack-dispatcher` không bao giờ gọi Jira. Khi Jira fail, payload được đưa vào SQS DLQ và `slack.fallback` event gửi raw text alert.
+
+### 10.2 Sequence flow
+
+![Jira Flow Sequence](../assets/Jira_flow.jpeg)
+
+### 10.3 Component table
+
+| Component | AWS Service | Rationale | Cost estimate |
+|---|---|---|---|
+| Compute | `jira-dispatcher` Lambda | Event-driven, pay-per-use, zero idle cost. Single-purpose function với <30s runtime, phù hợp Lambda. | Free Tier up to 1M req/month. ~$0.50/month ở 10k alerts. |
+| Database | DynamoDB | Key-value lookup theo `tenant_id#email`. Không cần join, single-digit ms reads. Managed, auto-scaling. | On-demand. ~$0.25/GB-month. ~5KB per mapping × 50 tenants × 50 users = negligible. |
+| Event Bus | EventBridge | Native Lambda target, 24h retry window, schema registry, event filtering. Giúp decouple dispatchers không cần custom middleware. | $1.00/million events. 2 events per alert (ingest + notify). |
+| Queue | SQS (DLQ) | Dead-letter queue cho failed alerts. Max 14-day retention, redrive về Lambda để replay. | $0.40/million requests. DLQ nhận <1% traffic. |
+| Security | Secrets Manager | Auto-rotation mỗi 30 days. Fine-grained IAM scope chỉ đọc cho Lambda. Encrypted at rest via KMS. | $0.40/secret/month + $0.05/10k API calls. Một secret cho Jira API token. |
+
+### 10.4 Design rationale
+
+#### 10.4.1 Why Jira-First
+
+Hai competing patterns đã bị reject:
+
+**Slack-First Chained Dependency** — `slack-dispatcher` tạo Jira ticket như side effect sau khi post Slack. Điều này coupling notification với ticketing: nếu Slack chậm, Jira creation bị stall. Nếu engineer acknowledge trước khi Jira tồn tại, audit trail bị phá vỡ. Slack API failure đồng nghĩa toàn bộ incident không được record.
+
+**Blind Auto-Assignment** — AI-recommended owner được assign ngay lập tức không cần human confirmation. Nếu AI sai (deactivated user, wrong team, cross-tenant mapping), tickets languish trong wrong queue, làm tăng MTTA.
+
+Jira-First coi Jira ticket là **single source of truth**. Ticket phải tồn tại trước khi bất kỳ notification nào được gửi. `issue_key` flow qua mọi subsequent event, tạo immutable chain: alert → ticket → notification → acknowledgement.
+
+#### 10.4.2 Comparison with alternatives
+
+| Axis | Jira-First | Slack-First | Blind Auto-Assign |
+|---|---|---|---|
+| Time to Route (MTTA) | ~45s (create 2s + post 1s + accept ~42s) | ~90s (post 1s + read 60s + create 2s + reassign) | ~30s nhưng ~25% wrong → effective MTTA gấp đôi |
+| Wrong Assignment Rate | <3% (AI recommend, human verify, assign sau accept) | ~3% + ~10% nếu human acknowledge trước khi Jira tồn tại | ~25% (AI model accuracy ceiling ~75% cho team-owner prediction) |
+| Silent Data Drop Rate | <0.1% (DLQ bắt mọi failure; fallback Slack notify engineer) | ~8% (Slack delivered, Jira never created → không permanent record) | ~25% (ticket created, assigned wrong, tồn đọng) |
+
+*Numbers là estimated baselines cho capscope, cần validate trong W12 eval.*
+
+#### 10.4.3 Accepted weakness
+
+**Stale DynamoDB mapping.** Background sync chạy mỗi 5 phút. Nếu engineer mới join trước khi sync chạy, `jira-dispatcher` không thể resolve email → Jira `account_id`.
+
+- Ticket luôn được tạo ở trạng thái **unassigned** bất kể mapping state. Human-in-the-loop qua Slack là primary path, không phải DynamoDB lookup.
+- DynamoDB miss không phải failure — "Accept" flow sẽ prompt manual input. Estimated <2% initial assignments.
+- Sync interval có thể giảm xuống 1 minute với negligible cost (~120 extra Jira API calls/day).
+
+Đánh đổi: chấp nhận <5 phút staleness window để lấy operational simplicity, thay vì xây streaming CDC pipeline từ Jira (webhook listener, retries, callback auth). Pragmatic cho capscope và first production release.
+
+### 10.5 Multi-tenant approach
+
+Mọi request đều mang `X-Tenant-Id` header (UUID v4). API Gateway validate presence; Lambda enforce partition key scoping trong DynamoDB.
+
+| Dimension | Pattern | Rationale |
+|---|---|---|
+| Compute | Shared | Một Lambda xử lý tất cả tenants. Cold start paid once. Không cross-tenant state trong memory — toàn bộ state ở DynamoDB. |
+| Data | Pooled (row-level) | Một DynamoDB table với Partition Key = `tenant_id#email`. IAM condition `ddb:LeadingKeys` enforce tenant scope ở policy level — fail-closed ngay cả khi application code có bug. |
+| Network | Shared | Một VPC, một subnet group. Không cần per-tenant ENI hay NAT Gateway. |
+
+Silo isolation (per-tenant table) tốn ~$6.50/month cho 50 tables vs ~$0/month idle cho một pooled table — 13× chi phí, không có measurable security benefit nhờ IAM guardrail.
+
+### 10.6 Audit trail
+
+Mọi AI decision đều được link với Jira ticket để đảm bảo traceability:
+
+- `issue_key` được dùng làm correlation ID trong tất cả EventBridge events và CloudWatch Logs structured logs.
+- Jira ticket description field chứa `Correlation-ID` value trỏ về original `alert.ingested` event.
+- AI diagnosis payload (root cause, confidence score, remediation steps, recommended `account_id`) được persist cùng event trong CloudWatch Logs, keyed bởi cùng correlation ID.
+- Cho phép post-incident queries dạng: *"Show me the AI diagnosis that led to ticket INC-123."*
+
+### 10.7 Failure modes & recovery
+
+| Failure | Detection | Recovery | RTO | RPO |
+|---|---|---|---|---|
+| Jira API down (429/500) | Lambda catch HTTP >= 400. EventBridge retry exhausted (3 attempts), route to DLQ. | Payload ghi vào SQS DLQ kèm original `alert.ingested` envelope. `jira-dispatcher` emit `slack.fallback` → `slack-dispatcher` gửi raw alert text với "[JIRA DOWN]" prefix. DLQ redrive thủ công sau khi Jira recover. | < 60s (detection + fallback) | 0 (payload in DLQ) |
+| AI recommend invalid/deactivated `account_id` | Jira trả 400 trên `PUT /assignee` — `"user does not exist"`. | `jira-dispatcher` catch 400, log vào CloudWatch. Ticket remain **unassigned**. `slack.notify` event chứa `assignee_status: "unassigned_invalid_user"`. Slack hiển thị "Assign Me" button → webhook callback để reassign cho current engineer. | < 30s | 0 (ticket created, chỉ assignment fail) |
+| DynamoDB lookup timeout | Lambda metric `DynamoDB.GetItem` latency > 3s trigger CloudWatch alarm. Function catch `ProvisionedThroughputExceededException` hoặc timeout. | Ticket created unassigned. `slack.notify` chứa `assignee_status: "dynamodb_timeout"`. Slack hiển thị "⚠️ User mapping unavailable — please assign manually." | < 5s | 0 (assignment deferred to human) |
+
 ## Related documents
 
 - [`03_security_design.md`](03_security_design.md) - Network Security §4 + IAM §5 + Data Security §6 expand on infra concerns
