@@ -277,7 +277,7 @@ Các tình huống ngoại lệ được thiết kế để đảm bảo luồng
 | Jira API sập (Downtime) | Lambda catch lỗi HTTP 5xx, trả về thông báo lỗi dạng ephemeral message cập nhật thẳng vào Slack để báo team assign tay. |
 | Slack yêu cầu timeout 3s | API Gateway được cấu hình để phản hồi `200 OK` ngay lập tức về cho Slack. Logic gọi API Jira được Lambda xử lý bất đồng bộ, tránh lỗi Timeout hiển thị cho user. |
 
-## 10. Jira Integration Layer (Owner: Khang)
+## 10. Jira Integration Layer (Owner: Phong)
 
 ### 10.1 Architecture
 
