@@ -78,8 +78,8 @@ resource "aws_security_group" "ec2_sg" {
 
 # EC2 Instance for Customer App (deployed as Spot Instance)
 resource "aws_instance" "spot_instance" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = "t3.large"
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = "t3.large"
   # SUGGEST: Dùng var.instance_type thay hardcode — module không nên quyết định instance size
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
