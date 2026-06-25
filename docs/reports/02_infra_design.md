@@ -17,9 +17,7 @@ graph TB
         APIGW["API Gateway"]
         LambdaIngest["alert-ingest (Lambda)"]
         JiraDisp["jira-dispatcher (Lambda)"]
-        Queue1["Buffer Queue 1 (SQS) + DLQ"]
-        LambdaCollector["context-collector (Lambda)"]
-        Queue2["Buffer Queue 2 (SQS) + DLQ"]
+        Queue1["Buffer Queue (SQS) + DLQ"]
         
         subgraph "VPC (Private Subnet)"
             SQS_EP1["SQS VPC Endpoint<br>(Interface)"]
@@ -36,7 +34,7 @@ graph TB
             SQS_EP2["SQS VPC Endpoint<br>(Interface)"]
         end
         
-        Queue3["Buffer Queue 3 (SQS) + DLQ"]
+        Queue3["Dispatch Queue (SQS) + DLQ"]
         LambdaSlack["slack-dispatcher (Lambda)"]
         
         S3["S3 Artifact"]
@@ -50,24 +48,23 @@ graph TB
     APIGW --> LambdaIngest
     APIGW -->|Jira Ticket Flow| JiraDisp
     LambdaIngest --> Queue1
-    Queue1 --> LambdaCollector
-    LambdaCollector -->|2. Pull Logs/Metrics| CustApp
-    LambdaCollector -->|3. Push Enriched Payload| Queue2
-    Queue2 --> SQS_EP1 --> AI_App
+    Queue1 --> SQS_EP1 --> AI_App
+    AI_App -->|2. Pull Logs/Metrics| CustApp
     
     AI_App --> SM_EP
-    AI_App --> Bedrock_EP -->|4. Analyze Alert & suggest| Bedrock
+    AI_App --> Bedrock_EP -->|3. Analyze Alert & suggest| Bedrock
     AI_App --> S3_EP --> S3
     AI_App --> Dynamo_EP --> Dynamo
     
     AI_App --> SQS_EP2 --> Queue3
     Queue3 --> LambdaSlack
     
-    JiraDisp -->|5. Create Jira Ticket| Jira
-    LambdaSlack -->|6. Notify Slack| Slack
+    JiraDisp -->|4. Create Jira Ticket| Jira
+    LambdaSlack -->|5. Notify Slack| Slack
 ```
 
-*Caption: Kiến trúc kết hợp linh hoạt (Hybrid) giữa các dịch vụ hướng sự kiện Serverless (API Gateway, SQS, Lambda) cho giai đoạn tiếp nhận nhanh và cụm Amazon EKS khép kín trong VPC Private Subnet cho giai đoạn xử lý AI chuyên sâu.*
+*Caption: Kiến trúc kết hợp linh hoạt (Hybrid) giữa các dịch vụ hướng sự kiện Serverless (API Gateway, SQS, Lambda) cho giai đoạn tiếp nhận nhanh và cụm Amazon EKS khép kín trong VPC Private Subnet cho giai đoạn xử lý AI chuyên sâu (AI App Pods tự động thu thập Logs/Metrics từ Customer App).*
+
 
 ---
 
@@ -75,7 +72,7 @@ graph TB
 
 | Component | AWS Service | Reason | Cost note |
 |---|---|---|---|
-| **Compute** | AWS Lambda & Amazon EKS | - **Lambda**: Chạy các tác vụ ingest, collector và dispatcher ngắn hạn giúp giảm chi phí idle.<br>- **EKS**: Host các pod AI App xử lý logic LLM orchestration lâu dài, tránh cold start. | **Lambda**: Pay-per-use (~$2/tháng).<br>**EKS**: ~$73/tháng (base cluster cost) + EC2 worker nodes. |
+| **Compute** | AWS Lambda & Amazon EKS | - **Lambda**: Chạy các tác vụ ingest và dispatcher ngắn hạn giúp giảm chi phí idle.<br>- **EKS**: Host các pod AI App xử lý logic LLM orchestration và tự động thu thập context lâu dài, tránh cold start. | **Lambda**: Pay-per-use (~$2/tháng).<br>**EKS**: ~$73/tháng (base cluster cost) + EC2 worker nodes. |
 | **API entry** | Amazon API Gateway | Tiếp nhận Webhook cảnh báo đầu vào từ khách hàng với hiệu năng cao, tự động scale. | Pay-per-use (~$3.5 / triệu requests). |
 | **Database** | Amazon DynamoDB | Lưu trữ tenant configurations, metadata và audit trail trạng thái của các sự cố với thời gian phản hồi sub-millisecond. | Tận dụng Free Tier, pay-per-use (~$5/tháng). |
 | **Storage** | Amazon S3 | Lưu trữ artifacts và tài liệu log/metric thô đã thu thập được để lưu vết phân tích. | S3 Standard tier (~$0.023/GB/tháng). |
@@ -89,8 +86,8 @@ graph TB
 
 ### 3.1 Why this angle?
 Việc chọn phương án **Hybrid** giúp dung hòa hai yếu tố đối lập: **Chi phí tối thiểu khi hệ thống nhàn rỗi (idle cost)** ở luồng tiếp nhận và **Độ tin cậy bảo mật cấp doanh nghiệp (Enterprise Security & Latency Consistency)** ở luồng xử lý AI:
-* Ở cổng ngõ nhận alert: Alert chỉ kích hoạt không thường xuyên (~50+ alerts/tuần). Việc duy trì một ALB và ECS Service chạy 24/7 chỉ để đợi nhận alert là vô cùng lãng phí. API GW + Lambda là sự lựa chọn tối ưu.
-* Ở lõi AI App: LLM orchestration và query context đòi hỏi thời gian xử lý dài (có thể lên tới hàng chục giây). Nếu chạy Lambda ở đây sẽ tốn chi phí rất lớn và dễ bị timeout, đồng thời gặp tình trạng trễ do khởi động lạnh (cold start). Đặt AI App trên EKS giúp ứng dụng luôn chạy sẵn, an toàn tuyệt đối nhờ Namespaces cách ly hoàn toàn dữ liệu của từng tenant.
+* **Ở cổng ngõ nhận alert (Ingestion DMZ)**: Sử dụng API Gateway + Lambda + SQS đóng vai trò làm lớp đệm công cộng độc lập, giúp cô lập cụm EKS hoàn toàn trong Subnet Private (không lộ IP hay route public). Luồng này giúp hấp thụ tức thì các đợt bão cảnh báo (alert storms) nhờ hàng đợi SQS làm buffer mà không gây quá tải cho EKS. Đồng thời, nếu EKS có downtime ngắn (do deploy/rolling update), cổng tiếp nhận vẫn chạy độc lập và giữ alert trong SQS, đảm bảo độ tin cậy tuyệt đối (zero-loss).
+* **Ở lõi AI App (Processing)**: LLM orchestration và query context từ Prometheus/Loki đòi hỏi thời gian xử lý dài (lên tới hàng chục giây). Đặt AI App trên EKS giúp loại bỏ hoàn toàn trễ khởi động lạnh (cold start) của Lambda, đồng thời tận dụng cơ chế cách ly cứng giữa các tenant (K8s Namespace, Network Policies) và hệ sinh thái giám sát (OTel, Prometheus) chuẩn doanh nghiệp.
 
 ### 3.2 Vượt trội ở đâu (số liệu dự kiến)
 
@@ -170,7 +167,7 @@ Việc chọn phương án **Hybrid** giúp dung hòa hai yếu tố đối lậ
 - **Vertical Scaling**: Cấu hình cấu hình giới hạn resource cho AI App Container trên EKS (CPU request từ 0.5 lên 2 Cores, RAM từ 512MB lên 2GB).
 - **Horizontal Scaling**: 
   - **API Gateway & Lambda**: Tự động scale bởi AWS theo lượng request thực tế.
-  - **AI App Pods (EKS)**: Sử dụng **KEDA (Kubernetes Event-driven Autoscaling)** để scale số lượng Pods dựa trên số lượng messages tồn đọng trong **Buffer Queue 2 (SQS)**. Nếu Queue depth > 10, tự động scale thêm Pods lên tối đa 10 Pods để giải quyết nghẽn nhanh chóng.
+  - **AI App Pods (EKS)**: Sử dụng **KEDA (Kubernetes Event-driven Autoscaling)** để scale số lượng Pods dựa trên số lượng messages tồn đọng trong **Buffer Queue (SQS)**. Nếu Queue depth > 10, tự động scale thêm Pods lên tối đa 10 Pods để giải quyết nghẽn nhanh chóng.
 - **Triggers**: Target queue depth > 10 messages / CPU utilization > 80%.
 
 ---
@@ -430,30 +427,26 @@ Mọi AI decision đều được link với Jira ticket để đảm bảo trac
 
 ## 11. Alert processing (Owner: Hiền)
 
-Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết kế theo mô hình hướng sự kiện (Event-driven Architecture), chia làm 4 giai đoạn chính để đảm bảo khả năng mở rộng, tính chịu lỗi và bảo mật thông tin.
+Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết kế theo mô hình hướng sự kiện (Event-driven Architecture), chia làm 3 giai đoạn chính để đảm bảo khả năng mở rộng, tính chịu lỗi và bảo mật thông tin.
 
 ### 11.1 Giai đoạn 1: Tiếp nhận và Phân luồng (Ingestion & Routing)
 1. **Fire Alert:** Hệ thống của khách hàng (`CustApp`) phát tín hiệu cảnh báo dưới dạng Webhook Payload đến **API Gateway**.
 2. **Xác thực & Định tuyến:** API Gateway thực hiện kiểm tra `X-Tenant-Id` và phân phối payload theo hai luồng song song:
-   - **Luồng xử lý chính (AI Triage Pipeline):** Kích hoạt Lambda **`alert-ingest`**. Lambda này thực hiện validate sơ bộ schema của alert rồi đẩy payload nguyên bản vào **Buffer Queue 1 (SQS)** kèm theo Dead Letter Queue (DLQ) tương ứng để chống mất mát gói tin.
+   - **Luồng xử lý chính (AI Triage Pipeline):** Kích hoạt Lambda **`alert-ingest`**. Lambda này thực hiện validate sơ bộ schema của alert rồi đẩy payload nguyên bản vào **Buffer Queue (SQS)** kèm theo Dead Letter Queue (DLQ) tương ứng để chống mất mát gói tin.
 
-### 11.2 Giai đoạn 2: Thu thập ngữ cảnh và Làm giàu dữ liệu (Context Collection & Enrichment)
-1. **Trigger Collector:** Lambda **`context-collector`** được kích hoạt bất đồng bộ khi có tin nhắn mới xuất hiện trong **Buffer Queue 1**.
-2. **Query Telemetry:** Lambda này sử dụng thông tin từ alert để gọi ngược lại APIs của `CustApp` nhằm truy vấn thêm dữ liệu Log (từ Loki) và Metrics (từ Prometheus) liên quan đến khoảng thời gian xảy ra sự cố.
-3. **Enrich Payload:** Dữ liệu thô thu được sẽ được đóng gói chung với alert ban đầu tạo thành một **Enriched Payload** lớn hơn, sau đó được đẩy vào **Buffer Queue 2 (SQS)** để chuyển tiếp tới lớp xử lý AI sâu hơn bên trong mạng VPC bảo mật.
-
-### 11.3 Giai đoạn 3: Phân tích sâu bằng AI (AI Analysis & RCA)
-1. **Consume & Process:** Các **AI App Pods** chạy trong EKS Cluster (Private Subnet) liên tục thăm dò và tiêu thụ dữ liệu từ **Buffer Queue 2** thông qua **SQS VPC Endpoint (Interface)** để đảm bảo dữ liệu không đi qua mạng Internet công cộng.
-2. **AI Inference & Storage:**
+### 11.2 Giai đoạn 2: Phân tích sâu bằng AI & Thu thập ngữ cảnh (AI Analysis & Context Retrieval)
+1. **Consume & Process:** Các **AI App Pods** chạy trong EKS Cluster (Private Subnet) liên tục thăm dò và tiêu thụ dữ liệu từ **Buffer Queue (SQS)** thông qua **SQS VPC Endpoint (Interface)** để đảm bảo dữ liệu không đi qua mạng Internet công cộng.
+2. **Context Collection (Self-retrieval):** AI App tự động sử dụng thông tin từ alert để gọi ngược lại APIs của `CustApp` nhằm truy vấn thêm dữ liệu Log (từ Loki) và Metrics (từ Prometheus) liên quan đến khoảng thời gian xảy ra sự cố, tự làm giàu ngữ cảnh (enrich context).
+3. **AI Inference & Storage:**
    - Pods truy xuất các thông tin bảo mật và API key cần thiết từ **Secrets Manager** qua VPC Endpoint.
    - Thực hiện gửi yêu cầu phân tích và đề xuất giải pháp xử lý cảnh báo đến **Amazon Bedrock** qua Bedrock VPC Endpoint.
    - Lưu trữ log phân tích, bằng chứng (evidence) và báo cáo thô vào **S3 Artifact** qua S3 Gateway Endpoint.
    - Ghi nhận trạng thái xử lý sự cố và audit log vào **DynamoDB** qua DynamoDB Gateway Endpoint để phục vụ tra cứu sau này.
-3. **Emit Result:** Sau khi hoàn thành phân tích RCA, AI App đóng gói payload kết quả và đẩy vào **Buffer Queue 3 (SQS)** thông qua SQS VPC Endpoint.
+4. **Emit Result:** Sau khi hoàn thành phân tích RCA, AI App đóng gói payload kết quả và đẩy vào **Dispatch Queue (SQS)** (formerly Queue 3) thông qua SQS VPC Endpoint.
 
-### 11.4 Giai đoạn 4: Phân phối và Tương tác (Dispatch & Notification)
-1. **Trigger Dispatcher:** Lambda **`slack-dispatcher`** tiêu thụ tin nhắn từ **Buffer Queue 3**.
-2. **Notify Slack:** Lambda định dạng lại dữ liệu phân tích thành Block Kit UI và gửi thông báo trực quan (kèm gợi ý phân công người xử lý) tới kênh **Slack Workspace** của đội vận hành để thực hiện luồng phê duyệt và gán việc (Human-in-the-loop).
+### 11.3 Giai đoạn 3: Phân phối và Tương tác (Dispatch & Notification)
+1. **Trigger Dispatcher:** Lambda **`slack-dispatcher`** / **`jira-dispatcher`** tiêu thụ tin nhắn từ **Dispatch Queue (SQS)**.
+2. **Notify Slack & Jira:** Định dạng lại dữ liệu phân tích thành Block Kit UI để gửi lên Slack (với nút gán việc) và đồng bộ sang Jira tạo ticket sự cố (Human-in-the-loop).
 
 ## Related documents
 

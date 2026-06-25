@@ -42,14 +42,15 @@
     - Sử dụng **Serverless (API Gateway + AWS Lambda + SQS)** ở pha tiếp nhận đầu vào (Ingestion & Routing) để tự động scale và tối ưu chi phí idle.
     - Sử dụng **Amazon EKS (EKS Node Group)** ở pha xử lý AI chuyên sâu (AI Processing) nhằm chạy các pod AI App liên tục và cách ly tài nguyên tốt hơn.
 - **Consequence**:
-  - ✅ Cổng tiếp nhận co giãn tức thì theo lưu lượng alert, chi phí idle bằng 0.
-  - ✅ Loại bỏ hoàn toàn trễ cold start và giới hạn thời gian chạy 15 phút của Lambda khi AI Engine phân tích dữ liệu dung lượng lớn.
-  - ✅ Hỗ trợ quản lý và cách ly đa khách hàng (multi-tenant isolation) tốt hơn ở mức hạ tầng (Kubernetes Namespaces, Resource Quotas, Network Policies).
-  - ⚠️ Tăng độ phức tạp vận hành (Ops overhead) khi phải quản trị cả cụm Kubernetes (EKS) lẫn hạ tầng Serverless.
-  - ⚠️ Phát sinh chi phí cố định tối thiểu cho cụm EKS (~$73/tháng + EC2 worker nodes) bất kể có nhận alert hay không.
+  - ✅ Cổng tiếp nhận (Ingestion DMZ) hoạt động độc lập, co giãn tức thì theo lưu lượng alert và bảo vệ cụm EKS hoàn toàn trong Subnet Private (không lộ diện public route).
+  - ✅ SQS Queue đóng vai trò làm lớp đệm (buffer) giúp hấp thụ bão cảnh báo (alert storms) đột ngột, tránh gây quá tải tức thì cho cụm EKS.
+  - ✅ EKS chạy các pod AI App liên tục giúp loại bỏ hoàn toàn trễ cold start và giới hạn thời gian chạy 15 phút của Lambda khi phân tích/thu thập logs lớn.
+  - ✅ Hỗ trợ cách ly đa khách hàng (multi-tenant isolation) cứng ở mức hạ tầng (Kubernetes Namespaces, Network Policies, Resource Quotas).
+  - ⚠️ Tăng độ phức tạp vận hành (Ops overhead) khi phải quản trị đồng thời cả Serverless (Lambda, Gateway, SQS) và cụm Kubernetes (EKS).
+  - ⚠️ Phát sinh chi phí cố định tối thiểu cho cụm EKS (~$73/tháng + worker nodes) dù tải hệ thống thấp.
 - **Alternatives considered**:
   - **Pure Serverless (Lambda-only)**: Bị từ chối vì gặp vấn đề cold start khi chạy logic LLM orchestration và có thể bị timeout khi xử lý logs dung lượng lớn.
-  - **Pure Container (ECS Fargate/EKS + ALB)**: Bị từ chối vì việc duy trì các task container và ALB chạy 24/7 chỉ để đợi nhận một lượng nhỏ alert (~50 alert/tuần) gây lãng phí chi phí.
+  - **Pure Container (EKS + ALB / Ingress trực tiếp)**: Bị từ chối vì nếu route trực tiếp alert vào EKS sẽ bắt buộc phải expose ALB/Ingress ra internet, tăng bề mặt tấn công (attack surface) của cụm. Đồng thời thiếu hàng đợi SQS đệm có thể gây nghẽn/treo pod AI App khi gặp bão cảnh báo đột biến.
 
 ---
 
