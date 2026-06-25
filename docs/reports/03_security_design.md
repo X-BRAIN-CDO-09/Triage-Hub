@@ -14,11 +14,11 @@ Focus: Network security, IAM, secrets, encryption, audit trail, compliance touch
 
 ## 0. Security Scope for Assigned Jira Tasks
 
-| Jira Task | Security Area | Design Coverage |
-|---|---|---|
-| KAN-218 | Multi-Tenant Isolation | Validate `tenant_id`, reject invalid tenant, tenant-scoped data model, no cross-tenant access |
-| KAN-219 | Encryption for Data at Rest and In Transit | HTTPS/TLS, KMS encryption, Secrets Manager, no hardcoded secrets |
-| KAN-220 | End-to-End Audit Trail | Audit AI decisions, Jira activities, Slack activities, incident history |
+| Jira Task | Security Area                              | Design Coverage                                                                               |
+| --------- | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| KAN-218   | Multi-Tenant Isolation                     | Validate `tenant_id`, reject invalid tenant, tenant-scoped data model, no cross-tenant access |
+| KAN-219   | Encryption for Data at Rest and In Transit | HTTPS/TLS, KMS encryption, Secrets Manager, no hardcoded secrets                              |
+| KAN-220   | End-to-End Audit Trail                     | Audit AI decisions, Jira activities, Slack activities, incident history                       |
 
 ### Mục tiêu bảo mật
 
@@ -57,7 +57,7 @@ graph LR
             L3 --> S3EP[S3 Gateway Endpoint]
         end
 
-        DDBEP --> DDB[(DynamoDB Audit Table)]
+        DDBEP --> DDB[(DynamoDB State Table)]
         S3EP --> S3[(S3 Audit Archive)]
 
         SM[Secrets Manager] -. read Jira token / Slack webhook .-> L3
@@ -92,7 +92,7 @@ Luồng audit:
 ```text
 audit-dispatcher-lambda
 → DynamoDB Gateway Endpoint
-→ DynamoDB Audit Table
+→ DynamoDB State Table
 → S3 Gateway Endpoint
 → S3 Audit Archive
 ```
@@ -117,32 +117,32 @@ KMS
 
 ### 1.3 Network Security Controls
 
-| Control | Design |
-|---|---|
-| Public entrypoint | API Gateway nhận alert qua HTTPS/TLS |
-| Private compute | Lambda xử lý logic nằm trong private subnet |
-| Private AWS service access | DynamoDB và S3 được truy cập qua Gateway VPC Endpoint |
-| External SaaS egress | Jira/Slack được gọi qua NAT Gateway hoặc approved outbound path |
-| No direct public Lambda inbound | Lambda không expose public endpoint trực tiếp |
-| Observability | CloudWatch Logs ghi log cho từng Lambda |
+| Control                         | Design                                                          |
+| ------------------------------- | --------------------------------------------------------------- |
+| Public entrypoint               | API Gateway nhận alert qua HTTPS/TLS                            |
+| Private compute                 | Lambda xử lý logic nằm trong private subnet                     |
+| Private AWS service access      | DynamoDB và S3 được truy cập qua Gateway VPC Endpoint           |
+| External SaaS egress            | Jira/Slack được gọi qua NAT Gateway hoặc approved outbound path |
+| No direct public Lambda inbound | Lambda không expose public endpoint trực tiếp                   |
+| Observability                   | CloudWatch Logs ghi log cho từng Lambda                         |
 
 ### 1.4 Security Groups / Network Boundary
 
-| Component | Inbound | Outbound | Note |
-|---|---|---|---|
-| API Gateway | Public HTTPS | Invoke Lambda | AWS managed entrypoint |
-| Lambda Security Group | None public inbound | HTTPS to VPC Endpoints, NAT Gateway, Secrets Manager/Bedrock if required | Không public trực tiếp |
-| VPC Endpoints | 443 từ Lambda SG | AWS managed services | Dùng cho DynamoDB/S3/Secrets/Bedrock nếu cần |
-| NAT Gateway | N/A | HTTPS đến Jira/Slack | Chỉ dùng cho external SaaS egress |
+| Component             | Inbound             | Outbound                                                                 | Note                                         |
+| --------------------- | ------------------- | ------------------------------------------------------------------------ | -------------------------------------------- |
+| API Gateway           | Public HTTPS        | Invoke Lambda                                                            | AWS managed entrypoint                       |
+| Lambda Security Group | None public inbound | HTTPS to VPC Endpoints, NAT Gateway, Secrets Manager/Bedrock if required | Không public trực tiếp                       |
+| VPC Endpoints         | 443 từ Lambda SG    | AWS managed services                                                     | Dùng cho DynamoDB/S3/Secrets/Bedrock nếu cần |
+| NAT Gateway           | N/A                 | HTTPS đến Jira/Slack                                                     | Chỉ dùng cho external SaaS egress            |
 
 ### 1.5 VPC Endpoints
 
-| Endpoint | Type | Purpose |
-|---|---|---|
-| DynamoDB Gateway Endpoint | Gateway Endpoint | Cho Lambda ghi audit record vào DynamoDB qua private AWS network |
-| S3 Gateway Endpoint | Gateway Endpoint | Cho Lambda archive audit sang S3 qua private AWS network |
-| Secrets Manager Endpoint | Interface Endpoint | Cho Lambda đọc secret qua private AWS network nếu cấu hình |
-| Bedrock Runtime Endpoint | Interface Endpoint | Cho Lambda gọi AI/Bedrock qua private AWS network nếu khả dụng |
+| Endpoint                  | Type               | Purpose                                                              |
+| ------------------------- | ------------------ | -------------------------------------------------------------------- |
+| DynamoDB Gateway Endpoint | Gateway Endpoint   | Cho Lambda truy cập DynamoDB (state, config) qua private AWS network |
+| S3 Gateway Endpoint       | Gateway Endpoint   | Cho Lambda archive audit sang S3 qua private AWS network             |
+| Secrets Manager Endpoint  | Interface Endpoint | Cho Lambda đọc secret qua private AWS network nếu cấu hình           |
+| Bedrock Runtime Endpoint  | Interface Endpoint | Cho Lambda gọi AI/Bedrock qua private AWS network nếu khả dụng       |
 
 ---
 
@@ -150,27 +150,33 @@ KMS
 
 ### 2.1 Service Roles
 
-| Role | Used by | Permissions |
-|---|---|---|
-| `tf1-cdo09-tenant-validator-role` | `tenant-validator-lambda` | Ghi validation audit event, ghi CloudWatch Logs, đọc tenant config nếu có |
-| `tf1-cdo09-ai-context-processor-role` | `ai-context-processor-lambda` | Đọc context theo tenant, gọi AI/Bedrock endpoint, ghi CloudWatch Logs |
-| `tf1-cdo09-audit-dispatcher-role` | `audit-dispatcher-lambda` | `dynamodb:PutItem`, `s3:PutObject`, `secretsmanager:GetSecretValue`, ghi CloudWatch Logs |
-| `tf1-cdo09-deploy-role` | GitHub Actions / CI-CD | Deploy API Gateway, Lambda, IaC resources; không dùng quyền admin rộng |
-| `tf1-cdo09-readonly-role` | Mentor/debug | Đọc CloudWatch Logs, describe resource, không có quyền chỉnh sửa |
+| Role                                  | Used by                       | Permissions                                                                              |
+| ------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------- |
+| `tf1-cdo09-tenant-validator-role`     | `tenant-validator-lambda`     | Ghi validation audit event, ghi CloudWatch Logs, đọc tenant config nếu có                |
+| `tf1-cdo09-ai-context-processor-role` | `ai-context-processor-lambda` | Đọc context theo tenant, gọi AI/Bedrock endpoint, ghi CloudWatch Logs                    |
+| `tf1-cdo09-audit-dispatcher-role`     | `audit-dispatcher-lambda`     | `dynamodb:PutItem`, `s3:PutObject`, `secretsmanager:GetSecretValue`, ghi CloudWatch Logs |
+| `tf1-cdo09-deploy-role`               | GitHub Actions / CI-CD        | Deploy API Gateway, Lambda, IaC resources; không dùng quyền admin rộng                   |
+| `tf1-cdo09-readonly-role`             | Mentor/debug                  | Đọc CloudWatch Logs, describe resource, không có quyền chỉnh sửa                         |
 
 ### 2.2 Least Privilege Rules
 
 - Không dùng policy dạng `*:*`.
 - Không cấp quyền `iam:*` cho deploy role nếu không cần.
 - Lambda chỉ được đọc secret đúng mục đích.
-- `audit-dispatcher-lambda` chỉ được ghi audit record, không được xóa audit table.
+- `audit-dispatcher-lambda` chỉ được ghi audit record/state, không được xóa DynamoDB table.
 - S3 audit bucket nên hạn chế `DeleteObject`.
-- DynamoDB access nên giới hạn trên audit table của TF1 CDO-09.
+- DynamoDB access nên giới hạn trên DynamoDB table của TF1 CDO-09.
 - KMS access chỉ cấp cho role cần mã hóa/giải mã dữ liệu.
 
 ### 2.3 K8s RBAC
 
-N/A - Thiết kế hiện tại của phần Security & Compliance dùng hướng serverless với API Gateway, Lambda, DynamoDB và S3, không dùng EKS/Kubernetes.
+Áp dụng cho AI Engine triển khai trên Amazon EKS:
+
+- Phân quyền theo nguyên tắc least privilege sử dụng Kubernetes RBAC:
+  - `developer`: Quyền deploy, update ứng dụng trong tenant namespace.
+  - `sre`: Quyền manage, debug các pods, services.
+  - `viewer`: Chỉ xem log, check status.
+- Tận dụng IAM Roles for Service Accounts (IRSA) để mapping Kubernetes ServiceAccounts với IAM Roles mà không cần dùng credential tĩnh.
 
 ### 2.4 Cross-account Access
 
@@ -190,12 +196,12 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 ### 3.1 Secrets Inventory
 
-| Secret | Storage | Rotation | Accessed by |
-|---|---|---|---|
-| `JIRA_API_TOKEN` | Secrets Manager `tf1/cdo09/jira/api-token` | Manual for capstone | `audit-dispatcher-lambda` |
-| `SLACK_WEBHOOK_URL` | Secrets Manager `tf1/cdo09/slack/webhook` | Manual for capstone | `audit-dispatcher-lambda` |
+| Secret                   | Storage                                       | Rotation            | Accessed by                   |
+| ------------------------ | --------------------------------------------- | ------------------- | ----------------------------- |
+| `JIRA_API_TOKEN`         | Secrets Manager `tf1/cdo09/jira/api-token`    | Manual for capstone | `audit-dispatcher-lambda`     |
+| `SLACK_WEBHOOK_URL`      | Secrets Manager `tf1/cdo09/slack/webhook`     | Manual for capstone | `audit-dispatcher-lambda`     |
 | `AI_ENDPOINT_AUTH_TOKEN` | Secrets Manager `tf1/cdo09/ai/endpoint-token` | Manual for capstone | `ai-context-processor-lambda` |
-| `BEDROCK_ACCESS_CONFIG` | Prefer IAM role / Secrets Manager if required | Manual for capstone | `ai-context-processor-lambda` |
+| `BEDROCK_ACCESS_CONFIG`  | Prefer IAM role / Secrets Manager if required | Manual for capstone | `ai-context-processor-lambda` |
 
 ### 3.2 Inject Pattern
 
@@ -207,13 +213,13 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 ### 3.3 Anti-leak Controls
 
-| Risk | Control |
-|---|---|
-| Commit nhầm token lên GitHub | `.gitignore`, secret scanning |
-| Log in ra Jira token/Slack webhook | Redact sensitive pattern trước khi log |
-| Lambda đọc quá nhiều secret | IAM policy giới hạn theo secret ARN |
-| Secret bị dùng sai môi trường | Prefix rõ ràng theo `tf1/cdo09/...` |
-| Credential nằm trong container/build artifact | Không bake secret vào image/package |
+| Risk                                          | Control                                |
+| --------------------------------------------- | -------------------------------------- |
+| Commit nhầm token lên GitHub                  | `.gitignore`, secret scanning          |
+| Log in ra Jira token/Slack webhook            | Redact sensitive pattern trước khi log |
+| Lambda đọc quá nhiều secret                   | IAM policy giới hạn theo secret ARN    |
+| Secret bị dùng sai môi trường                 | Prefix rõ ràng theo `tf1/cdo09/...`    |
+| Credential nằm trong container/build artifact | Không bake secret vào image/package    |
 
 ---
 
@@ -221,25 +227,25 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 ### 4.1 Encryption at Rest
 
-| Data | Storage | KMS key | Notes |
-|---|---|---|---|
-| Incident audit record | DynamoDB `tf1-cdo09-audit-table` | AWS-managed KMS hoặc CMK | Partition key scoped by tenant |
-| Long-term audit archive | S3 `tf1-cdo09-audit-archive` | SSE-KMS / CMK | Prefix theo tenant_id |
-| Jira token | Secrets Manager | KMS | Không hardcode |
-| Slack webhook | Secrets Manager | KMS | Không hardcode |
-| AI endpoint token | Secrets Manager | KMS | Không hardcode |
-| Lambda logs | CloudWatch Logs | AWS-managed encryption hoặc CMK | Retention policy cần được cấu hình |
+| Data                    | Storage                          | KMS key                         | Notes                              |
+| ----------------------- | -------------------------------- | ------------------------------- | ---------------------------------- |
+| Incident audit record   | DynamoDB `tf1-cdo09-audit-table` | AWS-managed KMS hoặc CMK        | Partition key scoped by tenant     |
+| Long-term audit archive | S3 `tf1-cdo09-audit-archive`     | SSE-KMS / CMK                   | Prefix theo tenant_id              |
+| Jira token              | Secrets Manager                  | KMS                             | Không hardcode                     |
+| Slack webhook           | Secrets Manager                  | KMS                             | Không hardcode                     |
+| AI endpoint token       | Secrets Manager                  | KMS                             | Không hardcode                     |
+| Lambda logs             | CloudWatch Logs                  | AWS-managed encryption hoặc CMK | Retention policy cần được cấu hình |
 
 ### 4.2 Encryption in Transit
 
-| Traffic | Protection |
-|---|---|
-| Alert Source → API Gateway | HTTPS/TLS |
-| Lambda → AI/Bedrock endpoint | HTTPS/TLS |
-| Lambda → Jira Cloud | HTTPS/TLS qua NAT Gateway hoặc approved egress |
-| Lambda → Slack Webhook | HTTPS/TLS qua NAT Gateway hoặc approved egress |
-| Lambda → DynamoDB/S3 | AWS private network qua VPC Endpoint nếu cấu hình |
-| Lambda → Secrets Manager | HTTPS/TLS / Interface Endpoint nếu cấu hình |
+| Traffic                      | Protection                                        |
+| ---------------------------- | ------------------------------------------------- |
+| Alert Source → API Gateway   | HTTPS/TLS                                         |
+| Lambda → AI/Bedrock endpoint | HTTPS/TLS                                         |
+| Lambda → Jira Cloud          | HTTPS/TLS qua NAT Gateway hoặc approved egress    |
+| Lambda → Slack Webhook       | HTTPS/TLS qua NAT Gateway hoặc approved egress    |
+| Lambda → DynamoDB/S3         | AWS private network qua VPC Endpoint nếu cấu hình |
+| Lambda → Secrets Manager     | HTTPS/TLS / Interface Endpoint nếu cấu hình       |
 
 ### 4.3 Key Management
 
@@ -257,16 +263,16 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 Audit trail cần ghi lại đầy đủ vòng đời incident:
 
-| Event type | Description |
-|---|---|
-| `ALERT_RECEIVED` | Alert đi vào hệ thống qua API Gateway |
-| `TENANT_VALIDATED` | `tenant_id` hợp lệ |
-| `TENANT_REJECTED` | Request bị reject do thiếu/sai `tenant_id` |
-| `CONTEXT_GATHERED` | Đã gom logs, metrics, deployment metadata |
-| `AI_DECISION_CREATED` | AI tạo diagnosis, confidence score, suggested action |
-| `JIRA_TICKET_CREATED` | Jira ticket được tạo và gắn với incident |
-| `SLACK_NOTIFICATION_SENT` | Slack notification được gửi đến team owner |
-| `ACKNOWLEDGED` | Engineer acknowledge incident |
+| Event type                | Description                                          |
+| ------------------------- | ---------------------------------------------------- |
+| `ALERT_RECEIVED`          | Alert đi vào hệ thống qua API Gateway                |
+| `TENANT_VALIDATED`        | `tenant_id` hợp lệ                                   |
+| `TENANT_REJECTED`         | Request bị reject do thiếu/sai `tenant_id`           |
+| `CONTEXT_GATHERED`        | Đã gom logs, metrics, deployment metadata            |
+| `AI_DECISION_CREATED`     | AI tạo diagnosis, confidence score, suggested action |
+| `JIRA_TICKET_CREATED`     | Jira ticket được tạo và gắn với incident             |
+| `SLACK_NOTIFICATION_SENT` | Slack notification được gửi đến team owner           |
+| `ACKNOWLEDGED`            | Engineer acknowledge incident                        |
 
 ### 5.2 Audit Record Schema
 
@@ -286,12 +292,12 @@ Audit trail cần ghi lại đầy đủ vòng đời incident:
 
 ### 5.3 Storage + Retention
 
-| Log type | Storage | Retention | Query interface |
-|---|---|---|---|
-| Incident audit trail | DynamoDB | During capstone demo / configurable | Query by `tenant_id` + `incident_id` |
-| Long-term audit archive | S3 | 90 days demo policy | S3 prefix by tenant_id |
-| Application logs | CloudWatch Logs | 14 days demo policy | Logs Insights |
-| Infrastructure changes | CloudTrail | AWS default / configured | CloudTrail Console |
+| Log type                | Storage         | Retention                           | Query interface                      |
+| ----------------------- | --------------- | ----------------------------------- | ------------------------------------ |
+| Incident audit trail    | DynamoDB        | During capstone demo / configurable | Query by `tenant_id` + `incident_id` |
+| Long-term audit archive | S3              | 90 days demo policy                 | S3 prefix by tenant_id               |
+| Application logs        | CloudWatch Logs | 14 days demo policy                 | Logs Insights                        |
+| Infrastructure changes  | CloudTrail      | AWS default / configured            | CloudTrail Console                   |
 
 ### 5.4 Tenant-scoped Audit Key
 
@@ -326,26 +332,27 @@ s3://tf1-cdo09-audit-archive/tenant_id=<tenant_id>/incident_id=<incident_id>/
 
 ## 6. Container & K8s Security (Owner: Huy)
 
-N/A cho thiết kế hiện tại nếu nhóm chọn serverless-first với API Gateway và Lambda.
+Thiết kế sử dụng mô hình Hybrid Compute (Serverless + EKS). Để bảo vệ cụm EKS chạy AI Engine, các biện pháp bảo mật sau được áp dụng:
 
-Nếu W12 team bổ sung container/ECS/EKS, các control cần thêm:
-
-- Image scan bằng Trivy trong CI.
-- Không build image chứa credential.
-- Nếu dùng EKS: Pod Security Standard restricted, NetworkPolicy deny-all default.
-- Nếu dùng IRSA: service account chỉ được assume đúng IAM role cần thiết.
+- **Quét lỗ hổng Image**: Tích hợp quét lỗ hổng bảo mật bằng Trivy trong quy trình CI/CD. Chặn build/deploy nếu phát hiện lỗ hổng mức HIGH/CRITICAL.
+- **Ký và xác thực Image**: Sử dụng Cosign để ký số image sau khi quét pass. Cấu hình admission controller (Sigstore policy-controller) trên cụm EKS để chỉ cho phép chạy các pod có chữ ký số hợp lệ.
+- **In-cluster Guardrails**:
+  - Triển khai Gatekeeper (OPA) để thực thi chính sách bảo mật (chặn root user, yêu cầu resource limit, chặn hostNetwork).
+  - Sử dụng Pod Security Standards ở mức `restricted` cho tất cả application namespaces.
+  - Phân tách môi trường đa khách hàng (multi-tenant) sử dụng namespace riêng biệt kết hợp NetworkPolicy deny-all mặc định.
+- **IAM Integration**: Sử dụng IRSA (IAM Roles for Service Accounts) để gán quyền tối thiểu cho các ServiceAccounts tương ứng với từng Pod, không lưu credential tĩnh trong container.
 
 ---
 
 ## 7. Compliance Touchpoints (Owner: Huy)
 
-| Standard / Requirement | Relevant controls in this design |
-|---|---|
-| TF1 Client Requirement | Context isolation per tenant, audit trail cho mọi AI decision |
-| SOC2 - Logical Access | IAM least privilege, no public Lambda inbound, tenant-scoped access |
-| SOC2 - Monitoring | CloudWatch Logs, audit records, CloudTrail/KMS audit |
-| GDPR Article 32 | Encryption at rest/in transit, access control, tenant isolation |
-| PCI-DSS | Out of scope, no card data processed |
+| Standard / Requirement | Relevant controls in this design                                    |
+| ---------------------- | ------------------------------------------------------------------- |
+| TF1 Client Requirement | Context isolation per tenant, audit trail cho mọi AI decision       |
+| SOC2 - Logical Access  | IAM least privilege, no public Lambda inbound, tenant-scoped access |
+| SOC2 - Monitoring      | CloudWatch Logs, audit records, CloudTrail/KMS audit                |
+| GDPR Article 32        | Encryption at rest/in transit, access control, tenant isolation     |
+| PCI-DSS                | Out of scope, no card data processed                                |
 
 Document này chỉ mapping ở mức control → AWS service được dùng. Đây là capstone security design, không phải audit report enterprise đầy đủ.
 
@@ -425,13 +432,13 @@ Implemented end-to-end audit trail design. Audit Writer records ALERT_RECEIVED, 
 
 Pipeline đóng gói image của AI team đảm bảo **không image nào chạy mà chưa quét + chưa ký**:
 
-| Control | Tool | Gate |
-|---|---|---|
-| Image scan | Trivy | **fail-on HIGH/CRITICAL** trong CI |
-| Image signing | Cosign (Sigstore keyless) | sign sau khi scan pass |
-| Registry | ECR private, `IMMUTABLE` tag, `scan_on_push` | không overwrite tag |
+| Control          | Tool                                                | Gate                                                |
+| ---------------- | --------------------------------------------------- | --------------------------------------------------- |
+| Image scan       | Trivy                                               | **fail-on HIGH/CRITICAL** trong CI                  |
+| Image signing    | Cosign (Sigstore keyless)                           | sign sau khi scan pass                              |
+| Registry         | ECR private, `IMMUTABLE` tag, `scan_on_push`        | không overwrite tag                                 |
 | Admission verify | Sigstore `policy-controller` / Cluster Image Policy | **chặn pod** nếu chữ ký không hợp lệ trước khi chạy |
-| Base image | distroless, non-root, `EXPOSE 8080` | giảm attack surface |
+| Base image       | distroless, non-root, `EXPOSE 8080`                 | giảm attack surface                                 |
 
 → Tái dùng stack từ lab `aws-sercurity`.
 
@@ -439,12 +446,12 @@ Pipeline đóng gói image của AI team đảm bảo **không image nào chạy
 
 Mỗi ServiceAccount map 1 IAM Role (IRSA) qua STS, **không** static credential trong pod:
 
-| Permission | Resource scope | Dùng bởi |
-|---|---|---|
-| `bedrock:InvokeModel` | specific model ARN | tf1-api (khi `AI_MODE=hybrid`) |
-| `secretsmanager:GetSecretValue` | `tf1/ai-engine/*` ARN | ESO |
-| `s3:PutObject` | audit bucket ARN only | tf1-api (ghi audit) |
-| `dynamodb:GetItem/PutItem/Query` | state table ARN only | tf1-api/worker |
+| Permission                       | Resource scope        | Dùng bởi                       |
+| -------------------------------- | --------------------- | ------------------------------ |
+| `bedrock:InvokeModel`            | specific model ARN    | tf1-api (khi `AI_MODE=hybrid`) |
+| `secretsmanager:GetSecretValue`  | `tf1/ai-engine/*` ARN | ESO                            |
+| `s3:PutObject`                   | audit bucket ARN only | tf1-api (ghi audit)            |
+| `dynamodb:GetItem/PutItem/Query` | state table ARN only  | tf1-api/worker                 |
 
 Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager), `ai-api-contract.md` (auth fallback).
 
@@ -456,13 +463,13 @@ Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager)
 
 ### 10.4 In-cluster guardrails
 
-| Control | Cấu hình |
-|---|---|
-| **Gatekeeper (OPA)** | block root user, require resource limits, deny hostNetwork, max replicas |
-| **RBAC** | `developer` / `sre` / `viewer` (xem §2.2) |
-| **NetworkPolicy** | deny-all default + explicit ingress/egress allow |
-| **Pod Security Standard** | `restricted`, enforce ở namespace level |
-| **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange |
+| Control                    | Cấu hình                                                                 |
+| -------------------------- | ------------------------------------------------------------------------ |
+| **Gatekeeper (OPA)**       | block root user, require resource limits, deny hostNetwork, max replicas |
+| **RBAC**                   | `developer` / `sre` / `viewer` (xem §2.2)                                |
+| **NetworkPolicy**          | deny-all default + explicit ingress/egress allow                         |
+| **Pod Security Standard**  | `restricted`, enforce ở namespace level                                  |
+| **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange                        |
 
 ### 10.5 Network egress model
 
