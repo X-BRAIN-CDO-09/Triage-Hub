@@ -405,6 +405,33 @@ Mọi AI decision đều được link với Jira ticket để đảm bảo trac
 | AI recommend invalid/deactivated `account_id` | Jira trả 400 trên `PUT /assignee` — `"user does not exist"`. | `jira-dispatcher` catch 400, log vào CloudWatch. Ticket remain **unassigned**. `slack.notify` event chứa `assignee_status: "unassigned_invalid_user"`. Slack hiển thị "Assign Me" button → webhook callback để reassign cho current engineer. | < 30s | 0 (ticket created, chỉ assignment fail) |
 | DynamoDB lookup timeout | Lambda metric `DynamoDB.GetItem` latency > 3s trigger CloudWatch alarm. Function catch `ProvisionedThroughputExceededException` hoặc timeout. | Ticket created unassigned. `slack.notify` chứa `assignee_status: "dynamodb_timeout"`. Slack hiển thị "⚠️ User mapping unavailable — please assign manually." | < 5s | 0 (assignment deferred to human) |
 
+## 11. Alert processing (Owner: Hiền)
+
+Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết kế theo mô hình hướng sự kiện (Event-driven Architecture), chia làm 4 giai đoạn chính để đảm bảo khả năng mở rộng, tính chịu lỗi và bảo mật thông tin.
+
+### 11.1 Giai đoạn 1: Tiếp nhận và Phân luồng (Ingestion & Routing)
+1. **Fire Alert:** Hệ thống của khách hàng (`CustApp`) phát tín hiệu cảnh báo dưới dạng Webhook Payload đến **API Gateway**.
+2. **Xác thực & Định tuyến:** API Gateway thực hiện kiểm tra `X-Tenant-Id` và phân phối payload theo hai luồng song song:
+   - **Luồng xử lý chính (AI Triage Pipeline):** Kích hoạt Lambda **`alert-ingest`**. Lambda này thực hiện validate sơ bộ schema của alert rồi đẩy payload nguyên bản vào **Buffer Queue 1 (SQS)** kèm theo Dead Letter Queue (DLQ) tương ứng để chống mất mát gói tin.
+
+### 11.2 Giai đoạn 2: Thu thập ngữ cảnh và Làm giàu dữ liệu (Context Collection & Enrichment)
+1. **Trigger Collector:** Lambda **`context-collector`** được kích hoạt bất đồng bộ khi có tin nhắn mới xuất hiện trong **Buffer Queue 1**.
+2. **Query Telemetry:** Lambda này sử dụng thông tin từ alert để gọi ngược lại APIs của `CustApp` nhằm truy vấn thêm dữ liệu Log (từ Loki) và Metrics (từ Prometheus) liên quan đến khoảng thời gian xảy ra sự cố.
+3. **Enrich Payload:** Dữ liệu thô thu được sẽ được đóng gói chung với alert ban đầu tạo thành một **Enriched Payload** lớn hơn, sau đó được đẩy vào **Buffer Queue 2 (SQS)** để chuyển tiếp tới lớp xử lý AI sâu hơn bên trong mạng VPC bảo mật.
+
+### 11.3 Giai đoạn 3: Phân tích sâu bằng AI (AI Analysis & RCA)
+1. **Consume & Process:** Các **AI App Pods** chạy trong EKS Cluster (Private Subnet) liên tục thăm dò và tiêu thụ dữ liệu từ **Buffer Queue 2** thông qua **SQS VPC Endpoint (Interface)** để đảm bảo dữ liệu không đi qua mạng Internet công cộng.
+2. **AI Inference & Storage:**
+   - Pods truy xuất các thông tin bảo mật và API key cần thiết từ **Secrets Manager** qua VPC Endpoint.
+   - Thực hiện gửi yêu cầu phân tích và đề xuất giải pháp xử lý cảnh báo đến **Amazon Bedrock** qua Bedrock VPC Endpoint.
+   - Lưu trữ log phân tích, bằng chứng (evidence) và báo cáo thô vào **S3 Artifact** qua S3 Gateway Endpoint.
+   - Ghi nhận trạng thái xử lý sự cố và audit log vào **DynamoDB** qua DynamoDB Gateway Endpoint để phục vụ tra cứu sau này.
+3. **Emit Result:** Sau khi hoàn thành phân tích RCA, AI App đóng gói payload kết quả và đẩy vào **Buffer Queue 3 (SQS)** thông qua SQS VPC Endpoint.
+
+### 11.4 Giai đoạn 4: Phân phối và Tương tác (Dispatch & Notification)
+1. **Trigger Dispatcher:** Lambda **`slack-dispatcher`** tiêu thụ tin nhắn từ **Buffer Queue 3**.
+2. **Notify Slack:** Lambda định dạng lại dữ liệu phân tích thành Block Kit UI và gửi thông báo trực quan (kèm gợi ý phân công người xử lý) tới kênh **Slack Workspace** của đội vận hành để thực hiện luồng phê duyệt và gán việc (Human-in-the-loop).
+
 ## Related documents
 
 - [`03_security_design.md`](03_security_design.md) - Chi tiết thiết kế Network Security, IAM roles, và Data Security mở rộng cho hạ tầng này.
