@@ -16,5 +16,5 @@ variable "environment" {
 variable "instance_type" {
   type        = string
   description = "EC2 Instance type"
-  default     = "t3.micro"
+  default     = "t3.large"
 }

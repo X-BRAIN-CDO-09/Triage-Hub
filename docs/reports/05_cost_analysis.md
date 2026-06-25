@@ -1,6 +1,4 @@
-# Cost Analysis - Task force <N> · CDO <M>
-
-<!-- Doc owner: <Nhóm CDO>
+<!-- Doc owner: Nhóm CDO-09
      Status: Skeleton (W11 T6 Pack #1) → Measured actual (W12 T4 Pack #2)
      Word target: 800-1500 từ -->
 
@@ -8,12 +6,14 @@
 
 | Component | Unit cost | Tenant avg usage | $/tenant/month |
 |---|---|---|---|
-| Compute (Fargate/Lambda) | $X/hr | Y hr | $Z |
-| Database (RDS/DynamoDB) | $X/GB-month | Y GB | $Z |
-| Storage (S3) | $X/GB-month | Y GB | $Z |
-| Data transfer | $X/GB | Y GB | $Z |
-| AI inference (Bedrock) | $X/call | Y calls | $Z |
-| Observability | $X/log GB | Y GB | $Z |
+| Compute (EKS/Lambda) | $X/hr | Y hr | $Z |
+| Messaging & API (API Gateway, SQS) | $X/million reqs | Y reqs | $Z |
+| Database (DynamoDB) | $X/GB-month | Y GB | $Z |
+| Storage (S3, ECR) | $X/GB-month | Y GB | $Z |
+| Networking (VPC Endpoints, Data transfer) | $X/GB | Y GB | $Z |
+| AI inference (Bedrock/external) | $X/call | Y calls | $Z |
+| Security (Secrets Manager) | $X/secret/month | Y secrets | $Z |
+| Observability (CloudWatch) | $X/log GB | Y GB | $Z |
 | **Total / tenant / month** | | | **$N** |
 
 ## 2. Cost at scale (Owner: Tiến)
@@ -28,14 +28,14 @@
 
 ## 3. Cost optimization applied (Owner: Tiến)
 
-- ☐ Spot instances cho non-critical workload (~70% saving)
-- ☐ Reserved capacity cho baseline
-- ☐ S3 lifecycle tiering (Standard → IA → Glacier)
-- ☐ DynamoDB on-demand vs provisioned
-- ☐ Bedrock prompt caching (Anthropic prompt cache)
-- ☐ Right-sizing per ECS task/Lambda memory
-- ☐ Log retention tiering
-- ☐ Data transfer optimization (VPC endpoints to avoid NAT)
+- ☐ Spot instances cho non-critical workload trên EKS (~70% saving)
+- ☐ Reserved capacity/Savings Plan cho EKS baseline
+- ☐ S3 lifecycle tiering (Standard → IA → Glacier) cho S3 Artifact
+- ☐ DynamoDB on-demand vs provisioned cho bảng dữ liệu chính
+- ☐ Tối ưu hóa số lượng message qua SQS (batching) để giảm chi phí API
+- ☐ Right-sizing cho EKS pods và Lambda memory
+- ☐ Log retention tiering cho hệ thống Observability
+- ☐ Data transfer optimization (Đã sử dụng S3/Dynamo/SQS VPC Endpoints để tránh phí NAT Gateway)
 
 ## 4. Cost vs alternatives (cùng task force) (Owner: Tiến)
 
@@ -85,9 +85,10 @@
 
 ## 7. Cost recommendations for production (Owner: Tiến)
 
-- Reserved capacity sau 3 tháng usage baseline
-- Savings Plan cho Fargate
-- Cross-region replication chỉ enable cho enterprise tier
+- Mua Compute Savings Plan cho EKS và Lambda sau 3 tháng có usage baseline ổn định
+- Tối ưu hóa SQS polling (Long polling) để giảm API call
+- Sử dụng Graviton instances cho EKS node groups và Lambda functions
+- Cross-region replication cho S3/DynamoDB chỉ enable cho enterprise tier
 
 ## Related documents
 

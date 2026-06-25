@@ -24,14 +24,11 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project    = "triage-hub"
-      triage-hub = "true"
-      ManagedBy  = "Terraform"
-
-      # SUGGEST: Thêm Environment tag động từ variable
-      # Environment = var.environment
-      # SUGGEST: Thêm Owner tag
-      # Owner = "CDO-09"
+      Project     = "triage-hub"
+      triage-hub  = "true"
+      ManagedBy   = "Terraform"
+      Environment = var.environment
+      Owner       = "CDO-09"
     }
   }
 }
