@@ -427,7 +427,7 @@ Mọi AI decision đều được link với Jira ticket để đảm bảo trac
 
 ## 11. Alert processing (Owner: Hiền)
 
-Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết kế theo mô hình hướng sự kiện (Event-driven Architecture), chia làm 4 giai đoạn chính để đảm bảo khả năng mở rộng, tính chịu lỗi và bảo mật thông tin.
+Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết kế theo mô hình hướng sự kiện (Event-driven Architecture), chia làm 3 giai đoạn chính để đảm bảo khả năng mở rộng, tính chịu lỗi và bảo mật thông tin.
 
 ### 11.1 Giai đoạn 1: Tiếp nhận và Phân luồng (Ingestion & Routing)
 1. **Fire Alert:** Hệ thống của khách hàng (`CustApp`) phát tín hiệu cảnh báo dưới dạng Webhook Payload đến **API Gateway**.
