@@ -29,7 +29,7 @@ Triage Hub sẽ tự động hóa luồng tiếp nhận cảnh báo, gom thông 
   - **Tối ưu hóa Chi phí & Tải đột biến (Ingestion Phase)**: Sử dụng mô hình Serverless hoàn toàn (API Gateway + AWS Lambda + Amazon SQS) tại cổng tiếp nhận để xử lý các đợt bùng phát cảnh báo (alert spikes) một cách tức thời mà không phải trả phí duy trì server lúc rảnh rỗi.
   - **Độ tin cậy & Cách ly Doanh nghiệp (Processing Phase)**: Sử dụng Amazon EKS để vận hành các pod AI App. Việc này giúp dễ dàng triển khai cách ly đa khách hàng (multi-tenant isolation) ở mức độ compute bằng Kubernetes Namespaces, Resource Quotas, Network Policies, và tận dụng các công cụ giám sát chuẩn doanh nghiệp (Prometheus, Grafana, OpenTelemetry) có sẵn trên K8s. Đồng thời, các pod chạy liên tục giúp loại bỏ hoàn toàn vấn đề trễ khởi động lạnh (cold start latency) của Lambda khi điều phối các tác vụ phân tích AI phức tạp.
 - **Trade-off chấp nhận**: Độ phức tạp vận hành (Ops complexity) tăng lên do phải quản trị một cụm K8s (EKS) so với việc triển khai 100% Serverless. Tuy nhiên, đánh đổi này mang lại khả năng quản lý resource và bảo mật cô lập tốt hơn cho mô hình SaaS B2B.
-- **Locked T3 W11**: Đã khóa thiết kế và lựa chọn giải pháp hạ tầng vào ngày Thứ 3 Tuần 11.
+- **Locked T3 W11**: chưa khóa thiết kế.
 
 ## 4. Constraints (Owner: Tiến)
 
