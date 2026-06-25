@@ -16,10 +16,10 @@ on:
       environment:
         description: "Target Terraform environment"
         required: true
-        default: "dev"
+        default: "sandbox"
         type: choice
         options:
-          - dev
+          - sandbox
       apply:
         description: "Apply after a successful plan"
         required: true
@@ -39,8 +39,8 @@ concurrency:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_VERSION: "1.9.0"
-  TF_ROOT: capstone/tf-1/devops/infra/environments/dev
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'triage-hub-tf-state' }}
+  TF_ROOT: capstone/tf-1/devops/infra/environments/sandbox
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'triage-hub-tfstate-bucket' }}
   TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE || 'triage-hub-tf-lock' }}
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
             fi
           done
 
-      - name: Terraform validate dev root
+      - name: Terraform validate sandbox root
         run: |
           terraform -chdir="$TF_ROOT" init -backend=false -input=false
           terraform -chdir="$TF_ROOT" validate
@@ -110,10 +110,10 @@ jobs:
           quiet: true
 
   terraform-plan:
-    name: Terraform plan dev
+    name: Terraform plan sandbox
     needs: terraform-static-checks
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
@@ -199,7 +199,7 @@ jobs:
       - name: Upload Terraform plan
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-dev-plan
+          name: terraform-sandbox-plan
           path: |
             ${{ env.TF_ROOT }}/tfplan
             ${{ env.TF_ROOT }}/tfplan.txt
@@ -213,7 +213,7 @@ jobs:
             const fs = require('fs');
             const plan = fs.readFileSync(`${process.env.TF_ROOT}/tfplan.txt`, 'utf8');
             const body = [
-              '### Terraform dev plan',
+              '### Terraform sandbox plan',
               '',
               '```',
               plan.slice(-60000),
@@ -227,14 +227,14 @@ jobs:
             });
 
   terraform-apply:
-    name: Terraform apply dev
+    name: Terraform apply sandbox
     needs: terraform-plan
     if: |
       needs.terraform-plan.outputs.has_changes == 'true' &&
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event.inputs.apply == 'true')
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
@@ -257,7 +257,7 @@ jobs:
       - name: Download Terraform plan
         uses: actions/download-artifact@v4
         with:
-          name: terraform-dev-plan
+          name: terraform-sandbox-plan
           path: ${{ env.TF_ROOT }}
 
       - name: Terraform init

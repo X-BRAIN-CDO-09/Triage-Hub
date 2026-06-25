@@ -6,12 +6,12 @@ on:
       environment:
         description: "Environment to destroy"
         required: true
-        default: "dev"
+        default: "sandbox"
         type: choice
         options:
-          - dev
+          - sandbox
       confirm:
-        description: 'Type "destroy-dev" to confirm'
+        description: 'Type "destroy-sandbox" to confirm'
         required: true
         type: string
 
@@ -25,13 +25,13 @@ env:
 
 jobs:
   destroy:
-    name: Destroy dev infrastructure
-    if: github.event.inputs.environment == 'dev' && github.event.inputs.confirm == 'destroy-dev'
+    name: Destroy sandbox infrastructure
+    if: github.event.inputs.environment == 'sandbox' && github.event.inputs.confirm == 'destroy-sandbox'
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     defaults:
       run:
-        working-directory: capstone/tf-1/devops/infra/environments/dev
+        working-directory: capstone/tf-1/devops/infra/environments/sandbox
     steps:
       - name: Checkout
         uses: actions/checkout@v4

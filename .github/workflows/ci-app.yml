@@ -272,7 +272,7 @@ jobs:
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     strategy:
       fail-fast: false
       matrix:
@@ -301,7 +301,7 @@ jobs:
 
       - name: Update Lambda code
         env:
-          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub-dev' }}
+          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub-sandbox' }}
         run: |
           set -euo pipefail
           ZIP_FILE="${{ matrix.id }}.zip"
@@ -328,7 +328,7 @@ jobs:
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -380,7 +380,7 @@ jobs:
             echo "TRIAGE_API_URL is not set; skipping API smoke test."
             exit 0
           fi
-          curl --fail --show-error --silent "$TRIAGE_API_URL/health"
+          curl --fail --show-error --silent "$TRIAGE_API_URL/healthz"
 
       - name: Verify SQS buffers and DLQs
         env:

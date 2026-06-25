@@ -25,11 +25,11 @@ variable "customer_vpc_cidr" {
 
 variable "environment" {
   type        = string
-  description = "Environment name (e.g. dev, staging, prod)"
+  description = "Environment name (e.g. sandbox, staging, prod)"
 
   validation {
-    condition     = contains(["dev", "staging", "prod"], var.environment)
-    error_message = "environment phải là dev, staging, hoặc prod."
+    condition     = contains(["sandbox", "staging", "prod"], var.environment)
+    error_message = "environment phải là sandbox, staging, hoặc prod."
   }
 }
 
