@@ -130,6 +130,13 @@ Engine chạy **private hoàn toàn** (no internet route); mọi egress đi qua 
 
 ### 8.2 Architecture
 
+![AI Engine Runtime Module — host engine trên Amazon EKS, private subnet, us-east-1](../assets/Triage_Hub-AI_Engine%20Hostin.png)
+
+*Hình 8.1 — AI Engine Runtime Module trên Amazon EKS (private, no internet route). Ba luồng: **Build & Sign** (GitHub Action → Trivy → Cosign → ECR → policy-controller verify), **Deploy & Runtime** (ArgoCD GitOps → EKS; `POST /v1/triage` → Internal ALB → tf1-api ↔ tf1-worker; secrets qua ESO + IRSA; egress Bedrock/Secrets qua VPC Endpoint), và **Auto Scaling** (HPA pod 2–10 + Cluster Autoscaler node 2–10). Mọi egress đi qua VPC Endpoint — không gì ra internet.*
+
+<details>
+<summary>Sơ đồ logic (Mermaid) — luồng dữ liệu chi tiết</summary>
+
 ```mermaid
 graph TB
     SEED["incident_seed.v1<br/>(from CDO)"] --> BUF["SQS Buffer + DLQ"]
@@ -146,7 +153,9 @@ graph TB
     DISP --> SAAS["Slack / Jira"]
 ```
 
-*Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock/AgentCore, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
+*Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
+
+</details>
 
 ### 8.3 Components & ownership
 
