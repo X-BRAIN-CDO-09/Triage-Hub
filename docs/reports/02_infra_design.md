@@ -189,25 +189,47 @@ Việc chọn phương án **Hybrid** giúp dung hòa hai yếu tố đối lậ
 
 ## 8. AI Engine Runtime Module (Owner: Thi)
 
-<!-- Scope: hosting + runtime của AI Engine trên EKS (KAN-203/204/205).
+<!-- Scope: hosting + runtime của AI Engine trên EKS.
      Engine logic/app do AI team own; phần này chỉ cover infra host + deploy + scale + tích hợp. -->
 
 ### 8.1 Scope & boundary
 
 Module này chịu trách nhiệm **host AI Engine của AI team trên Amazon EKS**, không sở hữu logic RCA/prompt (thuộc AI team). Phạm vi:
 
-- **KAN-203** Containerize + sign image engine.
-- **KAN-204** Deploy engine lên EKS qua GitOps.
-- **KAN-205** Auto scaling engine theo tải.
+- Containerize + sign image engine.
+- Deploy engine lên EKS qua GitOps.
+- Auto scaling engine theo tải.
 
 Engine chạy **private hoàn toàn** (no internet route); mọi egress đi qua VPC Endpoint, riêng SaaS (Slack/Jira) qua Lambda Dispatcher + NAT (đường ngoại lệ).
 
 ### 8.2 Architecture
 
-![AI Engine Architecture](../assets/aiengine-architecture.png)
+![AI Engine Runtime Module — host engine trên Amazon EKS, private subnet, us-east-1](../assets/Triage_Hub-AI_Engine%20Hostin.png)
 
+*Hình 8.1 — AI Engine Runtime Module trên Amazon EKS (private, no internet route). Ba luồng: **Build & Sign** (GitHub Action → Trivy → Cosign → ECR → policy-controller verify), **Deploy & Runtime** (ArgoCD GitOps → EKS; `POST /v1/triage` → Internal ALB → tf1-api ↔ tf1-worker; secrets qua ESO + IRSA; egress Bedrock/Secrets qua VPC Endpoint), và **Auto Scaling** (HPA pod 2–10 + Cluster Autoscaler node 2–10). Mọi egress đi qua VPC Endpoint — không gì ra internet.*
 
-*Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock/AgentCore, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
+<details>
+<summary>Sơ đồ logic (Mermaid) — luồng dữ liệu chi tiết</summary>
+
+```mermaid
+graph TB
+    SEED["incident_seed.v1<br/>(from CDO)"] --> BUF["SQS Buffer + DLQ"]
+    BUF --> WK["tf1-worker (Pod)<br/>consume seed"]
+    WK -->|sync /v1/triage| ALB["Internal ALB"]
+    ALB --> API["tf1-api (Pod)<br/>FastAPI /v1/triage + report"]
+    API -->|read-only| CTX["Context backend<br/>Prometheus/Loki/deploy/ownership"]
+    API -->|InvokeModel / InvokeAgent| BR["Bedrock + AgentCore (VPCe)"]
+    API -->|audit| S3[("S3 Object Lock")]
+    API -->|state| DDB[("DynamoDB")]
+    WK -->|report| S3R[("S3 report + CloudFront")]
+    WK -->|Slack/Jira payload| DQ["SQS Dispatch Queue"]
+    DQ --> DISP["Lambda Dispatcher (NAT)"]
+    DISP --> SAAS["Slack / Jira"]
+```
+
+*Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
+
+</details>
 
 ### 8.3 Components & ownership
 
@@ -220,7 +242,7 @@ Engine chạy **private hoàn toàn** (no internet route); mọi egress đi qua 
 | Secrets inject | Secrets Manager + ESO | Bedrock/AgentCore creds | CDO |
 | Audit | S3 Object Lock | log mọi AI decision (immutable) | CDO |
 
-### 8.4 Build & supply-chain (KAN-203)
+### 8.4 Build & supply-chain
 
 Pipeline đóng gói engine của AI team thành image an toàn:
 
@@ -228,18 +250,18 @@ Pipeline đóng gói engine của AI team thành image an toàn:
 
 → Không image nào chạy mà chưa quét lỗ hổng + chưa ký. Tận dụng stack từ lab `aws-sercurity`.
 
-### 8.5 Deploy on EKS (KAN-204)
+### 8.5 Deploy on EKS
 
 - Deploy qua **ArgoCD (app-of-apps, GitOps)** + **Argo Rollouts** canary 10→50→100%, auto-rollback on abort.
 - **2 Deployment** namespace-per-tenant:
-  - `tf1-api` (FastAPI): expose `/v1/triage` + report API, readiness/liveness `/healthz:8080`.
+  - `tf1-api` (FastAPI): expose `/v1/triage` + report API, readiness/liveness `/health:8080`.
   - `tf1-worker`: consume incident_seed, gọi tf1-api nội bộ (sync), persist + audit, emit ticket/Slack payload.
 - **IRSA least-privilege** (scoped ARN): `bedrock:InvokeModel`, `agentcore:InvokeAgent`, `secretsmanager:GetSecretValue`, `s3:PutObject`, `dynamodb:*` (table riêng).
 - **In-cluster security:** Gatekeeper (OPA: block root, required resources, deny hostNetwork, max replicas), RBAC, NetworkPolicy deny-all, Pod Security `restricted`.
 
-### 8.6 Auto scaling (KAN-205)
+### 8.6 Auto scaling
 
-- **HPA**: Policy 1 — CPU 70%; Policy 2 — custom metric ALB request/pod = 100 (qua Prometheus Adapter). Min 2 / Max 6 pods (theo `deployment-contract.md:45`).
+- **HPA**: Policy 1 — CPU 70%; Policy 2 — custom metric ALB request/pod = 100 (qua Prometheus Adapter). Min 2 / Max 10 pods (theo `deployment-contract.md:35`).
 - **Cluster Autoscaler**: thêm/bớt node khi pod pending. Min 2 / Max 10 nodes.
 - **SQS Buffer** đệm alert bursty trong lúc HPA kịp scale.
 
@@ -248,7 +270,7 @@ Pipeline đóng gói engine của AI team thành image an toàn:
 - Endpoint: **`POST /v1/triage`** (sync) + **`GET /v1/reports`** + **`GET /v1/reports/{id}`**.
 - Input: `incident_seed.v1` (lightweight — không chứa full metrics/logs).
 - Output: classification, severity, confidence, suspected_root_cause, recommended_actions, anomaly_evidence, investigation_summary, audit_id, Slack/Jira payload, report URL.
-- SLA: engine gọi **đồng bộ qua Internal ALB**, p99 < 2s (theo `ai-api-contract.md:207`). SQS chỉ buffer intake/dispatch, **không** nằm trong request path sync.
+- SLA: engine gọi **đồng bộ qua Internal ALB**, p99 < 500ms cho `/v1/triage` (theo `ai-api-contract.md:103`). SQS chỉ buffer intake/dispatch, **không** nằm trong request path sync.
 
 ### 8.8 Context access (read-only, CDO-exposed)
 
@@ -285,6 +307,7 @@ Inject qua **ESO** (External Secrets Operator) từ Secrets Manager → K8s Secr
 - Invalid seed → DLQ/error path, no silent drop ✓
 - Context chỉ trong scope tenant/service/time-window ✓
 - `/v1/triage` direct sample requests chạy ✓
+
 ## 9. Slack Alert & Interactive Assignment Architecture (Owner: Hoàng)
 
 ![Slack Architecture](../assets/Slack-Integration.drawio.png)

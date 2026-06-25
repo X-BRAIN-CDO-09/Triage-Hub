@@ -170,12 +170,12 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 
 ---
 
-## 10. AI Engine Runtime Deployment — EKS angle (KAN-204 / KAN-205) (Owner: Thi)
+## 10. AI Engine Runtime Deployment — EKS angle (Owner: Thi)
 
 <!-- Scope: deploy + scale AI Engine trên EKS qua GitOps. Bổ sung §3/§4, không ghi đè.
      Ground truth: ADR-003, 02_infra_design.md §8. -->
 
-### 10.1 GitOps delivery (KAN-204)
+### 10.1 GitOps delivery
 
 ```
 GitHub Actions CI ──► ECR (signed image) ──► ArgoCD (app-of-apps) ──► EKS
@@ -185,22 +185,22 @@ GitHub Actions CI ──► ECR (signed image) ──► ArgoCD (app-of-apps) �
 
 - **ArgoCD app-of-apps**: 1 root app sync các child app (manifests Kustomize/Helm).
 - **Sync waves** cho engine: Wave 0 namespace + ESO secrets → Wave 1 NetworkPolicy/RBAC/Gatekeeper → Wave 2 `tf1-api` + `tf1-worker` Deployment → Wave 3 Ingress (Internal ALB) + HPA.
-- **Argo Rollouts canary**: 10% → 50% → 100%, **auto-rollback on abort** (xem §4.1 abort criteria — nhưng dùng p99 < 2s theo `ai-api-contract.md:207` thay vì 800ms).
+- **Argo Rollouts canary**: 10% → 50% → 100%, **auto-rollback on abort**. Abort gate: error rate > 1% hoặc **canary p99 > 800ms** (`deployment-contract.md:106`). Lưu ý phân biệt: 800ms là ngưỡng abort rollout, khác với SLA `/v1/triage` p99 < 500ms (`ai-api-contract.md:103`) — engine khoẻ thì 500ms < 800ms nên không tự rollback.
 
 ### 10.2 Hai Deployment (namespace-per-tenant)
 
 | Deployment | Vai trò | Probe | Image |
 |---|---|---|---|
-| `tf1-api` (FastAPI) | `/v1/triage` sync + report store + compute-first RCA | readiness/liveness `/healthz:8080` | Cosign-signed |
-| `tf1-worker` (AIOps Worker) | consume seed từ SQS, detect, build bundle, gọi tf1-api nội bộ, emit payload | readiness/liveness `/healthz:8080` | Cosign-signed |
+| `tf1-api` (FastAPI) | `/v1/triage` sync + report store + compute-first RCA | readiness/liveness `/health:8080` | Cosign-signed |
+| `tf1-worker` (AIOps Worker) | consume seed từ SQS, detect, build bundle, gọi tf1-api nội bộ, emit payload | readiness/liveness `/health:8080` | Cosign-signed |
 
 Worker gọi tf1-api **đồng bộ qua Internal ALB** (private, TLS 1.2+, 443→8080).
 
-### 10.3 Auto scaling (KAN-205)
+### 10.3 Auto scaling
 
 | Lớp | Cấu hình | Trigger |
 |---|---|---|
-| **HPA** | Policy 1: CPU 70% · Policy 2: ALB request/pod = 100 (Prometheus Adapter) | Min 2 / **Max 6 pods** (`deployment-contract.md:45`) |
+| **HPA** | Policy 1: CPU 70% · Policy 2: ALB request/pod = 100 (Prometheus Adapter) | Min 2 / **Max 10 pods** (`deployment-contract.md:35`) |
 | **Cluster Autoscaler** | thêm/bớt node khi pod pending | Min 2 / Max 10 nodes |
 | **SQS Buffer** | đệm alert bursty trong lúc HPA kịp scale | queue depth |
 

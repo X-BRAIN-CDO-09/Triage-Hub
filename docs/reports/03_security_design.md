@@ -414,14 +414,14 @@ Implemented end-to-end audit trail design. Audit Writer records ALERT_RECEIVED, 
 
 ---
 
-## 9. AI Engine Runtime Security — EKS angle (KAN-203 / KAN-204) (Owner: Thi)
+## 10. AI Engine Runtime Security — EKS angle (Owner: Thi)
 
 <!-- Scope: security baseline cho AI Engine chạy trên EKS. Bổ sung cho §1/§2/§6, không ghi đè.
      Ground truth: ADR-003 (EKS angle), 02_infra_design.md §8, contracts của AI team. -->
 
 > Engine chạy **private hoàn toàn, no internet route**. Mọi egress qua VPC Endpoint; SaaS (Slack/Jira) chỉ ra ngoài qua Lambda Dispatcher + NAT (đường ngoại lệ).
 
-### 9.1 Supply-chain security (KAN-203)
+### 10.1 Supply-chain security
 
 Pipeline đóng gói image của AI team đảm bảo **không image nào chạy mà chưa quét + chưa ký**:
 
@@ -435,7 +435,7 @@ Pipeline đóng gói image của AI team đảm bảo **không image nào chạy
 
 → Tái dùng stack từ lab `aws-sercurity`.
 
-### 9.2 IAM — IRSA least-privilege (KAN-204)
+### 10.2 IAM — IRSA least-privilege
 
 Mỗi ServiceAccount map 1 IAM Role (IRSA) qua STS, **không** static credential trong pod:
 
@@ -448,13 +448,13 @@ Mỗi ServiceAccount map 1 IAM Role (IRSA) qua STS, **không** static credential
 
 Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager), `ai-api-contract.md` (auth fallback).
 
-### 9.3 Secrets injection — ESO (External Secrets Operator)
+### 10.3 Secrets injection — ESO (External Secrets Operator)
 
 - Pull từ Secrets Manager qua **VPC Endpoint** → tạo K8s Secret. **No hardcode, no static `valueFrom`**.
 - Engine giữ: `BEDROCK` credentials, `SERVICE_AUTH_TOKEN`.
 - **`SLACK_WEBHOOK_URL` KHÔNG ở engine** — nằm ở Lambda Dispatcher (engine không có internet để gọi `hooks.slack.com`).
 
-### 9.4 In-cluster guardrails
+### 10.4 In-cluster guardrails
 
 | Control | Cấu hình |
 |---|---|
@@ -464,12 +464,12 @@ Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager)
 | **Pod Security Standard** | `restricted`, enforce ở namespace level |
 | **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange |
 
-### 9.5 Network egress model
+### 10.5 Network egress model
 
 - AWS service: **VPC Endpoint** — Bedrock, Secrets Manager, SQS, CloudWatch Logs, ECR (api/dkr), STS (Interface); S3, DynamoDB (Gateway, free).
 - SaaS: engine emit payload → SQS Dispatch Queue → **Lambda Dispatcher (NAT)** → Slack/Jira. NAT **chỉ** cho dispatcher, không cho engine.
 
-### 9.6 Audit immutability
+### 10.6 Audit immutability
 
 - AI decision audit ghi vào **S3 Object Lock (Governance mode, 90 ngày, KMS-encrypted)** — immutable, khớp §5.2.
 - DynamoDB **chỉ** giữ state/config/dedup/rate-limit, **không** dùng cho audit log.
