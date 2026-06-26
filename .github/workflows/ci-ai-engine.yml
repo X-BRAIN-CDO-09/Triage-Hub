@@ -1,0 +1,155 @@
+name: AI Engine CI/CD
+
+on:
+  push:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/app/ai-engine/**"
+      - ".github/workflows/ci-ai-engine.yml"
+  pull_request:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/app/ai-engine/**"
+      - ".github/workflows/ci-ai-engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # Required for keyless OIDC signing
+  security-events: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 730335441285.dkr.ecr.us-east-1.amazonaws.com
+  API_REPOSITORY: tf1-api
+  WORKER_REPOSITORY: tf1-worker
+  APP_ROOT: capstone/tf-1/devops/app/ai-engine
+
+jobs:
+  lint-and-test:
+    name: Lint and Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "${{ env.APP_ROOT }}/requirements.txt"
+
+      - name: Install QA Tools & Deps
+        run: |
+          python -m pip install --upgrade ruff pytest bandit
+          python -m pip install -r ${{ env.APP_ROOT }}/requirements.txt
+
+      - name: Ruff Lint Check
+        run: ruff check ${{ env.APP_ROOT }}
+
+      - name: Ruff Format Check
+        run: ruff format --check ${{ env.APP_ROOT }}
+
+      - name: Bandit Security Scan
+        run: bandit -r ${{ env.APP_ROOT }} -ll
+
+      - name: Run Unit Tests
+        run: |
+          pytest ${{ env.APP_ROOT }} -v --tb=short
+
+  build-scan-sign-push:
+    name: Build, Scan, Push & Cosign Sign
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build API and Worker Images
+        id: build-images
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          API_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
+          WORKER_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
+          
+          # Build tf1-api
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            -t "$API_IMAGE" \
+            -t "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest" \
+            -f ${{ env.APP_ROOT }}/Dockerfile \
+            ${{ env.APP_ROOT }}
+            
+          # Build tf1-worker
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            -t "$WORKER_IMAGE" \
+            -t "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest" \
+            -f ${{ env.APP_ROOT }}/Dockerfile.worker \
+            ${{ env.APP_ROOT }}
+            
+          echo "api_image=$API_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "worker_image=$WORKER_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy Vulnerability Scan (API)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy Vulnerability Scan (Worker)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Push API and Worker Images
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          # Push tf1-api
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest"
+          
+          # Push tf1-worker
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest"
+
+      - name: Keyless Sign Images with Cosign
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          API_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
+          WORKER_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
+          
+          cosign sign --yes \
+            --rekor-url https://rekor.sigstore.dev \
+            --fulcio-url https://fulcio.sigstore.dev \
+            "$API_IMAGE"
+            
+          cosign sign --yes \
+            --rekor-url https://rekor.sigstore.dev \
+            --fulcio-url https://fulcio.sigstore.dev \
+            "$WORKER_IMAGE"

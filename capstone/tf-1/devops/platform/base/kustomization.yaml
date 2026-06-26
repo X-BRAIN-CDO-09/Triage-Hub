@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - ai-engine/serviceaccount.yaml
+  - ai-engine/service.yaml
+  - ai-engine/deployment.yaml
+  - ai-engine/hpa.yaml
+  - ai-engine/pdb.yaml
+  - ai-engine/servicemonitor.yaml
+  - ai-worker/serviceaccount.yaml
+  - ai-worker/deployment.yaml
+  - networking/netpol-api.yaml
+  - networking/netpol-worker.yaml
+  - networking/netpol-default.yaml
+  - secrets/cluster-secret-store.yaml
+  - secrets/external-secret.yaml
+  - security/cluster-image-policy.yaml
+  - security/rbac.yaml

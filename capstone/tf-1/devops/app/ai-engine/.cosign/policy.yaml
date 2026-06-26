@@ -1,0 +1,13 @@
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: ai-engine-image-policy
+spec:
+  images:
+    - glob: "730335441285.dkr.ecr.us-east-1.amazonaws.com/tf1-*"
+  authorities:
+    - keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuerRegExp: "https://token.actions.githubusercontent.com"
+            subjectRegExp: "https://github.com/X-BRAIN-CDO-09/Triage-Hub/.github/workflows/ci-ai-engine.yml@refs/heads/main"

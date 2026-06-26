@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tf1-api-pdb
+  namespace: triage-hub
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tf1-api

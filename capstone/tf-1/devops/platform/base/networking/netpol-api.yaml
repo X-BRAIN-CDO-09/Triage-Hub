@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tf1-api-netpol
+  namespace: triage-hub
+spec:
+  podSelector:
+    matchLabels:
+      app: tf1-api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow egress to everywhere (needed for AWS APIs, DynamoDB, Bedrock, S3, CoreDNS)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0

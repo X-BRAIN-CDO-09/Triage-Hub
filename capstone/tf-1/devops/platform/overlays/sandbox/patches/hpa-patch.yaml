@@ -1,0 +1,8 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tf1-api-hpa
+  namespace: triage-hub
+spec:
+  minReplicas: 2
+  maxReplicas: 5
