@@ -55,8 +55,10 @@ jobs:
         run: bandit -r ${{ env.APP_ROOT }} -ll
 
       - name: Run Unit Tests
+        working-directory: ${{ env.APP_ROOT }}
         run: |
-          pytest ${{ env.APP_ROOT }} -v --tb=short
+          export PYTHONPATH="$GITHUB_WORKSPACE/${{ env.APP_ROOT }}:${PYTHONPATH:-}"
+          pytest -v --tb=short
 
   build-scan-sign-push:
     name: Build, Scan, Push & Cosign Sign
