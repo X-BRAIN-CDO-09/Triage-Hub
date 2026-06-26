@@ -80,7 +80,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
+      - name: Detect Python dependency manifests
+        id: python-deps
+        run: |
+          if find "$APP_ROOT" \( -name requirements.txt -o -name pyproject.toml \) -print -quit | grep -q .; then
+            echo "has_manifest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_manifest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python with pip cache
+        if: steps.python-deps.outputs.has_manifest == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -88,6 +98,12 @@ jobs:
           cache-dependency-path: |
             capstone/tf-1/devops/app/**/requirements.txt
             capstone/tf-1/devops/app/**/pyproject.toml
+
+      - name: Setup Python without pip cache
+        if: steps.python-deps.outputs.has_manifest != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Python QA tools
         run: |
