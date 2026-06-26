@@ -91,3 +91,9 @@ variable "public_access_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "cluster_admin_arns" {
+  description = "Danh sách IAM User/Role ARN được cấp quyền admin vào EKS"
+  type        = list(string)
+  default     = []
+}

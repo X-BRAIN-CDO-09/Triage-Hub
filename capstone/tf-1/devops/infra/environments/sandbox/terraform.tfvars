@@ -20,3 +20,15 @@ node_scaling = {
 }
 
 public_access_cidrs = ["0.0.0.0/0"]
+
+cluster_admin_arns = [
+  "arn:aws:iam::730335441285:user/admin",
+  "arn:aws:iam::730335441285:user/GR9-Hien",
+  "arn:aws:iam::730335441285:user/GR9-Hoang",
+  "arn:aws:iam::730335441285:user/GR9-Thi",
+  "arn:aws:iam::730335441285:user/GR9-Phong",
+  "arn:aws:iam::730335441285:user/GR9-Nhat",
+  "arn:aws:iam::730335441285:user/GR9-Kien",
+  "arn:aws:iam::730335441285:user/GR9-Khang",
+  "arn:aws:iam::730335441285:user/GR9-Huy",
+]

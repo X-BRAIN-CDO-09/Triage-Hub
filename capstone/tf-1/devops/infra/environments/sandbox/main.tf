@@ -63,6 +63,7 @@ module "eks" {
   node_instance_types = var.node_instance_types
   node_scaling        = var.node_scaling
   public_access_cidrs = var.public_access_cidrs
+  cluster_admin_arns  = var.cluster_admin_arns
 }
 
 # 6. SQS Module (Buffer and Dispatch queues)
