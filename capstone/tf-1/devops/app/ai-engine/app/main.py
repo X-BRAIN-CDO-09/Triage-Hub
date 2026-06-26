@@ -672,15 +672,20 @@ def build_response(
             selected_actions = advisory
             for index, action in enumerate(selected_actions):
                 action["priority"] = index + 1
+    action_payloads: list[dict[str, Any]]
+    action_metadata: dict[str, Any]
     if investigation_mode in {"deterministic_only", "agent_platform"}:
-        action_wording = {
-            "actions": selected_actions,
-            "metadata": {"enabled": False, "provider": "deterministic", "skipped_reason": f"{investigation_mode}_mode"},
+        action_payloads = selected_actions
+        action_metadata = {
+            "enabled": False,
+            "provider": "deterministic",
+            "skipped_reason": f"{investigation_mode}_mode",
         }
     else:
         action_wording = reword_catalog_actions(request, decision, rca, selected_actions)
-    action_payloads = action_wording["actions"]
-    llm_metadata["action_wording"] = action_wording["metadata"]
+        action_payloads = action_wording["actions"]
+        action_metadata = action_wording["metadata"]
+    llm_metadata["action_wording"] = action_metadata
     actions = [RecommendedAction(**action) for action in action_payloads]
     suggested_assignee_account_id, suggestion_reason = suggest_assignee(request, owner, rca)
 
