@@ -41,6 +41,11 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.public_access_cidrs
   }
 
+  # Bật API_AND_CONFIG_MAP để dùng được aws_eks_access_entry
+  access_config {
+    authentication_mode = "API_AND_CONFIG_MAP"
+  }
+
   # Audit + API server logs → CloudWatch (khớp 03_security_design.md §5)
   enabled_cluster_log_types = ["api", "audit", "authenticator"]
 
