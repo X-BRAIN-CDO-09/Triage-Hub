@@ -88,7 +88,11 @@ resource "aws_instance" "spot_instance" {
   }
 
   user_data_replace_on_change = true
-  user_data                   = file("${path.module}/scripts/setup.sh")
+  user_data = templatefile("${path.module}/scripts/setup.sh", {
+    api_gateway_url = var.api_gateway_url
+    api_key         = var.api_key
+    tenant_id       = var.tenant_id
+  })
 
   tags = {
     Name = "t3-large-spot-instance"

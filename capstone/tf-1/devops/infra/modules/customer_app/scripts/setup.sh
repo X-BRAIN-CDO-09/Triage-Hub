@@ -74,8 +74,12 @@ alertmanager:
     - name: 'null'
     - name: 'triage-hub-webhook'
       webhook_configs:
-      - url: 'http://triage-hub-alert-ingestion.default.svc.cluster.local:8080/alerts'
+      - url: '${api_gateway_url}'
         send_resolved: true
+        http_config:
+          headers:
+            x-api-key: '${api_key}'
+            X-Tenant-Id: '${tenant_id}'
 INNER_EOF
 
 # 9. Cài đặt Prometheus + Grafana kèm cấu hình Webhook Alertmanager
@@ -107,6 +111,7 @@ spec:
       for: 30s
       labels:
         severity: critical
+        tenant_id: '${tenant_id}'
       annotations:
         summary: "Cart service is down"
         description: "The cartservice has 0 available replicas. Customers cannot access their shopping carts."
@@ -115,6 +120,7 @@ spec:
       for: 30s
       labels:
         severity: warning
+        tenant_id: '${tenant_id}'
       annotations:
         summary: "CPU usage high on noisy pod"
         description: "The cpu-stress-noisy pod is consuming more than 80% CPU."

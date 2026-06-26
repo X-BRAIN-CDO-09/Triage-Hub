@@ -3,6 +3,12 @@ variable "aws_region" {
   description = "AWS Region to deploy resources"
 }
 
+variable "project_name" {
+  type        = string
+  description = "Project name prefix for resources"
+  default     = "triage-hub"
+}
+
 variable "platform_vpc_cidr" {
   type        = string
   description = "CIDR block for the Platform VPC"
@@ -52,4 +58,36 @@ variable "customer_instance_type" {
   type        = string
   description = "Instance type for Customer App EC2"
   default     = "t3.large"
+}
+
+variable "cluster_version" {
+  description = "EKS K8s control plane version"
+  type        = string
+  default     = "1.30"
+}
+
+variable "node_instance_types" {
+  description = "Instance types for EKS managed node group"
+  type        = list(string)
+  default     = ["t3.large"]
+}
+
+variable "node_scaling" {
+  description = "EKS node group scaling bounds"
+  type = object({
+    min_size     = number
+    max_size     = number
+    desired_size = number
+  })
+  default = {
+    min_size     = 2
+    max_size     = 6
+    desired_size = 2
+  }
+}
+
+variable "public_access_cidrs" {
+  description = "Allowed CIDR blocks for EKS public endpoint"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }

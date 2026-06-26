@@ -34,3 +34,9 @@ variable "node_scaling" {
   })
   default = {}
 }
+
+variable "public_access_cidrs" {
+  description = "List of CIDR blocks that can access the EKS public API server endpoint"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
