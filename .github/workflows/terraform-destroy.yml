@@ -41,6 +41,23 @@ jobs:
           echo "TF_AWS_ROLE_ARN exists: ${{ secrets.TF_AWS_ROLE_ARN != '' }}"
           echo "Expected role: arn:aws:iam::730335441285:role/triage-hub-github-terraform-role"
 
+      - name: Debug OIDC token claims
+        run: |
+          token_json="$(curl -sSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
+          token="$(echo "$token_json" | jq -r '.value')"
+          payload="$(python3 - "$token" <<'PY'
+import base64
+import sys
+
+part = sys.argv[1].split(".")[1]
+part += "=" * (-len(part) % 4)
+print(base64.urlsafe_b64decode(part).decode())
+PY
+)"
+          echo "$payload" | jq '{iss, aud, sub, repository, ref, environment, job_workflow_ref}'
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
