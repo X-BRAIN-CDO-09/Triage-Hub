@@ -41,6 +41,19 @@ env:
   TF_VERSION: "1.14.8"
   TF_ROOT: capstone/tf-1/devops/infra/environments/sandbox
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'triage-hub-tfstate-bucket' }}
+  TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TF_VAR_environment: ${{ vars.TF_ENVIRONMENT || 'sandbox' }}
+  TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'triage-hub' }}
+  TF_VAR_platform_vpc_cidr: ${{ vars.PLATFORM_VPC_CIDR || '10.0.0.0/16' }}
+  TF_VAR_platform_public_subnets: ${{ vars.PLATFORM_PUBLIC_SUBNETS || '["10.0.1.0/24", "10.0.2.0/24"]' }}
+  TF_VAR_platform_private_subnets: ${{ vars.PLATFORM_PRIVATE_SUBNETS || '["10.0.10.0/24", "10.0.11.0/24"]' }}
+  TF_VAR_customer_vpc_cidr: ${{ vars.CUSTOMER_VPC_CIDR || '10.1.0.0/16' }}
+  TF_VAR_customer_public_subnets: ${{ vars.CUSTOMER_PUBLIC_SUBNETS || '["10.1.1.0/24"]' }}
+  TF_VAR_customer_instance_type: ${{ vars.CUSTOMER_INSTANCE_TYPE || 't3.large' }}
+  TF_VAR_cluster_version: ${{ vars.CLUSTER_VERSION || '1.30' }}
+  TF_VAR_node_instance_types: ${{ vars.NODE_INSTANCE_TYPES || '["t3.large"]' }}
+  TF_VAR_node_scaling: ${{ vars.NODE_SCALING || '{"min_size":2,"max_size":4,"desired_size":2}' }}
+  TF_VAR_public_access_cidrs: ${{ vars.PUBLIC_ACCESS_CIDRS || '["0.0.0.0/0"]' }}
 
 jobs:
   terraform-static-checks:
