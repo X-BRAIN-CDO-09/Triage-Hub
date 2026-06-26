@@ -115,9 +115,25 @@ jobs:
           done < <(find "$APP_ROOT" -name requirements.txt -print)
 
           while IFS= read -r pyproject_file; do
-            project_dir="$(dirname "$pyproject_file")"
-            echo "Installing project dependencies from $project_dir"
-            python -m pip install -e "$project_dir"
+            echo "Installing dependencies declared in $pyproject_file"
+            python - "$pyproject_file" <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open(sys.argv[1], "rb") as handle:
+              data = tomllib.load(handle)
+
+          project = data.get("project", {})
+          dependencies = list(project.get("dependencies", []))
+
+          optional = project.get("optional-dependencies", {})
+          for group in ("test", "tests", "dev"):
+              dependencies.extend(optional.get(group, []))
+
+          if dependencies:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+          PY
           done < <(find "$APP_ROOT" -name pyproject.toml -print)
 
       - name: Ruff lint
