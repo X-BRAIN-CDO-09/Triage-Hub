@@ -77,9 +77,13 @@ alertmanager:
       - url: '${api_gateway_url}'
         send_resolved: true
         http_config:
-          headers:
-            x-api-key: '${api_key}'
-            X-Tenant-Id: '${tenant_id}'
+          http_headers:
+            x-api-key:
+              values:
+              - '${api_key}'
+            X-Tenant-Id:
+              values:
+              - '${tenant_id}'
 INNER_EOF
 
 # 9. Cài đặt Prometheus + Grafana kèm cấu hình Webhook Alertmanager
