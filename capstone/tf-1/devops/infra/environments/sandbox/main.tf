@@ -152,8 +152,8 @@ module "lambda" {
       runtime    = "nodejs20.x"
       source_dir = "../../../app/jira-dispatcher"
       environment_variables = {
-        DYNAMODB_TABLE          = module.dynamodb.table_name
-        JIRA_SECRET_ARN         = module.secrets_manager.secret_arns["jira_api_token"]
+        DYNAMODB_TABLE           = module.dynamodb.table_name
+        JIRA_SECRET_ARN          = module.secrets_manager.secret_arns["jira_api_token"]
         SLACK_SIGNING_SECRET_ARN = module.secrets_manager.secret_arns["slack_signing_secret"]
       }
       iam_policy_statements = [
