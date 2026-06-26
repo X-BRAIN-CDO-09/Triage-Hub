@@ -48,14 +48,14 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
           token="$(echo "$token_json" | jq -r '.value')"
           payload="$(python3 - "$token" <<'PY'
-import base64
-import sys
+          import base64
+          import sys
 
-part = sys.argv[1].split(".")[1]
-part += "=" * (-len(part) % 4)
-print(base64.urlsafe_b64decode(part).decode())
-PY
-)"
+          part = sys.argv[1].split(".")[1]
+          part += "=" * (-len(part) % 4)
+          print(base64.urlsafe_b64decode(part).decode())
+          PY
+          )"
           echo "$payload" | jq '{iss, aud, sub, repository, ref, environment, job_workflow_ref}'
 
       - name: Configure AWS credentials
