@@ -13,9 +13,6 @@ terraform {
     region       = "us-east-1"
     encrypt      = true
     use_lockfile = true
-
-    # SUGGEST: Thêm DynamoDB lock table cho team collaboration
-    # dynamodb_table = "triage-hub-tf-lock"
   }
 }
 
