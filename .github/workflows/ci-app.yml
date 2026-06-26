@@ -88,7 +88,11 @@ jobs:
           # cache: pip
 
       - name: Install Python QA tools
-        run: python -m pip install --upgrade ruff pytest bandit
+        run: |
+          python -m pip install --upgrade ruff pytest bandit
+          if [ -f "$APP_ROOT/ai-engine/requirements.txt" ]; then
+            python -m pip install -r "$APP_ROOT/ai-engine/requirements.txt"
+          fi
 
       - name: Ruff lint
         run: |
