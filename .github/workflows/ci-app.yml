@@ -82,7 +82,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          # Enable after adding requirements.txt or pyproject.toml.
+          # cache: pip
 
       - name: Install Python QA tools
         run: python -m pip install --upgrade ruff pytest bandit
