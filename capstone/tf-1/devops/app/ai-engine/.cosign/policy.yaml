@@ -10,4 +10,4 @@ spec:
         url: https://fulcio.sigstore.dev
         identities:
           - issuerRegExp: "https://token.actions.githubusercontent.com"
-            subjectRegExp: "https://github.com/X-BRAIN-CDO-09/Triage-Hub/.github/workflows/ci-ai-engine.yml@refs/heads/main"
+            subjectRegExp: "https://github.com/X-BRAIN-CDO-09/Triage-Hub/.github/workflows/ci-ai-engine.yml@refs/heads/(main|develop)"

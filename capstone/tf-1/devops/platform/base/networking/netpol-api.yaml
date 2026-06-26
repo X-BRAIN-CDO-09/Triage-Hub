@@ -18,7 +18,19 @@ spec:
         - protocol: TCP
           port: 8080
   egress:
-    # Allow egress to everywhere (needed for AWS APIs, DynamoDB, Bedrock, S3, CoreDNS)
+    # Allow DNS (TCP & UDP)
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow HTTPS to AWS endpoints (TCP 443)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

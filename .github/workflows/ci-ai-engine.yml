@@ -13,10 +13,12 @@ on:
       - ".github/workflows/ci-ai-engine.yml"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  id-token: write # Required for keyless OIDC signing
-  security-events: write
 
 env:
   AWS_REGION: us-east-1
@@ -65,6 +67,9 @@ jobs:
     needs: lint-and-test
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4

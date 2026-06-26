@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.action_catalog import select_actions
 from app.agent_runtime import agent_platform_enabled, run_agent_platform
@@ -126,6 +127,19 @@ class TriageRequest(BaseModel):
     incident_id: str = Field(min_length=1)
     environment: Environment
     received_at: str = Field(min_length=1)
+
+    @field_validator("received_at")
+    @classmethod
+    def validate_rfc3339(cls, v: str) -> str:
+        try:
+            dt_str = v
+            if dt_str.endswith("Z"):
+                dt_str = dt_str[:-1] + "+00:00"
+            datetime.fromisoformat(dt_str)
+        except ValueError as e:
+            raise ValueError("received_at must be a valid RFC3339 datetime string.") from e
+        return v
+
     alert: Alert
     metrics: list[MetricSeries] = Field(default_factory=list)
     logs: list[LogEntry] = Field(default_factory=list)

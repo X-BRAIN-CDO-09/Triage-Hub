@@ -61,7 +61,7 @@ The AI API itself is not a raw telemetry API. CDO may pass evidence inline, pass
 |---|---:|---|
 | `X-Tenant-Id` | yes | Must match request body `tenant_id`. |
 | `X-Correlation-Id` | yes | End-to-end workflow trace id. |
-| `Authorization` | yes | Auth scheme finalized in Deployment Contract. |
+| `Authorization` | conditional | Required if `SERVICE_AUTH_TOKEN` environment variable is configured in the engine. |
 
 ### Request Body
 

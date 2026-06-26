@@ -6,7 +6,7 @@ metadata:
 spec:
   description: "Triage Hub App Project"
   sourceRepos:
-    - "*"
+    - https://github.com/X-BRAIN-CDO-09/Triage-Hub.git
   destinations:
     - namespace: "*"
       server: "*"

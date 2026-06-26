@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from app.action_catalog import ACTION_CATALOG
@@ -25,13 +26,13 @@ VALID_CLASSIFICATIONS = {
     "general_investigation",
 }
 BLOCKED_TEXT_TOKENS = (
-    "kubectl ",
-    "curl ",
-    "rm ",
-    "delete ",
-    "restart ",
-    "rollback ",
-    "scale ",
+    "kubectl",
+    "curl",
+    "rm",
+    "delete",
+    "restart",
+    "rollback",
+    "scale",
     "promql",
     "logql",
     "jira create",
@@ -266,4 +267,8 @@ def validate_final_diagnosis(payload: dict[str, Any], rca: dict[str, Any]) -> tu
 
 def contains_blocked_text(items: list[str]) -> bool:
     text = " ".join(items).lower()
-    return any(token in text for token in BLOCKED_TEXT_TOKENS)
+    for token in BLOCKED_TEXT_TOKENS:
+        pattern = rf"\b{re.escape(token)}\b"
+        if re.search(pattern, text):
+            return True
+    return False
