@@ -51,6 +51,13 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
+      - name: Configure kubeconfig for EKS resources
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "triage-hub-eks"
+
       - name: Terraform destroy plan
         run: terraform plan -destroy -no-color -input=false -out=tfdestroy
 
