@@ -73,7 +73,12 @@ def run_agent_platform(
     try:
         for iteration in range(1, max_iterations + 1):
             metadata["iterations"] = iteration
-            with span("agent_platform_iteration", iteration=iteration, service=request.alert.service, environment=request.environment):
+            with span(
+                "agent_platform_iteration",
+                iteration=iteration,
+                service=request.alert.service,
+                environment=request.environment,
+            ):
                 raw_payload = invoke_agentcore_investigator(
                     current_request,
                     decision,
@@ -109,9 +114,18 @@ def run_agent_platform(
                     break
                 total_tool_calls += 1
                 name = proposed.get("name") if isinstance(proposed, dict) else None
-                args = proposed.get("args") if isinstance(proposed, dict) and isinstance(proposed.get("args"), dict) else {}
+                args = (
+                    proposed.get("args")
+                    if isinstance(proposed, dict) and isinstance(proposed.get("args"), dict)
+                    else {}
+                )
                 call_record: dict[str, Any] = {"name": name, "status": "blocked"}
-                with span("agent_platform_tool_gateway", tool=str(name), service=request.alert.service, environment=request.environment):
+                with span(
+                    "agent_platform_tool_gateway",
+                    tool=str(name),
+                    service=request.alert.service,
+                    environment=request.environment,
+                ):
                     try:
                         if name not in registry.names:
                             raise ToolScopeError(f"Unknown or disallowed tool: {name}")
@@ -174,7 +188,11 @@ def invoke_agentcore_investigator(
             "observations": observations,
         },
         "output_schemas": {
-            "tool_requests": {"type": "tool_requests", "thought_summary": "string", "tool_calls": [{"name": "string", "args": {}}]},
+            "tool_requests": {
+                "type": "tool_requests",
+                "thought_summary": "string",
+                "tool_calls": [{"name": "string", "args": {}}],
+            },
             "final_diagnosis": {
                 "type": "final_diagnosis",
                 "classification": "string",
@@ -228,7 +246,9 @@ def validate_final_diagnosis(payload: dict[str, Any], rca: dict[str, Any]) -> tu
         action_ids = payload.get("recommended_action_ids")
         advisory_action_ids = []
         if isinstance(action_ids, list):
-            advisory_action_ids = [str(action_id) for action_id in action_ids if isinstance(action_id, str) and action_id in ACTION_CATALOG]
+            advisory_action_ids = [
+                str(action_id) for action_id in action_ids if isinstance(action_id, str) and action_id in ACTION_CATALOG
+            ]
         return (
             {
                 "status": status,

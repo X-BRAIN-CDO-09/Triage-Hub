@@ -43,7 +43,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sqs-queue-url", default=os.getenv("SQS_QUEUE_URL"))
     parser.add_argument("--sqs-wait-seconds", type=int, default=int(os.getenv("SQS_WAIT_SECONDS", "5")))
     parser.add_argument("--sqs-max-messages", type=int, default=int(os.getenv("SQS_MAX_MESSAGES", "1")))
-    parser.add_argument("--sqs-region", default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1")
+    parser.add_argument(
+        "--sqs-region", default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    )
     return parser.parse_args()
 
 
@@ -97,9 +99,7 @@ def jaeger_query(base_url: str, service: str, lookback: str = "1h", limit: int =
 def query_metric_points(args: argparse.Namespace) -> list[dict[str, Any]]:
     service_filter = f',service="{args.service}"' if args.service else ""
     query = (
-        'aiops_scenario_metric_value{'
-        f'tenant_id="{args.tenant_id}",environment="{args.environment}"{service_filter}'
-        "}"
+        f'aiops_scenario_metric_value{{tenant_id="{args.tenant_id}",environment="{args.environment}"{service_filter}}}'
     )
     results = prom_query(args.prometheus_url, query)
     metrics: list[dict[str, Any]] = []
@@ -151,7 +151,9 @@ def query_logs(args: argparse.Namespace) -> list[dict[str, Any]]:
     return logs
 
 
-def offline_raw_observability(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def offline_raw_observability(
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     root = scenario_root(args.datapack_root, args.scenario)
     metrics = load_json(root / "raw-metrics.json")
     logs = load_json(root / "raw-logs.json")
@@ -203,7 +205,9 @@ def detect_incident(metrics: list[dict[str, Any]], logs: list[dict[str, Any]]) -
     service = max(scores, key=scores.get)
     if scores[service] < 3:
         return None
-    severity = "critical" if any("availability" in item or "down" in item.lower() for item in evidence[service]) else "high"
+    severity = (
+        "critical" if any("availability" in item or "down" in item.lower() for item in evidence[service]) else "high"
+    )
     return {"service": service, "severity": severity, "score": scores[service], "evidence": evidence[service][:5]}
 
 
@@ -395,7 +399,9 @@ def report_url_for(args: argparse.Namespace, incident_id: str) -> str:
 def publish_slack(response: dict[str, Any], dry_run: bool, report_url: str) -> None:
     webhook = os.getenv("SLACK_WEBHOOK_URL")
     evidence = response.get("anomaly_evidence", [])
-    top_evidence = evidence[0]["reason"] if evidence else response.get("suspected_root_cause", {}).get("evidence", [""])[0]
+    top_evidence = (
+        evidence[0]["reason"] if evidence else response.get("suspected_root_cause", {}).get("evidence", [""])[0]
+    )
     actions = response.get("recommended_actions", [])
     top_action = actions[0].get("summary") if actions else "Review incident context."
     concise_payload = {
