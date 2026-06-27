@@ -76,6 +76,32 @@ async function getJiraMapping(incidentId, tenantId) {
 }
 
 // =============================================================================
+// Helper: Get Jira User details by accountId
+// =============================================================================
+async function getJiraUser(jiraCreds, accountId) {
+  const { email, token, base_url } = jiraCreds;
+  const auth = Buffer.from(`${email}:${token}`).toString("base64");
+
+  const response = await fetch(`${base_url}/rest/api/3/user?accountId=${accountId}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Jira user API error ${response.status}: ${errorBody}`);
+  }
+
+  const data = await response.json();
+  // Xử lý trường hợp Jira trả về array hoặc object
+  if (Array.isArray(data) && data.length > 0) return data[0];
+  return data;
+}
+
+// =============================================================================
 // Helper: Lưu notification audit trail vào DynamoDB
 // =============================================================================
 async function saveNotificationAudit(incidentId, tenantId, slackResponse) {
@@ -126,7 +152,7 @@ function getStatusDisplay(status) {
 // =============================================================================
 // Core: Build Slack Block Kit message từ AI triage result
 // =============================================================================
-function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl) {
+function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
   const severity = getSeverityDisplay(triageResult.severity);
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
@@ -238,11 +264,16 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl) {
 
   // AI Assignment Suggestion (Human-in-the-loop)
   if (triageResult.suggested_assignee_account_id) {
+    let assigneeText = `\`${triageResult.suggested_assignee_account_id}\``;
+    if (assigneeDetails && assigneeDetails.displayName) {
+      assigneeText = `*${assigneeDetails.displayName}* (${assigneeDetails.emailAddress || "No email"})`;
+    }
+
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*🤖 AI Assignment Suggestion:*\n${triageResult.suggestion_reason || "AI recommends assigning this incident."}\n\n*Suggested Assignee ID:* \`${triageResult.suggested_assignee_account_id}\``,
+        text: `*🤖 AI Assignment Suggestion:*\n${triageResult.suggestion_reason || "AI recommends assigning this incident."}\n\n*Suggested Assignee:* ${assigneeText}`,
       },
     });
 
@@ -430,10 +461,21 @@ exports.handler = async (event) => {
     const slackSecret = await getSlackSecret();
     const jiraSecret = await getJiraSecret();
 
+    // Fetch Jira user details if we have an assignee suggestion
+    let assigneeDetails = null;
+    if (triageResult.suggested_assignee_account_id) {
+      try {
+        assigneeDetails = await getJiraUser(jiraSecret, triageResult.suggested_assignee_account_id);
+        console.log("Fetched Jira user details:", assigneeDetails.displayName);
+      } catch (err) {
+        console.warn("Failed to fetch Jira user details:", err.message);
+      }
+    }
+
     // -------------------------------------------------------------------------
     // 4. Build Slack Block Kit message
     // -------------------------------------------------------------------------
-    const blocks = buildSlackBlocks(triageResult, jiraMapping, jiraSecret.base_url);
+    const blocks = buildSlackBlocks(triageResult, jiraMapping, jiraSecret.base_url, assigneeDetails);
 
     // Fallback text cho notification / email
     const fallbackText = `🚨 [${(triageResult.severity || "unknown").toUpperCase()}] Incident ${incidentId}: ${triageResult.suspected_root_cause?.summary || triageResult.classification || "New incident detected"}`;

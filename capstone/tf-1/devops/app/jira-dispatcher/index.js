@@ -184,17 +184,21 @@ async function assignJiraTicket(jiraCreds, issueKey, accountId) {
 // =============================================================================
 // GĐ 3: Lưu audit trail khi user bấm nút trên Slack
 // =============================================================================
-async function saveCallbackAudit(incidentId, tenantId, slackUserId, action, issueKey) {
+async function saveCallbackAudit(incidentId, tenantId, slackUser, actionType, issueKey, assigneeJiraId, status) {
+  const timestamp = Math.floor(Date.now() / 1000);
   const command = new PutItemCommand({
     TableName: DYNAMODB_TABLE,
     Item: {
-      PK: { S: `TENANT#${tenantId}` },
-      SK: { S: `AUDIT#${incidentId}#${Date.now()}` },
+      PK: { S: `TENANT#${tenantId}#INCIDENT#${incidentId}` },
+      SK: { S: `AUDIT#${timestamp}` },
       incident_id: { S: incidentId },
       tenant_id: { S: tenantId },
       jira_issue_key: { S: issueKey || "unknown" },
-      action: { S: action },
-      slack_user_id: { S: slackUserId },
+      action_type: { S: actionType },
+      approver_slack_id: { S: slackUser.id },
+      approver_slack_name: { S: slackUser.name },
+      assigned_jira_id: { S: assigneeJiraId || "unknown" },
+      status: { S: status },
       actioned_at: { S: new Date().toISOString() },
     },
   });
@@ -269,6 +273,27 @@ async function handleCreateTicket(event) {
 }
 
 // =============================================================================
+// GĐ 3: Gọi Slack response_url để cập nhật message gốc
+// =============================================================================
+async function updateSlackMessage(responseUrl, updatedBlocks) {
+  const response = await fetch(responseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      replace_original: true,
+      blocks: updatedBlocks,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error("Slack response_url error:", response.status, errorBody);
+  } else {
+    console.log("Slack message updated successfully via response_url");
+  }
+}
+
+// =============================================================================
 // Handler: GĐ 3 — Slack Callback (Confirm & Assign)
 // =============================================================================
 async function handleSlackCallback(event) {
@@ -287,13 +312,15 @@ async function handleSlackCallback(event) {
     }
   }
 
-  // 2. Parse Slack payload
-  const decoded = decodeURIComponent(rawBody.replace("payload=", ""));
+  // 2. Parse Slack payload (Slack gửi x-www-form-urlencoded, + = space)
+  const decoded = decodeURIComponent(rawBody.replace("payload=", "").replace(/\+/g, " "));
   const payload = JSON.parse(decoded);
 
   const action = payload.actions?.[0];
   const slackUserId = payload.user?.id || "unknown";
-  const slackUserName = payload.user?.name || "unknown";
+  const slackUserName = payload.user?.username || payload.user?.name || "unknown";
+  const slackUser = { id: slackUserId, name: slackUserName };
+  const responseUrl = payload.response_url;
 
   if (!action) {
     return { statusCode: 200, body: "No action found" };
@@ -317,38 +344,91 @@ async function handleSlackCallback(event) {
   if (action.action_id === "assign_incident_action") {
     // Confirm & Assign — dùng suggested_assignee từ AI
     const assigneeAccountId = actionValue.suggested_assignee_account_id;
+    let status = "SUCCESS";
+    let jiraCreds;
 
     if (issueKey && assigneeAccountId) {
-      const jiraCreds = await getJiraSecret();
-      await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId);
+      jiraCreds = await getJiraSecret();
+      try {
+        await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId);
+      } catch (err) {
+        console.error("Assign Error:", err);
+        status = "FAILED_API";
+      }
+    } else {
+      status = "MISSING_INFO";
     }
 
-    await saveCallbackAudit(incidentId, tenantId, slackUserId, "CONFIRM_ASSIGN", issueKey);
+    await saveCallbackAudit(incidentId, tenantId, slackUser, "CONFIRM_ASSIGN", issueKey, assigneeAccountId, status);
 
-    // Cập nhật Slack message
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        replace_original: true,
-        text: `✅ Ticket ${issueKey || "N/A"} assigned by <@${slackUserId}>. (Confirmed AI suggestion)`,
-      }),
-    };
+    // Lấy thông tin assignee từ Jira để hiển thị tên
+    let assigneeName = assigneeAccountId || "N/A";
+    let jiraBaseUrl = "";
+    if (jiraCreds && assigneeAccountId) {
+      jiraBaseUrl = jiraCreds.base_url;
+      try {
+        const auth = Buffer.from(`${jiraCreds.email}:${jiraCreds.token}`).toString("base64");
+        const userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${assigneeAccountId}`, {
+          method: "GET",
+          headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+        });
+        if (userResp.ok) {
+          const userData = await userResp.json();
+          const name = userData.displayName || assigneeAccountId;
+          const email = userData.emailAddress ? ` (${userData.emailAddress})` : "";
+          assigneeName = `${name}${email}`;
+        }
+      } catch (err) {
+        console.warn("Failed to fetch assignee name:", err.message);
+      }
+    }
+
+    // Build Jira ticket link
+    const jiraLink = issueKey && jiraBaseUrl
+      ? `<${jiraBaseUrl}/browse/${issueKey}|${issueKey}>`
+      : (issueKey || "N/A");
+
+    // Cập nhật Slack message qua response_url (xóa nút bấm, thêm trạng thái)
+    const originalBlocks = payload.message?.blocks || [];
+    const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
+    updatedBlocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `✅ *Assigned!*\n• *Ticket:* ${jiraLink}\n• *Assigned to:* ${assigneeName}\n• *Confirmed by:* <@${slackUserId}>`
+      }
+    });
+
+    if (responseUrl) {
+      await updateSlackMessage(responseUrl, updatedBlocks);
+    }
+
+    return { statusCode: 200, body: "" };
   }
 
   if (action.action_id === "self_assign_incident_action") {
     // Self-assign — cần lấy Jira account ID từ Slack user mapping
     // Hiện tại chỉ lưu audit, vì cần mapping Slack → Jira account
-    await saveCallbackAudit(incidentId, tenantId, slackUserId, "SELF_ASSIGN", issueKey);
+    await saveCallbackAudit(incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, "pending_lookup", "PENDING");
 
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        replace_original: true,
-        text: `🙋 Ticket ${issueKey || "N/A"} self-assigned by <@${slackUserId}>.`,
-      }),
-    };
+    // Cập nhật Slack message qua response_url (xóa nút bấm)
+    const originalBlocks = payload.message?.blocks || [];
+    const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
+    updatedBlocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `🙋 *Ticket ${issueKey || "N/A"}* was self-assigned by <@${slackUserId}>.`
+        }
+      ]
+    });
+
+    if (responseUrl) {
+      await updateSlackMessage(responseUrl, updatedBlocks);
+    }
+
+    return { statusCode: 200, body: "" };
   }
 
   // Action không xác định
