@@ -36,11 +36,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug role secret
-        run: |
-          echo "TF_AWS_ROLE_ARN exists: ${{ secrets.TF_AWS_ROLE_ARN != '' }}"
-          echo "Expected role: arn:aws:iam::730335441285:role/triage-hub-github-terraform-role"
-
       - name: Debug OIDC token claims
         run: |
           token_json="$(curl -sSL \

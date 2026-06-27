@@ -25,7 +25,10 @@ on:
         required: true
         default: false
         type: boolean
-
+      confirm:
+        description: 'Type "apply-sandbox" to confirm apply'
+        required: true
+        type: string
 permissions:
   contents: read
   id-token: write
@@ -233,7 +236,15 @@ jobs:
     if: |
       needs.terraform-plan.outputs.has_changes == 'true' &&
       github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event.inputs.apply == 'true')
+      (
+        github.ref == 'refs/heads/develop' ||
+        github.ref == 'refs/heads/main' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.apply == 'true' &&
+          github.event.inputs.confirm == 'apply-sandbox'
+        )
+      )
     runs-on: ubuntu-latest
     environment: sandbox
     defaults:
