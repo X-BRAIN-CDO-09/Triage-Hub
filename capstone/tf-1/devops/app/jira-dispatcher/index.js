@@ -328,11 +328,25 @@ async function handleCreateTicket(event) {
   // 2. Lấy Jira credentials từ Secrets Manager
   const jiraCreds = await getJiraSecret();
 
-  // 3. Tạo Jira ticket
-  const jiraResult = await createJiraTicket(jiraCreds, alertPayload);
-
-  // 4. Cập nhật mapping với Jira issue key
-  await updateJiraMapping(incidentId, tenantId, jiraResult);
+  // 3. Tạo Jira ticket (nếu fail thì xóa reservation để cho phép retry)
+  let jiraResult;
+  try {
+    jiraResult = await createJiraTicket(jiraCreds, alertPayload);
+    await updateJiraMapping(incidentId, tenantId, jiraResult);
+  } catch (err) {
+    // Xóa reservation PENDING để lần gọi tiếp theo có thể retry
+    console.error("Jira ticket creation failed, removing PENDING reservation:", err.message);
+    try {
+      const { DeleteItemCommand } = require("@aws-sdk/client-dynamodb");
+      await dynamoClient.send(new DeleteItemCommand({
+        TableName: DYNAMODB_TABLE,
+        Key: { PK: { S: `TENANT#${tenantId}` }, SK: { S: `INCIDENT#${incidentId}` } },
+      }));
+    } catch (deleteErr) {
+      console.error("Failed to clean up PENDING reservation:", deleteErr.message);
+    }
+    throw err;
+  }
 
   return {
     statusCode: 201,
@@ -349,14 +363,23 @@ async function handleCreateTicket(event) {
 // =============================================================================
 async function updateSlackMessage(responseUrl, updatedBlocks) {
   try {
-    const response = await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        replace_original: true,
-        blocks: updatedBlocks,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(responseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          replace_original: true,
+          blocks: updatedBlocks,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       console.error("Slack response_url error:", response.status);
@@ -459,10 +482,18 @@ async function handleSlackCallback(event) {
       jiraBaseUrl = jiraCreds.base_url;
       try {
         const auth = Buffer.from(`${jiraCreds.email}:${jiraCreds.token}`).toString("base64");
-        const userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
-          method: "GET",
-          headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
-        });
+        const userController = new AbortController();
+        const userTimeout = setTimeout(() => userController.abort(), EXTERNAL_API_TIMEOUT_MS);
+        let userResp;
+        try {
+          userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
+            method: "GET",
+            headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+            signal: userController.signal,
+          });
+        } finally {
+          clearTimeout(userTimeout);
+        }
         if (userResp.ok) {
           const userData = await userResp.json();
           const name = userData.displayName || assigneeAccountId;

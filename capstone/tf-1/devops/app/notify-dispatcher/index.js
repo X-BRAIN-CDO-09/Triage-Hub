@@ -300,44 +300,54 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
 
     blocks.push({ type: "divider" });
 
-    // Interactive buttons: Confirm & Assign + View Jira
-    const actionElements = [
-      {
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "👤 Confirm & Assign",
-          emoji: true,
+    // Interactive buttons: Confirm & Assign + View Jira (chỉ render khi có Jira mapping)
+    if (jiraMapping?.issueKey) {
+      const actionElements = [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "👤 Confirm & Assign",
+            emoji: true,
+          },
+          style: "primary",
+          action_id: "assign_incident_action",
+          value: JSON.stringify({
+            incident_id: incidentId,
+            tenant_id: triageResult.tenant_id || "unknown",
+            jira_issue_key: jiraMapping.issueKey,
+            suggested_assignee_account_id: triageResult.suggested_assignee_account_id,
+            audit_id: triageResult.audit_id || null,
+          }),
         },
-        style: "primary",
-        action_id: "assign_incident_action",
-        value: JSON.stringify({
-          incident_id: incidentId,
-          tenant_id: triageResult.tenant_id || "unknown",
-          jira_issue_key: jiraMapping?.issueKey || null,
-          suggested_assignee_account_id: triageResult.suggested_assignee_account_id,
-          audit_id: triageResult.audit_id || null,
-        }),
-      },
-    ];
+      ];
 
-    if (jiraUrl) {
-      actionElements.push({
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "🎫 View Jira Ticket",
-          emoji: true,
-        },
-        url: jiraUrl,
-        action_id: "open_jira_ticket_action",
+      if (jiraUrl) {
+        actionElements.push({
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "🎫 View Jira Ticket",
+            emoji: true,
+          },
+          url: jiraUrl,
+          action_id: "open_jira_ticket_action",
+        });
+      }
+
+      blocks.push({
+        type: "actions",
+        elements: actionElements,
+      });
+    } else {
+      blocks.push({
+        type: "context",
+        elements: [{
+          type: "mrkdwn",
+          text: `⚠️ Jira ticket not yet created. Assignment will be available once ticket is ready.`,
+        }],
       });
     }
-
-    blocks.push({
-      type: "actions",
-      elements: actionElements,
-    });
   } else {
     // Không có AI suggestion -> hiển thị nút "Assign Me"
     blocks.push({
@@ -350,42 +360,52 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
 
     blocks.push({ type: "divider" });
 
-    const actionElements = [
-      {
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "🙋 Assign Me",
-          emoji: true,
+    if (jiraMapping?.issueKey) {
+      const actionElements = [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "🙋 Assign Me",
+            emoji: true,
+          },
+          style: "primary",
+          action_id: "self_assign_incident_action",
+          value: JSON.stringify({
+            incident_id: incidentId,
+            tenant_id: triageResult.tenant_id || "unknown",
+            jira_issue_key: jiraMapping.issueKey,
+            audit_id: triageResult.audit_id || null,
+          }),
         },
-        style: "primary",
-        action_id: "self_assign_incident_action",
-        value: JSON.stringify({
-          incident_id: incidentId,
-          tenant_id: triageResult.tenant_id || "unknown",
-          jira_issue_key: jiraMapping?.issueKey || null,
-          audit_id: triageResult.audit_id || null,
-        }),
-      },
-    ];
+      ];
 
-    if (jiraUrl) {
-      actionElements.push({
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "🎫 View Jira Ticket",
-          emoji: true,
-        },
-        url: jiraUrl,
-        action_id: "open_jira_ticket_action",
+      if (jiraUrl) {
+        actionElements.push({
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "🎫 View Jira Ticket",
+            emoji: true,
+          },
+          url: jiraUrl,
+          action_id: "open_jira_ticket_action",
+        });
+      }
+
+      blocks.push({
+        type: "actions",
+        elements: actionElements,
+      });
+    } else {
+      blocks.push({
+        type: "context",
+        elements: [{
+          type: "mrkdwn",
+          text: `⚠️ Jira ticket not yet created. Self-assignment will be available once ticket is ready.`,
+        }],
       });
     }
-
-    blocks.push({
-      type: "actions",
-      elements: actionElements,
-    });
   }
 
   // Footer / Context
@@ -523,7 +543,7 @@ async function processTriageResult(triageResult) {
   if (triageResult.suggested_assignee_account_id) {
     try {
       assigneeDetails = await getJiraUser(jiraSecret, triageResult.suggested_assignee_account_id);
-      console.log("Fetched Jira user details:", assigneeDetails.displayName);
+      console.log("Fetched Jira user details successfully");
     } catch (err) {
       console.warn("Failed to fetch Jira user details:", err.message);
     }
@@ -536,7 +556,14 @@ async function processTriageResult(triageResult) {
   const fallbackText = `🚨 [${(triageResult.severity || "unknown").toUpperCase()}] Incident ${incidentId}: ${triageResult.suspected_root_cause?.summary || triageResult.classification || "New incident detected"}`;
 
   // Determine target channel: payload ownership > secret default
-  const targetChannel = triageResult.ownership?.slack_channel || slackSecret.default_channel || "#oncall-alerts";
+  // Validate: chỉ cho phép channel bắt đầu bằng # hoặc là Slack channel ID (C/G prefix)
+  let targetChannel = slackSecret.default_channel || "#oncall-alerts";
+  const requestedChannel = triageResult.ownership?.slack_channel;
+  if (requestedChannel && /^(#[a-zA-Z0-9_-]+|[CG][A-Z0-9]+)$/.test(requestedChannel)) {
+    targetChannel = requestedChannel;
+  } else if (requestedChannel) {
+    console.warn("Invalid slack_channel in payload, using default:", requestedChannel);
+  }
 
   // 5. Post to Slack
   const slackResponse = await postToSlack(slackSecret.token, targetChannel, blocks, fallbackText);
