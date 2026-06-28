@@ -4,16 +4,26 @@ metadata:
   name: tf1-api-hpa
   namespace: triage-hub
 spec:
+  # Target là Rollout (Argo Rollouts), không phải Deployment
   scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
     name: tf1-api
   minReplicas: 2
   maxReplicas: 10
   metrics:
+    # Policy 1 — CPU 70%
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
           averageUtilization: 70
+    # Policy 2 — request/pod = 100 (cần Prometheus Adapter expose metric này)
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"

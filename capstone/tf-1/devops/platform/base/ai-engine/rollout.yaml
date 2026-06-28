@@ -1,5 +1,10 @@
-apiVersion: apps/v1
-kind: Deployment
+# Argo Rollouts — tf1-api canary (thay cho Deployment thường).
+# Canary 10% → 50% → 100% với background AnalysisRun; abort tự rollback nếu
+# p99 vượt ngưỡng (deployment-contract.md: abort khi p99 > 800ms / error rate > 1%).
+# Basic canary (không traffic router): Argo Rollouts chia traffic theo tỉ lệ replica,
+# Service tf1-api + TargetGroupBinding gửi tới cả pod stable lẫn canary.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: tf1-api
   namespace: triage-hub
@@ -10,6 +15,19 @@ spec:
   selector:
     matchLabels:
       app: tf1-api
+  strategy:
+    canary:
+      # Background analysis: chạy từ bước canary đầu tiên, fail → abort + rollback
+      analysis:
+        startingStep: 1
+        templates:
+          - templateName: tf1-api-latency
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
   template:
     metadata:
       labels:
@@ -48,21 +66,21 @@ spec:
           env:
             - name: AIOPS_OBSERVABILITY_ENABLED
               value: "true"
-            - name: BEDROCK_MODEL
+            - name: AWS_REGION
+              value: "us-east-1"
+            # SERVICE_AUTH_TOKEN: xác thực inter-service /v1/triage (main.py:388)
+            - name: SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
-                  key: BEDROCK_MODEL
-            - name: SERVICE_AUTO_TOKEN_BLOCK
+                  key: SERVICE_AUTH_TOKEN
+            # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
+            - name: BEDROCK_MODEL_ID
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
-                  key: SERVICE_AUTO_TOKEN_BLOCK
-            - name: WEBSOCK_URL
-              valueFrom:
-                secretKeyRef:
-                  name: ai-engine-secrets
-                  key: WEBSOCK_URL
+                  key: BEDROCK_MODEL_ID
+            # Lưu ý: tf1-api KHÔNG có SLACK_WEBHOOK_URL — Slack do tf1-worker gửi
           livenessProbe:
             httpGet:
               path: /healthz

@@ -11,6 +11,7 @@ patches:
       kind: ServiceAccount
       metadata:
         name: tf1-api-sa
+        namespace: triage-hub
         annotations:
           eks.amazonaws.com/role-arn: arn:aws:iam::730335441285:role/triage-hub-tf1-api-irsa-sandbox
   - patch: |
@@ -18,5 +19,32 @@ patches:
       kind: ServiceAccount
       metadata:
         name: tf1-worker-sa
+        namespace: triage-hub
         annotations:
           eks.amazonaws.com/role-arn: arn:aws:iam::730335441285:role/triage-hub-tf1-worker-irsa-sandbox
+  # ARN target group thật lấy từ: terraform output target_group_arn (sandbox)
+  - patch: |
+      apiVersion: elbv2.k8s.aws/v1beta1
+      kind: TargetGroupBinding
+      metadata:
+        name: tf1-api-tgb
+        namespace: triage-hub
+      spec:
+        targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-engine/REPLACE_AFTER_APPLY
+  # queueURL thật lấy từ: terraform output (SQS module) — buffer/intake queue
+  - patch: |
+      apiVersion: keda.sh/v1alpha1
+      kind: ScaledObject
+      metadata:
+        name: tf1-worker-scaler
+        namespace: triage-hub
+      spec:
+        triggers:
+          - type: aws-sqs-queue
+            authenticationRef:
+              name: keda-aws-sqs-auth
+            metadata:
+              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-intake-sandbox
+              queueLength: "5"
+              awsRegion: us-east-1
+              identityOwner: operator

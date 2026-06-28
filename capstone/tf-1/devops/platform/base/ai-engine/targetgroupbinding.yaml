@@ -1,0 +1,18 @@
+# Gắn Internal ALB Target Group (tạo bởi Terraform module alb, target_type=ip)
+# vào Service tf1-api. Nhờ vậy ALB route request /v1/triage → pod tf1-api.
+#
+# targetGroupARN lấy từ: terraform output target_group_arn
+# Giá trị này khác nhau theo môi trường → patch trong overlays/<env>/.
+# Placeholder dưới đây sẽ bị overlay ghi đè (kustomize patch).
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: tf1-api-tgb
+  namespace: triage-hub
+spec:
+  serviceRef:
+    name: tf1-api
+    port: 8080
+  targetType: ip
+  # TODO(env): thay bằng module.alb.target_group_arn của môi trường tương ứng
+  targetGroupARN: REPLACE_WITH_TARGET_GROUP_ARN

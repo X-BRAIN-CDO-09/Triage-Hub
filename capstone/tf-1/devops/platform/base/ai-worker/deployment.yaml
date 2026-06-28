@@ -45,27 +45,34 @@ spec:
           env:
             - name: AIOPS_OBSERVABILITY_ENABLED
               value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
             - name: SQS_WAIT_SECONDS
               value: "5"
             - name: SQS_MAX_MESSAGES
               value: "1"
+            # TRIAGE_URL: worker gọi tf1-api nội bộ (aiops_worker.py:22)
+            - name: TRIAGE_URL
+              value: "http://tf1-api.triage-hub.svc.cluster.local:8080"
             - name: SQS_QUEUE_URL
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: SQS_QUEUE_URL
-            - name: BEDROCK_MODEL
+            # SERVICE_AUTH_TOKEN: worker đính kèm khi gọi /v1/triage
+            - name: SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
-                  key: BEDROCK_MODEL
-            - name: SERVICE_AUTO_TOKEN_BLOCK
+                  key: SERVICE_AUTH_TOKEN
+            - name: BEDROCK_MODEL_ID
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
-                  key: SERVICE_AUTO_TOKEN_BLOCK
-            - name: WEBSOCK_URL
+                  key: BEDROCK_MODEL_ID
+            # SLACK_WEBHOOK_URL: worker tự gửi Slack summary (aiops_worker.py:42)
+            - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
                   name: ai-engine-secrets
-                  key: WEBSOCK_URL
+                  key: SLACK_WEBHOOK_URL
