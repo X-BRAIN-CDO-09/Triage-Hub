@@ -1,0 +1,102 @@
+# docker-compose.local.yml
+# Local E2E test stack — replaces all AWS services with emulators
+# Usage: docker compose -f docker-compose.local.yml up -d
+
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────
+  # LocalStack — emulates SQS, Secrets Manager, S3
+  # ─────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: triage-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,secretsmanager,s3
+      DEFAULT_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      DEBUG: 0
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
+  # LocalStack init — creates SQS queue + secret once
+  # ─────────────────────────────────────────────
+  localstack-init:
+    image: amazon/aws-cli:2.15.40
+    container_name: triage-localstack-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      /bin/sh -c "
+        echo '=== Creating SQS queues ===' &&
+        aws --endpoint-url=http://localstack:4566 sqs create-queue
+          --queue-name triage-buffer-local &&
+        aws --endpoint-url=http://localstack:4566 sqs create-queue
+          --queue-name triage-buffer-local-dlq &&
+        echo '=== Creating Secrets ===' &&
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret
+          --name triage-hub/ai-engine
+          --secret-string '{\"SERVICE_AUTH_TOKEN\":\"local-dev-token-abc123\"}' &&
+        echo '=== LocalStack init done ==='
+      "
+    restart: on-failure
+
+  # ─────────────────────────────────────────────
+  # TF1 AI Engine — replaces EKS tf1-api pod
+  # LLM disabled: fully deterministic, no Bedrock cost
+  # ─────────────────────────────────────────────
+  tf1-api:
+    build:
+      context: ./capstone/tf-1/devops/app/ai-engine
+      dockerfile: Dockerfile
+    container_name: triage-tf1-api
+    ports:
+      - "8081:8080"
+    environment:
+      SERVICE_AUTH_TOKEN: local-dev-token-abc123
+      AGENTCORE_LLM_ENABLED: "false"
+      AIOPS_LLM_TOOLS_ENABLED: "false"
+      AGENTCORE_AGENT_PLATFORM_ENABLED: "false"
+      AIOPS_AUDIT_LOG_PATH: /app/audit/audit-log.jsonl
+      AIOPS_QA_MAX_ITERATIONS: "1"
+      AIOPS_OBSERVABILITY_ENABLED: "false"
+      AIOPS_TRACING_ENABLED: "false"
+    volumes:
+      - audit-data:/app/audit
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ─────────────────────────────────────────────
+  # Mock Webhook — catches Slack + Jira calls locally
+  # View captured requests: http://localhost:9999
+  # ─────────────────────────────────────────────
+  mock-webhook:
+    image: mendhak/http-https-echo:33
+    container_name: triage-mock-webhook
+    ports:
+      - "9999:8080"
+    environment:
+      HTTP_PORT: 8080
+
+volumes:
+  localstack-data:
+  audit-data:

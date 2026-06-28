@@ -818,7 +818,7 @@ def build_response(
         action_wording = {"actions": selected_actions, "metadata": {"enabled": False, "provider": "deterministic", "skipped_reason": f"{investigation_mode}_mode"}}
     else:
         action_wording = reword_catalog_actions(request, decision, rca, selected_actions)
-    action_payloads = action_wording["actions"]
+    action_payloads: list[dict[str, Any]] = [a for a in action_wording["actions"] if isinstance(a, dict)]
     llm_metadata["action_wording"] = action_wording["metadata"]
     llm_metadata["cost_estimate"] = current_llm_usage_summary()
     actions = [RecommendedAction(**action) for action in action_payloads]
