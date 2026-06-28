@@ -59,13 +59,14 @@ module "ecr" {
 module "eks" {
   source = "../../modules/eks"
 
-  project_name        = var.project_name
-  cluster_version     = var.cluster_version
-  private_subnet_ids  = module.vpc_platform.private_subnet_ids
-  node_instance_types = var.node_instance_types
-  node_scaling        = var.node_scaling
-  public_access_cidrs = var.public_access_cidrs
-  cluster_admin_arns  = var.cluster_admin_arns
+  project_name           = var.project_name
+  cluster_version        = var.cluster_version
+  private_subnet_ids     = module.vpc_platform.private_subnet_ids
+  node_instance_types    = var.node_instance_types
+  node_scaling           = var.node_scaling
+  endpoint_public_access = var.endpoint_public_access
+  public_access_cidrs    = var.public_access_cidrs
+  cluster_admin_arns     = var.cluster_admin_arns
 }
 
 # 6. SQS Module (Buffer and Dispatch queues)

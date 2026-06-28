@@ -86,8 +86,14 @@ variable "node_scaling" {
   }
 }
 
+variable "endpoint_public_access" {
+  description = "Bật public API endpoint cho dev kubectl (sandbox). Production private-first = false."
+  type        = bool
+  default     = false
+}
+
 variable "public_access_cidrs" {
-  description = "Allowed CIDR blocks for EKS public endpoint"
+  description = "Allowed CIDR blocks for EKS public endpoint (chỉ khi endpoint_public_access = true)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

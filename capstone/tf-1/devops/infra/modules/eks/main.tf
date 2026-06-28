@@ -37,8 +37,8 @@ resource "aws_eks_cluster" "this" {
   vpc_config {
     subnet_ids              = var.private_subnet_ids
     endpoint_private_access = true
-    endpoint_public_access  = true
-    public_access_cidrs     = var.public_access_cidrs
+    endpoint_public_access  = var.endpoint_public_access
+    public_access_cidrs     = var.endpoint_public_access ? var.public_access_cidrs : null
   }
 
   # Bật API_AND_CONFIG_MAP để dùng được aws_eks_access_entry
