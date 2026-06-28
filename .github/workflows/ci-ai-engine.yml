@@ -23,8 +23,8 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 730335441285.dkr.ecr.us-east-1.amazonaws.com
-  API_REPOSITORY: tf1-api
-  WORKER_REPOSITORY: tf1-worker
+  # 1 image dùng chung cho api + worker (khác nhau ở command K8s)
+  ENGINE_REPOSITORY: tf1-engine
   APP_ROOT: capstone/tf-1/devops/app/ai-engine
   # Tag bất biến theo release engine (khớp handoff). KHÔNG dùng :latest cho
   # deployment (phá canary/rollback/cosign). Bump khi engine lên version mới.
@@ -90,76 +90,45 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build API and Worker Images
-        id: build-images
+      - name: Build Engine Image
+        id: build-image
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          API_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
-          WORKER_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
-          
-          # Build tf1-api (tag :<sha> để truy vết + :v1.0.0 cho deployment)
+          ENGINE_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${SHORT_SHA}"
+
+          # 1 image dùng chung cho api & worker (tag :<sha> truy vết + :v1.0.0 cho deployment)
           docker build \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-            -t "$API_IMAGE" \
-            -t "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}" \
+            -t "$ENGINE_IMAGE" \
+            -t "${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${{ env.IMAGE_VERSION }}" \
             -f ${{ env.APP_ROOT }}/Dockerfile \
             ${{ env.APP_ROOT }}
 
-          # Build tf1-worker
-          docker build \
-            --label "org.opencontainers.image.revision=${{ github.sha }}" \
-            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-            -t "$WORKER_IMAGE" \
-            -t "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}" \
-            -f ${{ env.APP_ROOT }}/Dockerfile.worker \
-            ${{ env.APP_ROOT }}
-            
-          echo "api_image=$API_IMAGE" >> "$GITHUB_OUTPUT"
-          echo "worker_image=$WORKER_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "engine_image=$ENGINE_IMAGE" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Trivy Vulnerability Scan (API)
+      - name: Trivy Vulnerability Scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${{ env.IMAGE_VERSION }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
 
-      - name: Trivy Vulnerability Scan (Worker)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Push API and Worker Images
+      - name: Push Engine Image
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          # Push tf1-api
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}"
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${SHORT_SHA}"
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${{ env.IMAGE_VERSION }}"
 
-          # Push tf1-worker
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}"
-
-      - name: Keyless Sign Images with Cosign
+      - name: Keyless Sign Image with Cosign
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          API_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
-          WORKER_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
-          
+          ENGINE_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ENGINE_REPOSITORY }}:${SHORT_SHA}"
+
           cosign sign --yes \
             --rekor-url https://rekor.sigstore.dev \
             --fulcio-url https://fulcio.sigstore.dev \
-            "$API_IMAGE"
-            
-          cosign sign --yes \
-            --rekor-url https://rekor.sigstore.dev \
-            --fulcio-url https://fulcio.sigstore.dev \
-            "$WORKER_IMAGE"
+            "$ENGINE_IMAGE"

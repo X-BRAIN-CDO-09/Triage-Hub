@@ -50,8 +50,8 @@ module "ecr" {
 
   project_name = var.project_name
   repositories = {
-    "tf1-api"    = {}
-    "tf1-worker" = {}
+    # 1 image dùng chung cho cả tf1-api & tf1-worker (khác nhau ở command K8s)
+    "tf1-engine" = {}
   }
 }
 

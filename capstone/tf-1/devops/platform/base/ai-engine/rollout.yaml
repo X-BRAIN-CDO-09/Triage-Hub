@@ -43,8 +43,10 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ai-engine
-          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/tf1-api:v1.0.0
+          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/tf1-engine:v1.0.0
           imagePullPolicy: IfNotPresent
+          # API role: chạy FastAPI (engine image dùng chung, override command)
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
           ports:
             - containerPort: 8080
               name: http
