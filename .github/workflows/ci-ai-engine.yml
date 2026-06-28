@@ -23,8 +23,9 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 730335441285.dkr.ecr.us-east-1.amazonaws.com
-  # 1 image dùng chung cho api + worker (khác nhau ở command K8s)
-  ENGINE_REPOSITORY: tf1-engine
+  # 1 image dùng chung cho api + worker (khác nhau ở command K8s).
+  # Tên khớp ECR module: ${project_name}-${key} = triage-hub-tf1-engine
+  ENGINE_REPOSITORY: triage-hub-tf1-engine
   APP_ROOT: capstone/tf-1/devops/app/ai-engine
   # Tag bất biến theo release engine (khớp handoff). KHÔNG dùng :latest cho
   # deployment (phá canary/rollback/cosign). Bump khi engine lên version mới.
