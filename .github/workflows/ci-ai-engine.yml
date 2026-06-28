@@ -26,6 +26,9 @@ env:
   API_REPOSITORY: tf1-api
   WORKER_REPOSITORY: tf1-worker
   APP_ROOT: capstone/tf-1/devops/app/ai-engine
+  # Tag bất biến theo release engine (khớp handoff). KHÔNG dùng :latest cho
+  # deployment (phá canary/rollback/cosign). Bump khi engine lên version mới.
+  IMAGE_VERSION: v1.0.0
 
 jobs:
   lint-and-test:
@@ -94,21 +97,21 @@ jobs:
           API_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
           WORKER_IMAGE="${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
           
-          # Build tf1-api
+          # Build tf1-api (tag :<sha> để truy vết + :v1.0.0 cho deployment)
           docker build \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
             -t "$API_IMAGE" \
-            -t "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest" \
+            -t "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}" \
             -f ${{ env.APP_ROOT }}/Dockerfile \
             ${{ env.APP_ROOT }}
-            
+
           # Build tf1-worker
           docker build \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
             -t "$WORKER_IMAGE" \
-            -t "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest" \
+            -t "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}" \
             -f ${{ env.APP_ROOT }}/Dockerfile.worker \
             ${{ env.APP_ROOT }}
             
@@ -119,7 +122,7 @@ jobs:
       - name: Trivy Vulnerability Scan (API)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
@@ -128,7 +131,7 @@ jobs:
       - name: Trivy Vulnerability Scan (Worker)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
@@ -139,11 +142,11 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
           # Push tf1-api
           docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${SHORT_SHA}"
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:latest"
-          
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.API_REPOSITORY }}:${{ env.IMAGE_VERSION }}"
+
           # Push tf1-worker
           docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${SHORT_SHA}"
-          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:latest"
+          docker push "${{ env.ECR_REGISTRY }}/${{ env.WORKER_REPOSITORY }}:${{ env.IMAGE_VERSION }}"
 
       - name: Keyless Sign Images with Cosign
         run: |

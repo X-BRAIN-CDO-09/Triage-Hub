@@ -43,8 +43,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ai-engine
-          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/tf1-api:latest
-          imagePullPolicy: Always
+          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/tf1-api:v1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
               name: http
