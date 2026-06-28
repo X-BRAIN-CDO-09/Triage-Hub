@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tf1-worker
+  namespace: triage-hub
+  labels:
+    app: tf1-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tf1-worker
+  template:
+    metadata:
+      labels:
+        app: tf1-worker
+    spec:
+      serviceAccountName: tf1-worker-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ai-worker
+          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # Worker role: chạy SQS consumer (engine image dùng chung, override command)
+          command: ["python", "-m", "app.aiops_worker"]
+          resources:
+            requests:
+              cpu: "512m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: AIOPS_OBSERVABILITY_ENABLED
+              value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: SQS_WAIT_SECONDS
+              value: "5"
+            - name: SQS_MAX_MESSAGES
+              value: "1"
+            # TRIAGE_URL: worker gọi tf1-api nội bộ (aiops_worker.py:22)
+            - name: TRIAGE_URL
+              value: "http://tf1-api.triage-hub.svc.cluster.local:8080"
+            - name: SQS_QUEUE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: SQS_QUEUE_URL
+            # SERVICE_AUTH_TOKEN: worker đính kèm khi gọi /v1/triage
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: SERVICE_AUTH_TOKEN
+            - name: BEDROCK_MODEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: BEDROCK_MODEL_ID
+            # SLACK_WEBHOOK_URL: worker tự gửi Slack summary (aiops_worker.py:42)
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: SLACK_WEBHOOK_URL

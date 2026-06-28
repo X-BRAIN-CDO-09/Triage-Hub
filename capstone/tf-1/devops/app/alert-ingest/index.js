@@ -14,7 +14,16 @@ exports.handler = async (event) => {
     }
 
     const payload = JSON.parse(event.body);
-    
+
+    // Contract (telemetry-contract): tenant_id bắt buộc — reject nếu thiếu,
+    // KHÔNG default "unknown" (tránh đẩy incident không có tenant vào pipeline).
+    if (!payload.tenant_id) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing required field: tenant_id" })
+      };
+    }
+
     // Gửi message vào SQS
     const command = new SendMessageCommand({
       QueueUrl: QUEUE_URL,
@@ -22,7 +31,7 @@ exports.handler = async (event) => {
       MessageAttributes: {
         TenantId: {
           DataType: "String",
-          StringValue: payload.tenant_id || "unknown"
+          StringValue: payload.tenant_id
         }
       }
     });

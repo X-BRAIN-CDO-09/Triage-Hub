@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus-adapter
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    targetRevision: 4.11.0
+    chart: prometheus-adapter
+    helm:
+      values: |
+        prometheus:
+          url: http://prometheus-operated.monitoring.svc.cluster.local
+          port: 9090
+        rules:
+          default: false
+          # Expose http_requests_per_second per pod cho HPA Policy 2 (req/pod=100)
+          custom:
+            - seriesQuery: 'http_requests_total{namespace="triage-hub",pod!=""}'
+              resources:
+                overrides:
+                  namespace: { resource: namespace }
+                  pod: { resource: pod }
+              name:
+                matches: "http_requests_total"
+                as: "http_requests_per_second"
+              metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    createNamespace: true

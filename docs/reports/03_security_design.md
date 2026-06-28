@@ -461,6 +461,15 @@ Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager)
 - Engine giữ: `BEDROCK` credentials, `SERVICE_AUTH_TOKEN`.
 - **`SLACK_WEBHOOK_URL` KHÔNG ở engine** — nằm ở Lambda Dispatcher (engine không có internet để gọi `hooks.slack.com`).
 
+#### Secret lifecycle — W11 vs Production
+
+- **Cơ chế (cả 2 môi trường)**: Terraform tạo **vỏ secret** với placeholder + `lifecycle { ignore_changes = [secret_string] }`; **giá trị thật KHÔNG bao giờ nằm trong code/Git/TF state** (chống leak state). App pull runtime qua ESO.
+- **W11 (capstone)**: điền giá trị thật **thủ công 1 lần** bằng `aws secretsmanager put-secret-value` sau `terraform apply`. Chấp nhận được cho demo.
+- **Production**: thay điền tay bằng cơ chế kiểm soát + audit:
+  - **Rotation tự động** (Secrets Manager rotation Lambda) cho secret tự sinh.
+  - **Vault / CI-CD inject / Sealed Secrets (SOPS)** cho secret vendor — có audit ai điền, lúc nào (CloudTrail/Vault).
+  - Không ai chạy `put-secret-value` bằng tay từ laptop dev.
+
 ### 10.4 In-cluster guardrails
 
 | Control                    | Cấu hình                                                                 |

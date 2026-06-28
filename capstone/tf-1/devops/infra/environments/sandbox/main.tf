@@ -50,8 +50,8 @@ module "ecr" {
 
   project_name = var.project_name
   repositories = {
-    "tf1-api"    = {}
-    "tf1-worker" = {}
+    # 1 image dùng chung cho cả tf1-api & tf1-worker (khác nhau ở command K8s)
+    "tf1-engine" = {}
   }
 }
 
@@ -59,13 +59,14 @@ module "ecr" {
 module "eks" {
   source = "../../modules/eks"
 
-  project_name        = var.project_name
-  cluster_version     = var.cluster_version
-  private_subnet_ids  = module.vpc_platform.private_subnet_ids
-  node_instance_types = var.node_instance_types
-  node_scaling        = var.node_scaling
-  public_access_cidrs = var.public_access_cidrs
-  cluster_admin_arns  = var.cluster_admin_arns
+  project_name           = var.project_name
+  cluster_version        = var.cluster_version
+  private_subnet_ids     = module.vpc_platform.private_subnet_ids
+  node_instance_types    = var.node_instance_types
+  node_scaling           = var.node_scaling
+  endpoint_public_access = var.endpoint_public_access
+  public_access_cidrs    = var.public_access_cidrs
+  cluster_admin_arns     = var.cluster_admin_arns
 }
 
 # 6. SQS Module (Buffer and Dispatch queues)
@@ -183,13 +184,20 @@ module "lambda" {
       vpc_security_group_ids = [module.lambda_sg.security_group_id]
       environment_variables = {
         SQS_QUEUE_URL = module.sqs.queue_urls["buffer-queue"]
-        AI_ENGINE_URL = "http://internal-tf1-alb-123456789.us-east-1.elb.amazonaws.com:8080/v1/triage" # Update this to your real internal ALB DNS once deployed
+        AI_ENGINE_URL = "http://${module.alb.dns_name}:8080/v1/triage"
+        # Đọc CÙNG secret service_auth_token với engine (ESO) → token luôn khớp (khớp file teammate)
+        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.secret_arns["service_auth_token"]
       }
       iam_policy_statements = [
         {
           effect    = "Allow"
           actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
           resources = [module.sqs.queue_arns["buffer-queue"]]
+        },
+        {
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
+          resources = [module.secrets_manager.secret_arns["service_auth_token"]]
         }
       ]
     }
@@ -310,29 +318,100 @@ resource "aws_vpc_endpoint" "secretsmanager" {
   }
 }
 
+# 16b. Bedrock Runtime VPC Endpoint (Interface) — Required for AI Engine Bedrock calls
+resource "aws_vpc_endpoint" "bedrock_runtime" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-runtime"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-bedrock-vpce-${var.environment}"
+  }
+}
+
+# 16c. ECR API + ECR DKR VPC Endpoints — Required for EKS private node image pulling
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-ecr-api-vpce-${var.environment}"
+  }
+}
+
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-ecr-dkr-vpce-${var.environment}"
+  }
+}
+
+# 16d. Internal ALB security group and module
+module "alb_sg" {
+  source = "../../modules/security_group"
+
+  project_name = var.project_name
+  vpc_id       = module.vpc_platform.vpc_id
+  name_suffix  = "ai-alb-sg"
+  description  = "Security Group for AI Engine internal ALB"
+
+  ingress_rules = [{
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = [var.platform_vpc_cidr]
+    description = "Allow inbound port 8080 traffic from Platform VPC"
+  }]
+}
+
+module "alb" {
+  source = "../../modules/alb"
+
+  project_name          = var.project_name
+  environment           = var.environment
+  vpc_id                = module.vpc_platform.vpc_id
+  private_subnet_ids    = module.vpc_platform.private_subnet_ids
+  alb_security_group_id = module.alb_sg.security_group_id
+}
+
 # 17. EKS IRSA Roles for Workloads
+
+data "aws_iam_policy_document" "tf1_api_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:default:tf1-api-sa"]
+    }
+  }
+}
 
 # IAM Role for tf1-api (Needs to read DynamoDB & Secrets Manager)
 resource "aws_iam_role" "tf1_api_irsa" {
   name = "${var.project_name}-tf1-api-irsa-${var.environment}"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "${local.oidc_provider_url}:sub" = "system:serviceaccount:default:tf1-api-sa"
-          }
-        }
-      }
-    ]
-  })
+  assume_role_policy = data.aws_iam_policy_document.tf1_api_assume_role.json
 
   tags = {
     Environment = var.environment
@@ -365,32 +444,55 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
           module.secrets_manager.secret_arns["jira_api_token"],
           module.secrets_manager.secret_arns["slack_bot_token"]
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = ["arn:aws:bedrock:${var.aws_region}::foundation-model/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = ["arn:aws:bedrock-agentcore:${var.aws_region}:*:runtime/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          module.s3.bucket_arn,
+          "${module.s3.bucket_arn}/*"
+        ]
       }
     ]
   })
+}
+
+data "aws_iam_policy_document" "tf1_worker_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:default:tf1-worker-sa"]
+    }
+  }
 }
 
 # IAM Role for tf1-worker (Needs S3, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
 resource "aws_iam_role" "tf1_worker_irsa" {
   name = "${var.project_name}-tf1-worker-irsa-${var.environment}"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "${local.oidc_provider_url}:sub" = "system:serviceaccount:default:tf1-worker-sa"
-          }
-        }
-      }
-    ]
-  })
+  assume_role_policy = data.aws_iam_policy_document.tf1_worker_assume_role.json
 
   tags = {
     Environment = var.environment
@@ -448,4 +550,98 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
     ]
   })
 }
+
+data "aws_iam_policy_document" "aws_lbc_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "aws_iam_role" "aws_lbc_irsa" {
+  name = "${var.project_name}-aws-lbc-irsa-${var.environment}"
+
+  assume_role_policy = data.aws_iam_policy_document.aws_lbc_assume_role.json
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "aws_lbc_policy" {
+  role       = aws_iam_role.aws_lbc_irsa.name
+  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
+}
+
+resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
+  name = "${var.project_name}-aws-lbc-ec2-policy-${var.environment}"
+  role = aws_iam_role.aws_lbc_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteSecurityGroup",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupEgress"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# 19. GitOps Bootstrapping: ArgoCD + Root App
+resource "helm_release" "argocd" {
+  name             = "argocd"
+  repository       = "https://argoproj.github.io/argo-helm"
+  chart            = "argo-cd"
+  namespace        = "argocd"
+  create_namespace = true
+
+  set = [
+    {
+      name  = "server.service.type"
+      value = "ClusterIP"
+    }
+  ]
+}
+
+resource "terraform_data" "argocd_root" {
+  input = filemd5("${path.module}/../../../platform/argocd/root-app.yaml")
+
+  provisioner "local-exec" {
+    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} && kubectl apply -f \"${path.module}/../../../platform/argocd/root-app.yaml\""
+  }
+
+  depends_on = [helm_release.argocd]
+}
+
+
 

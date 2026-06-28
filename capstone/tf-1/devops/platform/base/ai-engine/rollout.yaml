@@ -1,0 +1,97 @@
+# Argo Rollouts — tf1-api canary (thay cho Deployment thường).
+# Canary 10% → 50% → 100% với background AnalysisRun; abort tự rollback nếu
+# p99 vượt ngưỡng (deployment-contract.md: abort khi p99 > 800ms / error rate > 1%).
+# Basic canary (không traffic router): Argo Rollouts chia traffic theo tỉ lệ replica,
+# Service tf1-api + TargetGroupBinding gửi tới cả pod stable lẫn canary.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: tf1-api
+  namespace: triage-hub
+  labels:
+    app: tf1-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tf1-api
+  strategy:
+    canary:
+      # Background analysis: chạy từ bước canary đầu tiên, fail → abort + rollback
+      analysis:
+        startingStep: 1
+        templates:
+          - templateName: tf1-api-latency
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: tf1-api
+    spec:
+      serviceAccountName: tf1-api-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ai-engine
+          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # API role: chạy FastAPI (engine image dùng chung, override command)
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: "512m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: AIOPS_OBSERVABILITY_ENABLED
+              value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
+            # SERVICE_AUTH_TOKEN: xác thực inter-service /v1/triage (main.py:388)
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: SERVICE_AUTH_TOKEN
+            # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
+            - name: BEDROCK_MODEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: BEDROCK_MODEL_ID
+            # Lưu ý: tf1-api KHÔNG có SLACK_WEBHOOK_URL — Slack do tf1-worker gửi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10

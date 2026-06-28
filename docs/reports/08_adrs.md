@@ -94,11 +94,11 @@
   - ✅ Tái dùng được stack đã học ở lab `aws-sercurity` + `w9/lab-final` (ArgoCD, ESO, Gatekeeper, Cosign, kube-prometheus-stack).
   - ⚠️ Ops overhead cao hơn Fargate: phải quản control plane add-ons, node group, K8s upgrade.
   - ⚠️ Fixed cost cao hơn (node luôn chạy min 2) so với Fargate scale-to-task — chấp nhận cho demo, bù bằng đúng angle.
-  - ⚠️ Cần push-back để `deployment-contract.md` trở thành **compute-agnostic** (contract chỉ nên chốt I/O + port 8080 + `/health`, không chốt runtime). Bản frozen 25/06 (`Key principle`) **đã** xác nhận mỗi CDO tự host theo angle riêng, nên push-back này coi như được giải quyết.
+  - ⚠️ Cần push-back để `deployment-contract.md` trở thành **compute-agnostic** (contract chỉ nên chốt I/O + port 8080 + `/healthz`, không chốt runtime). Bản frozen 25/06 (`Key principle`) **đã** xác nhận mỗi CDO tự host theo angle riêng, nên push-back này coi như được giải quyết.
 - **Alternatives considered**:
   - **ECS Fargate** (AI team recommend): vận hành nhẹ, ít YAML, predictable. Rejected vì isolation chỉ ở task-level, không có admission policy-as-code, autoscaling chỉ 1 chiều, và **không tạo differentiation** so với teammate cũng dùng serverless.
   - **AWS Lambda**: rejected — engine có FastAPI long-running + background consumer + ML deps (numpy/scikit-learn), không hợp model 15-phút/stateless (`handoff-1.txt:88-93`).
-- **Compatibility note**: Quyết định này **không đổi I/O contract**. Engine vẫn expose port 8080, health `/health` (`deployment-contract.md:122`), `POST /v1/triage` sync p99 < 500ms (`ai-api-contract.md:103`), nhận bundle input. EKS map các reference value của contract (min2/max10, CPU70/req100) sang HPA tương đương đúng tinh thần `Key principle`. Container image y hệt bản Fargate — chỉ khác lớp orchestration.
+- **Compatibility note**: Quyết định này **không đổi I/O contract**. Engine vẫn expose port 8080, health `/healthz` (`ai-api-contract.md` — code dùng `/healthz` + `/readyz`), `POST /v1/triage` sync p99 < 500ms (`ai-api-contract.md:103`), nhận bundle input. EKS map các reference value của contract (min2/max10, CPU70/req100) sang HPA tương đương đúng tinh thần `Key principle`. Container image y hệt bản Fargate — chỉ khác lớp orchestration.
 
 ---
 

@@ -136,6 +136,7 @@ jobs:
           PY
           done < <(find "$APP_ROOT" -name pyproject.toml -print)
 
+
       - name: Ruff lint
         run: |
           if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
@@ -162,17 +163,19 @@ jobs:
 
       - name: Run unit tests
         run: |
-          export PYTHONPATH="$APP_ROOT:${PYTHONPATH:-}"
-          if [ -d "$APP_ROOT/ai-engine" ]; then
-            export PYTHONPATH="$APP_ROOT/ai-engine:$PYTHONPATH"
-          fi
-
-          TEST_PATHS=$(find "$APP_ROOT" -type d -name tests -print)
-          TEST_FILES=$(find "$APP_ROOT" -type f -name 'test_*.py' -print)
-          if [ -n "$TEST_PATHS$TEST_FILES" ]; then
-            pytest "$APP_ROOT" -v --tb=short
+          export PYTHONPATH="$GITHUB_WORKSPACE/$APP_ROOT:${PYTHONPATH:-}"
+          if [ -d "$GITHUB_WORKSPACE/$APP_ROOT/ai-engine" ]; then
+            export PYTHONPATH="$GITHUB_WORKSPACE/$APP_ROOT/ai-engine:$PYTHONPATH"
+            cd "$GITHUB_WORKSPACE/$APP_ROOT/ai-engine"
+            pytest -v --tb=short
           else
-            echo "No tests found yet; skipping pytest for skeleton repository."
+            TEST_PATHS=$(find "$APP_ROOT" -type d -name tests -print)
+            TEST_FILES=$(find "$APP_ROOT" -type f -name 'test_*.py' -print)
+            if [ -n "$TEST_PATHS$TEST_FILES" ]; then
+              pytest "$APP_ROOT" -v --tb=short
+            else
+              echo "No tests found yet; skipping pytest for skeleton repository."
+            fi
           fi
 
       - name: Gitleaks secret scan
@@ -180,78 +183,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-
-  build-ai-image:
-    name: Build and push AI engine image
-    needs: [detect-changes, lint-test]
-    if: |
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
-      (needs.detect-changes.outputs.ai_engine == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.image.outputs.image_uri }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build image
-        id: image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
-        run: |
-          set -euo pipefail
-          DOCKERFILE="$APP_ROOT/ai-engine/Dockerfile"
-          SHORT_SHA="${IMAGE_TAG::12}"
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA"
-
-          if [ ! -f "$DOCKERFILE" ]; then
-            echo "AI engine Dockerfile not found at $DOCKERFILE; skipping image build."
-            echo "image_uri=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          docker build \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            -t "$IMAGE_URI" \
-            -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
-            "$APP_ROOT/ai-engine"
-
-          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
-
-      - name: Scan image with Trivy
-        if: steps.image.outputs.image_uri != ''
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.image.outputs.image_uri }}
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Push image
-        if: steps.image.outputs.image_uri != ''
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
-        run: |
-          SHORT_SHA="${IMAGE_TAG::12}"
-          docker push "$IMAGE_URI"
-          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          echo "Pushed $IMAGE_URI"
 
   package-lambdas:
     name: Package Lambda dispatchers
@@ -375,46 +306,9 @@ jobs:
           aws lambda wait function-updated --function-name "$FUNCTION_NAME"
           echo "Updated $FUNCTION_NAME"
 
-  deploy-ai-engine:
-    name: Deploy AI engine to EKS
-    needs: build-ai-image
-    if: |
-      needs.build-ai-image.outputs.image_uri != '' &&
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
-    runs-on: ubuntu-latest
-    environment: sandbox
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Roll out image
-        env:
-          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
-          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'triage-hub' }}
-          K8S_DEPLOYMENT: ${{ vars.K8S_AI_DEPLOYMENT || 'ai-engine' }}
-          K8S_CONTAINER: ${{ vars.K8S_AI_CONTAINER || 'ai-engine' }}
-          IMAGE_URI: ${{ needs.build-ai-image.outputs.image_uri }}
-        run: |
-          set -euo pipefail
-          if [ -z "$EKS_CLUSTER_NAME" ]; then
-            echo "EKS_CLUSTER_NAME is not set; skipping EKS rollout."
-            exit 0
-          fi
-
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
-          kubectl -n "$K8S_NAMESPACE" set image "deployment/$K8S_DEPLOYMENT" "$K8S_CONTAINER=$IMAGE_URI"
-          kubectl -n "$K8S_NAMESPACE" rollout status "deployment/$K8S_DEPLOYMENT" --timeout=5m
-
   smoke-test:
     name: Smoke test triage flow
-    needs: [deploy-lambdas, deploy-ai-engine]
+    needs: [deploy-lambdas]
     if: |
       always() &&
       github.event_name != 'pull_request' &&
