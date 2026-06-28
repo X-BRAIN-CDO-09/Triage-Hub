@@ -633,8 +633,12 @@ resource "helm_release" "argocd" {
   ]
 }
 
-resource "kubernetes_manifest" "argocd_root" {
-  manifest = yamldecode(file("${path.module}/../../../platform/argocd/root-app.yaml"))
+resource "terraform_data" "argocd_root" {
+  input = filemd5("${path.module}/../../../platform/argocd/root-app.yaml")
+
+  provisioner "local-exec" {
+    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} && kubectl apply -f \"${path.module}/../../../platform/argocd/root-app.yaml\""
+  }
 
   depends_on = [helm_release.argocd]
 }
