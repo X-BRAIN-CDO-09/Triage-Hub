@@ -33,14 +33,16 @@ module "vpc_customer" {
 module "customer_app" {
   source = "../../modules/customer_app"
 
-  vpc_id          = module.vpc_customer.vpc_id
-  subnet_id       = module.vpc_customer.public_subnet_ids[0]
-  environment     = var.environment
-  instance_type   = var.customer_instance_type
-  api_gateway_url = "${module.api_gateway.invoke_url}/alerts"
-  api_key         = module.api_gateway.api_key_value
-  tenant_id       = "tenant-a"
+  vpc_id                = module.vpc_customer.vpc_id
+  subnet_id             = module.vpc_customer.public_subnet_ids[0]
+  environment           = var.environment
+  instance_type         = var.customer_instance_type
+  api_gateway_url       = "${module.api_gateway.invoke_url}/alerts"
+  api_key               = module.api_gateway.api_key_value
+  tenant_id             = "tenant-a"
+  allowed_inbound_cidrs = formatlist("%s/32", module.vpc_platform.nat_public_ips)
 }
+
 
 # 4. ECR Module
 module "ecr" {

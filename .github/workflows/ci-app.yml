@@ -80,7 +80,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
+      - name: Detect Python dependency manifests
+        id: python-deps
+        run: |
+          if find "$APP_ROOT" \( -name requirements.txt -o -name pyproject.toml \) -print -quit | grep -q .; then
+            echo "has_manifest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_manifest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python with pip cache
+        if: steps.python-deps.outputs.has_manifest == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -88,6 +98,12 @@ jobs:
           cache-dependency-path: |
             capstone/tf-1/devops/app/**/requirements.txt
             capstone/tf-1/devops/app/**/pyproject.toml
+
+      - name: Setup Python without pip cache
+        if: steps.python-deps.outputs.has_manifest != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Python QA tools
         run: |
@@ -99,9 +115,25 @@ jobs:
           done < <(find "$APP_ROOT" -name requirements.txt -print)
 
           while IFS= read -r pyproject_file; do
-            project_dir="$(dirname "$pyproject_file")"
-            echo "Installing project dependencies from $project_dir"
-            python -m pip install -e "$project_dir"
+            echo "Installing dependencies declared in $pyproject_file"
+            python - "$pyproject_file" <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open(sys.argv[1], "rb") as handle:
+              data = tomllib.load(handle)
+
+          project = data.get("project", {})
+          dependencies = list(project.get("dependencies", []))
+
+          optional = project.get("optional-dependencies", {})
+          for group in ("test", "tests", "dev"):
+              dependencies.extend(optional.get(group, []))
+
+          if dependencies:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+          PY
           done < <(find "$APP_ROOT" -name pyproject.toml -print)
 
 
