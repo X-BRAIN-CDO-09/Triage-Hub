@@ -121,7 +121,9 @@ def compact_metrics(metrics: Any) -> tuple[list[dict[str, Any]], list[str]]:
         item = dict(metric)
         points = item.get("points")
         if isinstance(points, list) and len(points) > max_points:
-            item["points"] = sorted(points, key=lambda point: str(point.get("ts", "")) if isinstance(point, dict) else "")[-max_points:]
+            item["points"] = sorted(
+                points, key=lambda point: str(point.get("ts", "")) if isinstance(point, dict) else ""
+            )[-max_points:]
             reasons.append("max_metric_points_per_series")
         compacted.append(item)
     return compacted, reasons

@@ -1,4 +1,4 @@
-﻿"""
+"""
 conftest.py — shared pytest fixtures for ai-engine tests
 
 Key fixture: `isolate_auth_env`
@@ -8,6 +8,7 @@ Key fixture: `isolate_auth_env`
   - Individual tests that specifically want to test auth enforcement can
     override by setting os.environ["SERVICE_AUTH_TOKEN"] inside the test.
 """
+
 from __future__ import annotations
 
 import pytest
