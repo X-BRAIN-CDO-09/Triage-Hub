@@ -33,6 +33,11 @@ output "sqs_queue_urls" {
   description = "The SQS queue URLs"
 }
 
+output "alb_target_group_arn" {
+  value       = module.alb.target_group_arn
+  description = "Internal ALB target group ARN — paste vào TargetGroupBinding (overlays/sandbox)"
+}
+
 output "s3_bucket_id" {
   value       = module.s3.bucket_id
   description = "The ID of the S3 bucket"
