@@ -185,8 +185,8 @@ module "lambda" {
       environment_variables = {
         SQS_QUEUE_URL = module.sqs.queue_urls["buffer-queue"]
         AI_ENGINE_URL = "http://${module.alb.dns_name}:8080/v1/triage"
-        # Đọc CHUNG secret triage-hub/ai-engine với engine (ESO) → token luôn khớp
-        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.ai_engine_secret_arn
+        # Đọc CÙNG secret service_auth_token với engine (ESO) → token luôn khớp (khớp file teammate)
+        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.secret_arns["service_auth_token"]
       }
       iam_policy_statements = [
         {
@@ -197,7 +197,7 @@ module "lambda" {
         {
           effect    = "Allow"
           actions   = ["secretsmanager:GetSecretValue"]
-          resources = [module.secrets_manager.ai_engine_secret_arn]
+          resources = [module.secrets_manager.secret_arns["service_auth_token"]]
         }
       ]
     }

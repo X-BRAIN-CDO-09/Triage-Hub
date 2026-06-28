@@ -28,26 +28,24 @@ resource "aws_secretsmanager_secret_version" "this" {
   }
 }
 
-# AI engine combined config — tên đúng path mà External Secrets Operator của engine đọc
-# (key: triage-hub/ai-engine). Cả engine (qua ESO) lẫn push-to-ai Lambda đọc CÙNG secret
-# này → 1 nguồn token duy nhất, hết lệch token (gotcha #3).
+# AI engine CONFIG (không phải credential) — tên path mà ESO của engine đọc
+# (key: triage-hub/ai-engine). Token KHÔNG ở đây — token nằm ở secret standalone
+# service_auth_token (khớp file teammate). Đây chỉ giữ config: model id, slack webhook, queue url.
 resource "aws_secretsmanager_secret" "ai_engine" {
   name                    = "${var.project_name}/ai-engine"
-  description             = "AI engine combined runtime config (JSON)"
+  description             = "AI engine non-credential config (JSON)"
   recovery_window_in_days = var.environment == "prod" ? 30 : 0
 
   tags = { Name = "${var.project_name}/ai-engine" }
 }
 
-# JSON placeholder hợp lệ để ESO parse được property trước khi điền giá trị thật.
-# Giá trị thật điền qua: aws secretsmanager put-secret-value (không nằm trong TF state).
+# JSON placeholder hợp lệ để ESO parse property. Điền giá trị thật qua put-secret-value.
 resource "aws_secretsmanager_secret_version" "ai_engine" {
   secret_id = aws_secretsmanager_secret.ai_engine.id
   secret_string = jsonencode({
-    SERVICE_AUTH_TOKEN = "placeholder-change-me"
-    BEDROCK_MODEL_ID   = "us.anthropic.claude-opus-4-8"
-    SLACK_WEBHOOK_URL  = "placeholder-change-me"
-    SQS_QUEUE_URL      = "placeholder-change-me"
+    BEDROCK_MODEL_ID  = "us.anthropic.claude-opus-4-8"
+    SLACK_WEBHOOK_URL = "placeholder-change-me"
+    SQS_QUEUE_URL     = "placeholder-change-me"
   })
 
   lifecycle {
