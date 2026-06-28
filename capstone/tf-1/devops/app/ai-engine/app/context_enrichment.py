@@ -10,6 +10,7 @@ from app.observability import (
     span,
 )
 
+
 EVIDENCE_FIELDS = ("metrics", "logs", "traces", "recent_deploys")
 
 
@@ -26,9 +27,7 @@ def enrich_triage_context(
 
         evidence_uri = labels.get("evidence_uri")
         if isinstance(evidence_uri, str) and evidence_uri:
-            with span(
-                "evidence_bundle_load", service=scope.service, tenant_id=scope.tenant_id, environment=scope.environment
-            ):
+            with span("evidence_bundle_load", service=scope.service, tenant_id=scope.tenant_id, environment=scope.environment):
                 bundle = load_evidence_bundle(registry, evidence_uri, scope)
             if bundle is not None:
                 apply_evidence_bundle(enriched, bundle)

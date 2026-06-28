@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+
 RISK_ORDER = {"low": 1, "medium": 2, "high": 3}
 
 
@@ -170,9 +171,7 @@ ACTION_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
-def select_actions(
-    request: Any, decision: dict[str, Any], rca: dict[str, Any], runbook_ref: str | None
-) -> list[dict[str, Any]]:
+def select_actions(request: Any, decision: dict[str, Any], rca: dict[str, Any], runbook_ref: str | None) -> list[dict[str, Any]]:
     classification = decision["classification"]
     evidence_refs = build_evidence_refs(request, decision, rca)
     selected_ids = candidate_ids_for(request, decision, rca)
@@ -247,56 +246,23 @@ def has_timeout_or_dependency_signal(request: Any, rca: dict[str, Any]) -> bool:
         " ".join(item.get("reason", "") for item in rca.get("anomaly_evidence", [])),
     ]
     text = " ".join(text_parts).lower()
-    return any(
-        token in text
-        for token in ["timeout", "redis", "database", "postgres", "mysql", "connection pool", "slow query"]
-    )
+    return any(token in text for token in ["timeout", "redis", "database", "postgres", "mysql", "connection pool", "slow query"])
 
 
 def signal_action_ids(request: Any, rca: dict[str, Any]) -> list[str]:
     text = signal_text(request, rca)
     ids: list[str] = []
-    if any(
-        token in text
-        for token in [
-            "cpu",
-            "memory",
-            "oom",
-            "out of memory",
-            "heap",
-            "saturation",
-            "connection pool",
-            "connections exhausted",
-        ]
-    ):
+    if any(token in text for token in ["cpu", "memory", "oom", "out of memory", "heap", "saturation", "connection pool", "connections exhausted"]):
         ids.append("resource_saturation_triage")
     if any(token in text for token in ["disk", "inode", "no space", "filesystem", "volume full"]):
         ids.append("disk_pressure_triage")
     if any(token in text for token in ["queue", "backlog", "lag", "consumer", "kafka", "sqs", "rabbitmq"]):
         ids.append("queue_backlog_triage")
-    if any(
-        token in text
-        for token in ["auth", "oauth", "jwt", "token", "unauthorized", "forbidden", "401", "403", "credential"]
-    ):
+    if any(token in text for token in ["auth", "oauth", "jwt", "token", "unauthorized", "forbidden", "401", "403", "credential"]):
         ids.append("auth_failure_triage")
-    if any(
-        token in text
-        for token in [
-            "dns",
-            "tls",
-            "certificate",
-            "cert",
-            "network",
-            "connection refused",
-            "connection reset",
-            "egress",
-        ]
-    ):
+    if any(token in text for token in ["dns", "tls", "certificate", "cert", "network", "connection refused", "connection reset", "egress"]):
         ids.append("network_dns_triage")
-    if any(
-        token in text
-        for token in ["crashloop", "crash loop", "pod restart", "readiness", "liveness", "oomkilled", "imagepull"]
-    ):
+    if any(token in text for token in ["crashloop", "crash loop", "pod restart", "readiness", "liveness", "oomkilled", "imagepull"]):
         ids.append("kubernetes_crashloop_triage")
     if any(token in text for token in ["429", "rate limit", "ratelimit", "throttle", "throttling", "quota"]):
         ids.append("rate_limit_throttling_triage")
