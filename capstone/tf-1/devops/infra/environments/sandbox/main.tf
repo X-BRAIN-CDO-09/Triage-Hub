@@ -389,27 +389,29 @@ module "alb" {
 
 # 17. EKS IRSA Roles for Workloads
 
+data "aws_iam_policy_document" "tf1_api_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:default:tf1-api-sa"]
+    }
+  }
+}
+
 # IAM Role for tf1-api (Needs to read DynamoDB & Secrets Manager)
 resource "aws_iam_role" "tf1_api_irsa" {
   name = "${var.project_name}-tf1-api-irsa-${var.environment}"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "${local.oidc_provider_url}:sub" = "system:serviceaccount:default:tf1-api-sa"
-          }
-        }
-      }
-    ]
-  })
+  assume_role_policy = data.aws_iam_policy_document.tf1_api_assume_role.json
 
   tags = {
     Environment = var.environment
@@ -468,27 +470,29 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
   })
 }
 
+data "aws_iam_policy_document" "tf1_worker_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:default:tf1-worker-sa"]
+    }
+  }
+}
+
 # IAM Role for tf1-worker (Needs S3, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
 resource "aws_iam_role" "tf1_worker_irsa" {
   name = "${var.project_name}-tf1-worker-irsa-${var.environment}"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "${local.oidc_provider_url}:sub" = "system:serviceaccount:default:tf1-worker-sa"
-          }
-        }
-      }
-    ]
-  })
+  assume_role_policy = data.aws_iam_policy_document.tf1_worker_assume_role.json
 
   tags = {
     Environment = var.environment
@@ -547,27 +551,28 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
   })
 }
 
-# 18. AWS Load Balancer Controller IRSA role and policies
+data "aws_iam_policy_document" "aws_lbc_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
 resource "aws_iam_role" "aws_lbc_irsa" {
   name = "${var.project_name}-aws-lbc-irsa-${var.environment}"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "${local.oidc_provider_url}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
-          }
-        }
-      }
-    ]
-  })
+  assume_role_policy = data.aws_iam_policy_document.aws_lbc_assume_role.json
 
   tags = {
     Environment = var.environment
