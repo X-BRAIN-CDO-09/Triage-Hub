@@ -10,7 +10,13 @@ async function getAuthToken() {
   if (!SERVICE_AUTH_TOKEN_ARN) return null;
   if (cachedToken) return cachedToken;
   const out = await smClient.send(new GetSecretValueCommand({ SecretId: SERVICE_AUTH_TOKEN_ARN }));
-  cachedToken = out.SecretString;
+  // Secret triage-hub/ai-engine là JSON dùng chung với engine (ESO).
+  // Lấy SERVICE_AUTH_TOKEN từ JSON; fallback raw string nếu không phải JSON.
+  try {
+    cachedToken = JSON.parse(out.SecretString).SERVICE_AUTH_TOKEN;
+  } catch {
+    cachedToken = out.SecretString;
+  }
   return cachedToken;
 }
 

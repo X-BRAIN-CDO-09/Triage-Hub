@@ -183,9 +183,10 @@ module "lambda" {
       vpc_subnet_ids         = module.vpc_platform.private_subnet_ids
       vpc_security_group_ids = [module.lambda_sg.security_group_id]
       environment_variables = {
-        SQS_QUEUE_URL          = module.sqs.queue_urls["buffer-queue"]
-        AI_ENGINE_URL          = "http://${module.alb.dns_name}:8080/v1/triage"
-        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.secret_arns["service_auth_token"]
+        SQS_QUEUE_URL = module.sqs.queue_urls["buffer-queue"]
+        AI_ENGINE_URL = "http://${module.alb.dns_name}:8080/v1/triage"
+        # Đọc CHUNG secret triage-hub/ai-engine với engine (ESO) → token luôn khớp
+        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.ai_engine_secret_arn
       }
       iam_policy_statements = [
         {
@@ -196,7 +197,7 @@ module "lambda" {
         {
           effect    = "Allow"
           actions   = ["secretsmanager:GetSecretValue"]
-          resources = [module.secrets_manager.secret_arns["service_auth_token"]]
+          resources = [module.secrets_manager.ai_engine_secret_arn]
         }
       ]
     }
