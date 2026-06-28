@@ -35,3 +35,9 @@ variable "tenant_id" {
   description = "The ID of the tenant for this customer app deployment"
   default     = "tenant-a"
 }
+
+variable "allowed_inbound_cidrs" {
+  type        = list(string)
+  description = "List of public CIDR blocks (e.g. NAT Gateway public IPs) allowed to access monitoring services"
+}
+
