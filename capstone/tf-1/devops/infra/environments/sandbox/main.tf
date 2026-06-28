@@ -620,10 +620,12 @@ resource "helm_release" "argocd" {
   namespace        = "argocd"
   create_namespace = true
 
-  set {
-    name  = "server.service.type"
-    value = "ClusterIP"
-  }
+  set = [
+    {
+      name  = "server.service.type"
+      value = "ClusterIP"
+    }
+  ]
 }
 
 resource "kubernetes_manifest" "argocd_root" {
