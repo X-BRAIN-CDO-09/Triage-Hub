@@ -119,16 +119,26 @@ spec:
       annotations:
         summary: "Cart service is down"
         description: "The cartservice has 0 available replicas. Customers cannot access their shopping carts."
-    - alert: PodCpuUsageHigh
-      expr: sum(rate(container_cpu_usage_seconds_total{pod="cpu-stress-noisy"}[1m])) * 100 > 80
+    - alert: FrontendLatencyHigh
+      expr: histogram_quantile(0.95, sum(rate(grpc_server_handling_seconds_bucket[2m])) by (le)) > 2
       for: 30s
       labels:
         severity: warning
         tenant_id: '${tenant_id}'
       annotations:
-        summary: "CPU usage high on noisy pod"
-        description: "The cpu-stress-noisy pod is consuming more than 80% CPU."
+        summary: "High latency on frontend service"
+        description: "The 95th percentile request latency is above 2s for 30s."
+    - alert: CpuSpikeNoise
+      expr: sum(rate(container_cpu_usage_seconds_total{pod="cpu-stress-noisy"}[1m])) * 100 > 90
+      for: 1s
+      labels:
+        severity: warning
+        tenant_id: '${tenant_id}'
+      annotations:
+        summary: "CPU spike noise"
+        description: "Transient CPU spike detected on cpu-stress-noisy pod."
 INNER_EOF
+
 
 # Đợi Prometheus CRD sẵn sàng rồi mới apply Rule
 until kubectl get crd prometheusrules.monitoring.coreos.com; do
@@ -144,3 +154,119 @@ until kubectl get svc prometheus-grafana -n monitoring; do
   sleep 5
 done
 kubectl patch svc prometheus-grafana -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"name": "http", "port": 80, "nodePort": 3000}]}}'
+
+# 12. Triển khai Jaeger All-in-One
+cat <<'INNER_EOF' > /tmp/jaeger-all-in-one.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:1.57
+        env:
+        - name: QUERY_BASE_PATH
+          value: /jaeger
+        ports:
+        - containerPort: 16686
+        - containerPort: 4317
+        - containerPort: 4318
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: monitoring
+spec:
+  ports:
+  - name: query
+    port: 16686
+    targetPort: 16686
+  selector:
+    app: jaeger
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-collector
+  namespace: monitoring
+spec:
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  selector:
+    app: jaeger
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otelcol
+  namespace: default
+spec:
+  type: ExternalName
+  externalName: jaeger-collector.monitoring.svc.cluster.local
+INNER_EOF
+
+kubectl apply -f /tmp/jaeger-all-in-one.yaml
+
+# 13. Patch Services thành NodePorts để Nginx trỏ tới
+until kubectl get svc prometheus-kube-prometheus-prometheus -n monitoring; do
+  sleep 5
+done
+kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"name": "http-web", "port": 9090, "nodePort": 9090}]}}'
+
+until kubectl get svc loki -n monitoring; do
+  sleep 5
+done
+kubectl patch svc loki -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"name": "http", "port": 3100, "nodePort": 3100}]}}'
+
+until kubectl get svc jaeger-query -n monitoring; do
+  sleep 5
+done
+kubectl patch svc jaeger-query -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"name": "query", "port": 16686, "nodePort": 16686}]}}'
+
+# 14. Cài đặt Nginx làm proxy gộp cổng
+apt-get install -y nginx
+cat <<'INNER_EOF' > /etc/nginx/sites-available/monitoring-proxy
+server {
+    listen 9000;
+
+    location /loki/ {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /jaeger/ {
+        proxy_pass http://127.0.0.1:16686;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:9090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+INNER_EOF
+
+ln -s /etc/nginx/sites-available/monitoring-proxy /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+systemctl restart nginx
+
