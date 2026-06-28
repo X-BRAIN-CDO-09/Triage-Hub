@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,24 +11,14 @@ from fastapi.testclient import TestClient
 
 from app.action_catalog import select_actions
 from app.agent_runtime import run_agent_platform
-from app.aiops_worker import (
-    build_report,
-    build_triage_request,
-    detect_incident,
-    offline_raw_observability,
-    process_sqs_message,
-)
+from app.aiops_worker import build_report, build_triage_request, detect_incident, offline_raw_observability, process_sqs_message
 from app.context_tools import ContextClient, ToolRegistry, ToolScope, ToolScopeError
+from app.evidence_budget import compact_request_evidence
+from app.idempotency_store import read_record, request_hash, write_record
 from app.incident_seed import IncidentSeed, build_triage_request_from_seed
 from app.investigation_router import select_investigation_mode
-from app.llm import (
-    agentcore_session_id,
-    investigate_with_tools,
-    parse_tool_calls,
-    read_agentcore_response,
-    reword_catalog_actions,
-)
-from app.main import MetricPoint, MetricSeries, TriageRequest, app, classify
+from app.llm import agentcore_session_id, build_prompt_payload, investigate_with_tools, parse_tool_calls, read_agentcore_response, reword_catalog_actions
+from app.main import MetricPoint, MetricSeries, TriageRequest, _rate_limit_hits, app, build_audit_id, classify
 from app.observability import sanitize_log_fields
 from app.rca import analyze_request, detect_metric_anomalies, infer_causal_hints
 from app.report_store import write_report
@@ -83,10 +74,7 @@ def test_statistical_detectors_emit_expected_evidence() -> None:
         metric_name="http_latency_p95_ms",
         service="payment-api",
         unit="ms",
-        points=[
-            MetricPoint(ts=f"2026-06-22T09:{minute:02d}:00Z", value=value)
-            for minute, value in enumerate([200, 205, 198, 207, 203, 201, 206, 2100])
-        ],
+        points=[MetricPoint(ts=f"2026-06-22T09:{minute:02d}:00Z", value=value) for minute, value in enumerate([200, 205, 198, 207, 203, 201, 206, 2100])],
     )
 
     detectors = {item["detector"] for item in detect_metric_anomalies([series])}
@@ -146,9 +134,7 @@ def test_metrics_endpoint_exposes_triage_engine_metrics() -> None:
 
 def test_router_chooses_deterministic_for_low_complexity(monkeypatch) -> None:
     monkeypatch.delenv("AIOPS_INVESTIGATION_MODE", raising=False)
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/latency-degradation.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/latency-degradation.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
@@ -160,9 +146,7 @@ def test_router_chooses_deterministic_for_low_complexity(monkeypatch) -> None:
 
 def test_router_chooses_assisted_for_medium_complexity(monkeypatch) -> None:
     monkeypatch.delenv("AIOPS_INVESTIGATION_MODE", raising=False)
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/latency-degradation.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/latency-degradation.request.json").read_text(encoding="utf-8")))
     body = request.model_dump(mode="json")
     body["traces"] = []
     body["recent_deploys"] = []
@@ -179,9 +163,7 @@ def test_router_chooses_assisted_for_medium_complexity(monkeypatch) -> None:
 
 def test_router_chooses_platform_for_high_complexity(monkeypatch) -> None:
     monkeypatch.delenv("AIOPS_INVESTIGATION_MODE", raising=False)
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
@@ -193,9 +175,7 @@ def test_router_chooses_platform_for_high_complexity(monkeypatch) -> None:
 
 def test_forced_investigation_mode_overrides_auto(monkeypatch) -> None:
     monkeypatch.setenv("AIOPS_INVESTIGATION_MODE", "agent_assisted")
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
@@ -208,9 +188,7 @@ def test_forced_investigation_mode_overrides_auto(monkeypatch) -> None:
 
 def test_agentcore_disabled_selects_deterministic_with_planned_mode(monkeypatch) -> None:
     monkeypatch.delenv("AIOPS_INVESTIGATION_MODE", raising=False)
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
@@ -226,13 +204,7 @@ def test_agent_platform_tool_loop_executes_allowed_tool_and_finalizes(monkeypatc
     monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/tf1")
     responses = iter(
         [
-            json.dumps(
-                {
-                    "type": "tool_requests",
-                    "thought_summary": "Need logs.",
-                    "tool_calls": [{"name": "get_logs", "args": {"limit": 1}}],
-                }
-            ),
+            json.dumps({"type": "tool_requests", "thought_summary": "Need logs.", "tool_calls": [{"name": "get_logs", "args": {"limit": 1}}]}),
             json.dumps(
                 {
                     "type": "final_diagnosis",
@@ -248,15 +220,11 @@ def test_agent_platform_tool_loop_executes_allowed_tool_and_finalizes(monkeypatc
         ]
     )
     monkeypatch.setattr("app.agent_runtime.invoke_agentcore_investigator", lambda *args, **kwargs: next(responses))
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
-    enriched, rerun_rca, final_decision, metadata, advisory_ids = run_agent_platform(
-        request, decision, rca, ToolRegistry(FakeContextClient())
-    )
+    enriched, rerun_rca, final_decision, metadata, advisory_ids = run_agent_platform(request, decision, rca, ToolRegistry(FakeContextClient()))
 
     assert enriched.logs
     assert rerun_rca["anomaly_evidence"]
@@ -285,15 +253,11 @@ def test_agent_platform_blocks_disallowed_tool_and_continues(monkeypatch) -> Non
         ]
     )
     monkeypatch.setattr("app.agent_runtime.invoke_agentcore_investigator", lambda *args, **kwargs: next(responses))
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
-    _, _, final_decision, metadata, advisory_ids = run_agent_platform(
-        request, decision, rca, ToolRegistry(FakeContextClient())
-    )
+    _, _, final_decision, metadata, advisory_ids = run_agent_platform(request, decision, rca, ToolRegistry(FakeContextClient()))
 
     assert final_decision["classification"] == "general_investigation"
     assert metadata["tool_calls"][0]["status"] == "blocked"
@@ -304,15 +268,11 @@ def test_agent_platform_malformed_json_falls_back_deterministic(monkeypatch) -> 
     monkeypatch.setenv("ENABLE_AGENTCORE_LLM", "true")
     monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/tf1")
     monkeypatch.setattr("app.agent_runtime.invoke_agentcore_investigator", lambda *args, **kwargs: "{not-json")
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
-    _, _, final_decision, metadata, advisory_ids = run_agent_platform(
-        request, decision, rca, ToolRegistry(FakeContextClient())
-    )
+    _, _, final_decision, metadata, advisory_ids = run_agent_platform(request, decision, rca, ToolRegistry(FakeContextClient()))
 
     assert final_decision == decision
     assert metadata["fallback"] is True
@@ -336,9 +296,7 @@ def test_agent_platform_invalid_final_diagnosis_falls_back(monkeypatch) -> None:
             }
         ),
     )
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = analyze_request(request)
     decision = classify(request, rca)
 
@@ -355,19 +313,38 @@ def test_triage_metadata_contains_mode_selection_for_simple_request() -> None:
     assert payload["llm_metadata"]["investigation_mode"] == "deterministic_only"
     assert payload["llm_metadata"]["mode_selection"]["selected_mode"] == "deterministic_only"
     assert payload["llm_metadata"]["action_wording"]["skipped_reason"] == "deterministic_only_mode"
+    assert payload["llm_metadata"]["cost_estimate"]["total_estimated_cost_usd"] == 0
+    assert payload["llm_metadata"]["cost_estimate"]["total_tokens"] == 0
+
+
+def test_triage_cost_estimate_records_llm_usage(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_AGENTCORE_LLM", "true")
+    monkeypatch.setenv("AGENTCORE_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/tf1")
+    monkeypatch.setenv("AIOPS_INVESTIGATION_MODE", "agent_assisted")
+    monkeypatch.setenv("AIOPS_LLM_INPUT_COST_PER_1K", "0.002")
+    monkeypatch.setenv("AIOPS_LLM_OUTPUT_COST_PER_1K", "0.006")
+    monkeypatch.setattr("app.llm.invoke_agentcore_payload", lambda *args, **kwargs: json.dumps({"summary": "bounded summary"}))
+    body = json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
+
+    response = TestClient(app).post(
+        "/v1/triage",
+        json=body,
+        headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
+    )
+
+    assert response.status_code == 200
+    cost = response.json()["llm_metadata"]["cost_estimate"]
+    assert cost["total_estimated_cost_usd"] > 0
+    assert cost["total_prompt_tokens"] > 0
+    assert cost["total_completion_tokens"] > 0
+    assert {call["stage"] for call in cost["calls"]} >= {"summary", "actions"}
 
 
 def test_missing_context_routes_to_agent_platform_when_agentcore_enabled(monkeypatch) -> None:
     monkeypatch.setattr("app.main.agent_platform_enabled", lambda: True)
     monkeypatch.setattr(
         "app.main.run_agent_platform",
-        lambda request, decision, rca: (
-            request,
-            rca,
-            decision,
-            {"enabled": True, "fallback": True, "fallback_reason": "mocked"},
-            [],
-        ),
+        lambda request, decision, rca: (request, rca, decision, {"enabled": True, "fallback": True, "fallback_reason": "mocked"}, []),
     )
     body = json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
     response = TestClient(app).post(
@@ -397,6 +374,40 @@ def test_metadata_log_policy_omits_raw_evidence_fields() -> None:
     assert fields == {"audit_id": "audit-001", "tenant_id": "tenant-a", "stage": "completed", "status": "DIAGNOSED"}
 
 
+def test_triage_rate_limit_returns_429(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_RATE_LIMIT_PER_MINUTE", "1")
+    _rate_limit_hits.clear()
+    body = metadata_only_triage_body()
+    body["tenant_id"] = "tenant-rate"
+    body["correlation_id"] = "corr-rate-001"
+    body["incident_id"] = "inc-rate-001"
+    client = TestClient(app)
+    headers = {"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]}
+
+    first = client.post("/v1/triage", json=body, headers=headers)
+    second = client.post("/v1/triage", json=body, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+def test_triage_payload_limit_returns_413(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_MAX_REQUEST_BYTES", "512")
+    body = metadata_only_triage_body()
+    body["tenant_id"] = "tenant-payload"
+    body["correlation_id"] = "corr-payload-001"
+    body["incident_id"] = "inc-payload-001"
+    body["alert"]["description"] = "x" * 2000
+
+    response = TestClient(app).post(
+        "/v1/triage",
+        json=body,
+        headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
+    )
+
+    assert response.status_code == 413
+
+
 def test_qa_budget_degrades_confidence_and_records_metadata(monkeypatch) -> None:
     monkeypatch.setenv("AIOPS_LLM_MAX_TOKENS_PER_INCIDENT", "1")
 
@@ -417,9 +428,7 @@ def test_latency_database_timeout_selects_dependency_action() -> None:
 
 def test_recent_deploy_latency_selects_rollback_consider_with_approval() -> None:
     payload = post_sample("latency-degradation")
-    rollback_actions = [
-        action for action in payload["recommended_actions"] if action["id"] == "consider_recent_deploy_rollback"
-    ]
+    rollback_actions = [action for action in payload["recommended_actions"] if action["id"] == "consider_recent_deploy_rollback"]
 
     assert rollback_actions
     assert rollback_actions[0]["requires_human_approval"] is True
@@ -520,13 +529,7 @@ def test_internal_runbook_action_is_selected_when_runbook_exists() -> None:
         "service": "checkout-api",
         "owner_team": "payments-platform",
         "jira_project": "PAY",
-        "runbooks": [
-            {
-                "title": "Checkout 5xx triage",
-                "url": "runbook://checkout-5xx",
-                "excerpt": "Review upstream and dependency errors.",
-            }
-        ],
+        "runbooks": [{"title": "Checkout 5xx triage", "url": "runbook://checkout-5xx", "excerpt": "Review upstream and dependency errors."}],
     }
     request = TriageRequest.model_validate(body)
     decision = {
@@ -623,18 +626,7 @@ def test_llm_action_wording_falls_back_when_bedrock_disabled(monkeypatch) -> Non
         }
     ]
 
-    result = reword_catalog_actions(
-        request,
-        {
-            "classification": "latency_degradation",
-            "status": "DIAGNOSED",
-            "confidence": 0.82,
-            "summary": "",
-            "evidence": [],
-        },
-        {},
-        actions,
-    )
+    result = reword_catalog_actions(request, {"classification": "latency_degradation", "status": "DIAGNOSED", "confidence": 0.82, "summary": "", "evidence": []}, {}, actions)
 
     assert result["actions"] == actions
     assert result["metadata"]["provider"] == "deterministic"
@@ -650,9 +642,7 @@ def test_report_json_is_written_and_report_apis_return_data(tmp_path, monkeypatc
         headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
     )
     payload = response.json()
-    report = build_report(
-        body, payload, {"evidence": ["synthetic detector evidence"]}, "http://localhost:5173/reports/inc"
-    )
+    report = build_report(body, payload, {"evidence": ["synthetic detector evidence"]}, "http://localhost:5173/reports/inc")
 
     path = write_report(report, tmp_path)
     list_response = client.get("/v1/reports")
@@ -664,6 +654,228 @@ def test_report_json_is_written_and_report_apis_return_data(tmp_path, monkeypatc
     assert detail_response.status_code == 200
     assert detail_response.json()["triage_response"]["audit_id"] == payload["audit_id"]
     assert detail_response.json()["triage_response"]["recommended_actions"][0]["id"]
+
+
+def test_audit_record_is_persisted_and_queryable_without_raw_evidence(tmp_path, monkeypatch) -> None:
+    audit_path = tmp_path / "audit-log.jsonl"
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(audit_path))
+    client = TestClient(app)
+    body = json.loads(Path("samples/latency-degradation.request.json").read_text(encoding="utf-8"))
+
+    response = client.post(
+        "/v1/triage",
+        json=body,
+        headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
+    )
+    payload = response.json()
+    audit_response = client.get(f"/v1/audit/{payload['audit_id']}", headers={"X-Tenant-Id": body["tenant_id"]})
+    cross_tenant_response = client.get(f"/v1/audit/{payload['audit_id']}", headers={"X-Tenant-Id": "tenant-b"})
+
+    assert response.status_code == 200
+    assert audit_response.status_code == 200
+    record = audit_response.json()
+    assert record["audit_id"] == payload["audit_id"]
+    assert record["record_type"] == "triage_decision"
+    assert record["retention_days"] >= 90
+    assert record["decision"]["classification"] == payload["classification"]
+    assert record["evidence_hashes"]["logs"]["count"] == len(body["logs"])
+    assert record["tool_lineage"] == [] or all("args_hash" in item for item in record["tool_lineage"])
+    assert body["logs"][0]["message"] not in json.dumps(record)
+    assert cross_tenant_response.status_code == 404
+
+
+def test_large_inline_logs_are_truncated_and_audit_stays_metadata_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    monkeypatch.setenv("AIOPS_MAX_LOG_RECORDS", "3")
+    monkeypatch.setenv("AIOPS_MAX_LOG_MESSAGE_CHARS", "20")
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-large-logs"
+    body["correlation_id"] = "corr-large-logs"
+    body["logs"] = [
+        {
+            "service": "checkout-api",
+            "ts": f"2026-06-24T09:{minute:02d}:00Z",
+            "level": "error",
+            "message": f"very long timeout message {minute} " + ("x" * 200),
+            "labels": {},
+        }
+        for minute in range(8)
+    ]
+
+    response = TestClient(app).post(
+        "/v1/triage",
+        json=body,
+        headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    budget = payload["llm_metadata"]["evidence_budget"]
+    assert budget["truncated"] is True
+    assert budget["counts_before"]["logs"] == 8
+    assert budget["counts_after"]["logs"] == 3
+    assert "max_log_message_chars" in budget["reasons"]
+    record = read_record(payload["audit_id"])
+    assert record and "x" * 80 not in json.dumps(record)
+
+
+def test_large_metrics_are_capped_by_series_and_points(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_MAX_METRIC_SERIES", "2")
+    monkeypatch.setenv("AIOPS_MAX_METRIC_POINTS_PER_SERIES", "3")
+    body = metadata_only_triage_body()
+    body["metrics"] = [
+        {
+            "metric_name": f"http_latency_p95_ms_{series}",
+            "service": "checkout-api",
+            "unit": "ms",
+            "points": [{"ts": f"2026-06-24T09:{minute:02d}:00Z", "value": float(minute)} for minute in range(8)],
+            "labels": {},
+        }
+        for series in range(5)
+    ]
+    request = TriageRequest.model_validate(body)
+
+    compacted, metadata = compact_request_evidence(request)
+
+    assert metadata["truncated"] is True
+    assert len(compacted.metrics) == 2
+    assert all(len(metric.points) == 3 for metric in compacted.metrics)
+
+
+def test_tool_result_exceeding_budget_is_compacted(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_MAX_LOG_RECORDS", "2")
+    monkeypatch.setenv("AIOPS_MAX_LOG_MESSAGE_CHARS", "12")
+    registry = ToolRegistry(LargeLogContextClient())
+    scope = ToolScope(
+        tenant_id="tenant-a",
+        environment="prod",
+        service="checkout-api",
+        started_at="2026-06-24T08:45:00Z",
+        received_at="2026-06-24T09:05:00Z",
+    )
+
+    result = registry.execute("get_logs", {"limit": 50}, scope)
+
+    assert result["truncated"] is True
+    assert result["evidence_budget"]["counts_before"]["logs"] == 10
+    assert len(result["result"]) == 2
+    assert all(len(item["message"]) <= 12 for item in result["result"])
+
+
+def test_agentcore_prompt_payload_receives_compacted_evidence(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_MAX_LOG_RECORDS", "2")
+    body = metadata_only_triage_body()
+    body["logs"] = [
+        {
+            "service": "checkout-api",
+            "ts": f"2026-06-24T09:{minute:02d}:00Z",
+            "level": "error",
+            "message": f"timeout {minute}",
+            "labels": {},
+        }
+        for minute in range(7)
+    ]
+    request, _ = compact_request_evidence(TriageRequest.model_validate(body))
+    decision = classify(request)
+    rca = analyze_request(request)
+
+    payload = build_prompt_payload(request, decision, rca)
+
+    assert len(payload["logs"]) == 2
+    assert {item["message"] for item in payload["logs"]} == {"timeout 6", "timeout 5"}
+
+
+def test_idempotency_replays_completed_response_for_same_hash(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-idempotent"
+    body["correlation_id"] = "corr-idempotent"
+    client = TestClient(app)
+    first = client.post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+    assert first.status_code == 200
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("triage_request should not run for completed replay")
+
+    monkeypatch.setattr("app.main.triage_request", fail_if_called)
+    second = client.post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_idempotency_conflict_reprocesses_different_request_hash(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-conflict"
+    body["correlation_id"] = "corr-conflict"
+    client = TestClient(app)
+    first = client.post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+    assert first.status_code == 200
+    body["logs"] = [{"service": "checkout-api", "ts": "2026-06-24T09:00:00Z", "level": "error", "message": "new timeout evidence", "labels": {}}]
+
+    second = client.post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+
+    assert second.status_code == 200
+    assert second.json()["llm_metadata"]["idempotency"]["conflict"] is True
+
+
+def test_non_stale_in_progress_idempotency_record_rejects_duplicate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-in-progress"
+    body["correlation_id"] = "corr-in-progress"
+    request = TriageRequest.model_validate(body)
+    write_record(
+        build_audit_id(request),
+        {
+            "audit_id": build_audit_id(request),
+            "status": "in_progress",
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "request_hash": request_hash({"request": body}),
+        },
+    )
+
+    response = TestClient(app).post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+
+    assert response.status_code == 409
+
+
+def test_stale_in_progress_idempotency_record_allows_reprocessing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-stale"
+    body["correlation_id"] = "corr-stale"
+    request = TriageRequest.model_validate(body)
+    stale_time = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat().replace("+00:00", "Z")
+    write_record(build_audit_id(request), {"audit_id": build_audit_id(request), "status": "in_progress", "updated_at": stale_time, "request_hash": "old"})
+
+    response = TestClient(app).post("/v1/triage", json=body, headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]})
+
+    assert response.status_code == 200
+    assert response.json()["llm_metadata"]["idempotency"]["stale_reprocess"] is True
+
+
+def test_exception_writes_failed_idempotency_record(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AUDIT_LOG_PATH", str(tmp_path / "audit-log.jsonl"))
+    body = metadata_only_triage_body()
+    body["incident_id"] = "inc-failed"
+    body["correlation_id"] = "corr-failed"
+
+    def fail_triage(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr("app.main.triage_request", fail_triage)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/v1/triage",
+        json=body,
+        headers={"X-Tenant-Id": body["tenant_id"], "X-Correlation-Id": body["correlation_id"]},
+    )
+
+    assert response.status_code == 500
+    record = read_record(build_audit_id(TriageRequest.model_validate(body)))
+    assert record and record["status"] == "failed_retryable"
+    assert record["error_class"] == "RuntimeError"
 
 
 def test_incident_seed_builds_bounded_triage_request_from_registry() -> None:
@@ -843,9 +1055,7 @@ def test_out_of_scope_evidence_bundle_falls_back_to_scoped_tools(tmp_path, monke
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "app.context_enrichment.ToolRegistry", lambda: ToolRegistry(ScopedBundleContextClient(str(tmp_path)))
-    )
+    monkeypatch.setattr("app.context_enrichment.ToolRegistry", lambda: ToolRegistry(ScopedBundleContextClient(str(tmp_path))))
     body = metadata_only_triage_body(labels={"evidence_uri": "bundle.json"})
 
     response = TestClient(app).post(
@@ -951,17 +1161,9 @@ def test_llm_tool_loop_merges_evidence_and_reruns_rca(monkeypatch) -> None:
         "app.llm.request_tool_calls_from_agentcore",
         lambda request, decision, rca, allowed_tools, max_calls: [{"name": "get_logs", "args": {"limit": 1}}],
     )
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     rca = {"anomaly_evidence": [], "service_topology": None, "causal_hints": [], "rca_candidates": []}
-    decision = {
-        "status": "INSUFFICIENT_CONTEXT",
-        "classification": "insufficient_context",
-        "confidence": 0.25,
-        "summary": "",
-        "evidence": [],
-    }
+    decision = {"status": "INSUFFICIENT_CONTEXT", "classification": "insufficient_context", "confidence": 0.25, "summary": "", "evidence": []}
 
     enriched, rerun_rca, _, metadata = investigate_with_tools(request, decision, rca, ToolRegistry(FakeContextClient()))
 
@@ -980,28 +1182,18 @@ def test_llm_tool_loop_falls_back_on_bedrock_failure(monkeypatch) -> None:
         raise RuntimeError("bedrock unavailable")
 
     monkeypatch.setattr("app.llm.request_tool_calls_from_agentcore", fail)
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
-    decision = {
-        "status": "INSUFFICIENT_CONTEXT",
-        "classification": "insufficient_context",
-        "confidence": 0.25,
-        "summary": "",
-        "evidence": [],
-    }
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
+    decision = {"status": "INSUFFICIENT_CONTEXT", "classification": "insufficient_context", "confidence": 0.25, "summary": "", "evidence": []}
 
     enriched, _, _, metadata = investigate_with_tools(request, decision, {}, ToolRegistry(FakeContextClient()))
 
     assert enriched == request
     assert metadata["fallback"] is True
-    assert "bedrock unavailable" in metadata["error"]
+    assert metadata["error"] == "RuntimeError"
 
 
 def test_agentcore_response_reader_and_session_id_are_stable() -> None:
-    request = TriageRequest.model_validate(
-        json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8"))
-    )
+    request = TriageRequest.model_validate(json.loads(Path("samples/insufficient-context.request.json").read_text(encoding="utf-8")))
     response = {"contentType": "application/json", "response": [b'{"tool_calls":[{"name":"get_logs","args":{}}]}']}
 
     raw = read_agentcore_response(response)
@@ -1050,9 +1242,7 @@ def test_sqs_seed_success_deletes_message_after_report_write(tmp_path, monkeypat
         },
     )
 
-    processed = process_sqs_message(
-        args, sqs, {"Body": json.dumps(seed), "ReceiptHandle": "rh-001"}, ToolRegistry(FakeContextClient())
-    )
+    processed = process_sqs_message(args, sqs, {"Body": json.dumps(seed), "ReceiptHandle": "rh-001"}, ToolRegistry(FakeContextClient()))
 
     assert processed is True
     assert sqs.deleted == [("https://sqs.example/queue", "rh-001")]
@@ -1063,9 +1253,7 @@ def test_sqs_invalid_seed_is_not_deleted(tmp_path) -> None:
     args = argparse.Namespace(sqs_queue_url="https://sqs.example/queue", report_dir=str(tmp_path), dry_run_slack=True)
     sqs = FakeSQS()
 
-    processed = process_sqs_message(
-        args, sqs, {"Body": "{}", "ReceiptHandle": "rh-001"}, ToolRegistry(FakeContextClient())
-    )
+    processed = process_sqs_message(args, sqs, {"Body": "{}", "ReceiptHandle": "rh-001"}, ToolRegistry(FakeContextClient()))
 
     assert processed is False
     assert sqs.deleted == []
@@ -1127,9 +1315,7 @@ def metadata_only_triage_body(labels: dict[str, Any] | None = None) -> dict[str,
 
 
 class FakeContextClient:
-    def get_metrics(
-        self, service: str, environment: str, tenant_id: str, window: tuple[str, str]
-    ) -> list[dict[str, Any]]:
+    def get_metrics(self, service: str, environment: str, tenant_id: str, window: tuple[str, str]) -> list[dict[str, Any]]:
         return [
             {
                 "metric_name": "http_latency_p95_ms",
@@ -1140,9 +1326,7 @@ class FakeContextClient:
             }
         ]
 
-    def get_logs(
-        self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int
-    ) -> list[dict[str, Any]]:
+    def get_logs(self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int) -> list[dict[str, Any]]:
         return [
             {
                 "service": service,
@@ -1185,6 +1369,21 @@ class FakeContextClient:
         }
 
 
+class LargeLogContextClient(FakeContextClient):
+    def get_logs(self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "service": service,
+                "ts": f"2026-06-24T09:{minute:02d}:00Z",
+                "level": "error",
+                "message": f"timeout from overloaded dependency {minute}",
+                "trace_id": f"trace-{minute}",
+                "labels": {},
+            }
+            for minute in range(10)
+        ]
+
+
 class BundleAndToolContextClient(FakeContextClient):
     def get_evidence_bundle(self, evidence_uri: str, scope: ToolScope) -> dict[str, Any] | None:
         return {
@@ -1225,14 +1424,10 @@ class ScopedBundleContextClient(ContextClient):
     def logs_access_configured(self) -> bool:
         return True
 
-    def get_metrics(
-        self, service: str, environment: str, tenant_id: str, window: tuple[str, str]
-    ) -> list[dict[str, Any]]:
+    def get_metrics(self, service: str, environment: str, tenant_id: str, window: tuple[str, str]) -> list[dict[str, Any]]:
         return FakeContextClient().get_metrics(service, environment, tenant_id, window)
 
-    def get_logs(
-        self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int
-    ) -> list[dict[str, Any]]:
+    def get_logs(self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int) -> list[dict[str, Any]]:
         return FakeContextClient().get_logs(service, environment, tenant_id, window, limit)
 
 
