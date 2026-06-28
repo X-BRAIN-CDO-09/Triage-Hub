@@ -9,7 +9,6 @@ from typing import Any
 
 from app.audit_store import audit_log_path
 
-
 DEFAULT_STALE_SECONDS = 120
 
 

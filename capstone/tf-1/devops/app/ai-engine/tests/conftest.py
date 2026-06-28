@@ -10,7 +10,6 @@ Key fixture: `isolate_auth_env`
 """
 from __future__ import annotations
 
-import os
 import pytest
 
 

@@ -11,13 +11,26 @@ from fastapi.testclient import TestClient
 
 from app.action_catalog import select_actions
 from app.agent_runtime import run_agent_platform
-from app.aiops_worker import build_report, build_triage_request, detect_incident, offline_raw_observability, process_sqs_message
+from app.aiops_worker import (
+    build_report,
+    build_triage_request,
+    detect_incident,
+    offline_raw_observability,
+    process_sqs_message,
+)
 from app.context_tools import ContextClient, ToolRegistry, ToolScope, ToolScopeError
 from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import read_record, request_hash, write_record
 from app.incident_seed import IncidentSeed, build_triage_request_from_seed
 from app.investigation_router import select_investigation_mode
-from app.llm import agentcore_session_id, build_prompt_payload, investigate_with_tools, parse_tool_calls, read_agentcore_response, reword_catalog_actions
+from app.llm import (
+    agentcore_session_id,
+    build_prompt_payload,
+    investigate_with_tools,
+    parse_tool_calls,
+    read_agentcore_response,
+    reword_catalog_actions,
+)
 from app.main import MetricPoint, MetricSeries, TriageRequest, _rate_limit_hits, app, build_audit_id, classify
 from app.observability import sanitize_log_fields
 from app.rca import analyze_request, detect_metric_anomalies, infer_causal_hints

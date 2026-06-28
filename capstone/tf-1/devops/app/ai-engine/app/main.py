@@ -14,11 +14,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.action_catalog import select_actions
-from app.audit_store import append_audit_record, build_failure_audit_record, build_success_audit_record, latest_audit_record
-from app.evidence_budget import compact_request_evidence
 from app.agent_runtime import agent_platform_enabled, run_agent_platform
+from app.audit_store import (
+    append_audit_record,
+    build_failure_audit_record,
+    build_success_audit_record,
+    latest_audit_record,
+)
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
+from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
     complete_record,
     fail_record,
@@ -28,15 +33,21 @@ from app.idempotency_store import (
     start_record,
 )
 from app.investigation_router import select_investigation_mode
-from app.llm import current_llm_usage_summary, investigate_with_tools, reset_llm_usage, reword_catalog_actions, synthesize_investigation_summary
+from app.llm import (
+    current_llm_usage_summary,
+    investigate_with_tools,
+    reset_llm_usage,
+    reword_catalog_actions,
+    synthesize_investigation_summary,
+)
 from app.observability import (
     BUDGET_EXCEEDED_TOTAL,
     DEGRADED_MODE_TOTAL,
-    INVESTIGATION_MODE_SELECTED_TOTAL,
     IDEMPOTENCY_EVENTS_TOTAL,
+    INVESTIGATION_MODE_SELECTED_TOTAL,
     QA_ITERATIONS_TOTAL,
-    TRIAGE_REJECTED_TOTAL,
     TRIAGE_INFLIGHT_REQUESTS,
+    TRIAGE_REJECTED_TOTAL,
     TRIAGE_REQUEST_DURATION_SECONDS,
     TRIAGE_REQUESTS_TOTAL,
     configure_logging,
@@ -47,7 +58,6 @@ from app.observability import (
 )
 from app.rca import analyze_request
 from app.report_store import list_reports, read_report
-
 
 configure_logging()
 configure_tracing()

@@ -7,7 +7,6 @@ from typing import Any
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
-
 ERROR_TOKENS = ("error", "timeout", "failed", "refused", "exhausted", "down", "deadline")
 
 

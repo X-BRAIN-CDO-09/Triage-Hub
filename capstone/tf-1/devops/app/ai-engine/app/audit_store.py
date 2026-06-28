@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_AUDIT_LOG_PATH = "audit/audit-log.jsonl"
 DEFAULT_RETENTION_DAYS = 90
 

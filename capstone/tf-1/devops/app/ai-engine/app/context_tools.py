@@ -9,10 +9,9 @@ from typing import Any, Callable
 
 import requests
 
+from app import rca
 from app.evidence_budget import compact_tool_result
 from app.observability import CIRCUIT_BREAKER_OPEN, CONTEXT_TOOL_CALLS_TOTAL, CONTEXT_TOOL_DURATION_SECONDS, span, timed
-from app import rca
-
 
 READ_ONLY_TOOL_NAMES = {
     "get_metrics",
