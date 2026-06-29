@@ -98,7 +98,7 @@ def test_statistical_detectors_emit_expected_evidence() -> None:
     assert "threshold" in detectors
     assert "rolling_zscore_3sigma" in detectors
     assert "ewma_drift" in detectors
-    expected = {'ewma_drift', 'rolling_zscore_3sigma', 'threshold'}
+    expected = {"ewma_drift", "rolling_zscore_3sigma", "threshold"}
     assert detectors == expected
 
 
