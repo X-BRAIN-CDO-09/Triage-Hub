@@ -28,14 +28,14 @@ spec:
           image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine:v1.0.0
           imagePullPolicy: IfNotPresent
           # Worker role: chạy SQS consumer (engine image dùng chung, override command)
-          command: ["python", "-m", "app.aiops_worker"]
+          command: ["python", "-m", "app.aiops_worker", "--poll-seconds", "10"]
           resources:
             requests:
-              cpu: "512m"
-              memory: "1Gi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "1000m"
-              memory: "2Gi"
+              cpu: "500m"
+              memory: "1Gi"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
@@ -45,17 +45,23 @@ spec:
               drop:
                 - ALL
           env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: AIOPS_OBSERVABILITY_ENABLED
+
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
+            - name: REPORTS_DIR
+              value: "/tmp"
             - name: SQS_WAIT_SECONDS
               value: "5"
             - name: SQS_MAX_MESSAGES
               value: "1"
             # TRIAGE_URL: worker gọi tf1-api nội bộ (aiops_worker.py:22)
             - name: TRIAGE_URL
-              value: "http://tf1-api.triage-hub.svc.cluster.local:8080"
+              value: "http://tf1-api.triage-hub.svc.cluster.local:8080/v1/triage"
+
             - name: SQS_QUEUE_URL
               valueFrom:
                 secretKeyRef:
@@ -78,3 +84,27 @@ spec:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: SLACK_WEBHOOK_URL
+             # SQS Notify handoff (Jira/Slack dispatcher)
+            - name: TRIAGE_HUB_NOTIFY_SQS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: TRIAGE_HUB_NOTIFY_SQS_URL
+            - name: TRIAGE_HUB_NOTIFY_SQS_DRY_RUN
+              value: "false"
+            # Observability endpoints for context tools query
+            - name: PROMETHEUS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: PROMETHEUS_URL
+            - name: LOKI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: LOKI_URL
+            - name: JAEGER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: JAEGER_URL

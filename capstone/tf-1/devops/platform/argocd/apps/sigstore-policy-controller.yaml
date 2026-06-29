@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://sigstore.github.io/helm-charts
-    targetRevision: 0.9.3
+    targetRevision: 0.10.6
     chart: policy-controller
     helm:
       values: |
@@ -22,4 +22,19 @@ spec:
     automated:
       prune: true
       selfHeal: true
-    createNamespace: true
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: policy.sigstore.dev
+      jsonPointers:
+        - /webhooks
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: policy.sigstore.dev
+      jsonPointers:
+        - /webhooks
+
+
+

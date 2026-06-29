@@ -2,7 +2,10 @@
 # Worker là background consumer → autoscale theo queue length hợp lý hơn CPU.
 # Auth: KEDA dùng pod identity (IRSA) — KEDA operator SA cần quyền
 #   sqs:GetQueueAttributes trên queue tương ứng.
-# queueURL khác nhau theo môi trường → patch trong overlays/<env>/.
+#
+# ⚠️  PLACEHOLDER CỐ Ý — KHÔNG SỬA FILE NÀY
+# queueURL thật được patch bởi overlays/<env>/kustomization.yaml
+# Sandbox URL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
 ---
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
@@ -30,8 +33,7 @@ spec:
       authenticationRef:
         name: keda-aws-sqs-auth
       metadata:
-        # TODO(env): patch queueURL = SQS queue thật (overlays/<env>/)
-        queueURL: REPLACE_WITH_SQS_QUEUE_URL
+        queueURL: REPLACE_WITH_SQS_QUEUE_URL  # bị overlay ghi đè
         queueLength: "5" # ~5 message/replica trước khi scale thêm
         awsRegion: us-east-1
         identityOwner: operator

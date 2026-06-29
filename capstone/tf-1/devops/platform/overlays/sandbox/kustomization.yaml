@@ -22,7 +22,12 @@ patches:
         namespace: triage-hub
         annotations:
           eks.amazonaws.com/role-arn: arn:aws:iam::730335441285:role/triage-hub-tf1-worker-irsa-sandbox
-  # ARN target group thật lấy từ: terraform output target_group_arn (sandbox)
+  # ⚠️  GIÁ TRỊ NÀY DO CI/CD TỰ ĐỘNG QUẢN LÝ — KHÔNG SỬA TAY
+  # Sau mỗi lần terraform apply, GitHub Actions pipeline sẽ:
+  #   1. Đọc ARN mới từ SSM: /triage-hub/sandbox/alb_target_group_arn
+  #   2. Patch dòng targetGroupARN bên dưới
+  #   3. Commit lên Git với message "[skip ci]"
+  # Nếu cần lấy ARN thủ công: aws ssm get-parameter --name /triage-hub/sandbox/alb_target_group_arn
   - patch: |
       apiVersion: elbv2.k8s.aws/v1beta1
       kind: TargetGroupBinding
@@ -30,7 +35,7 @@ patches:
         name: tf1-api-tgb
         namespace: triage-hub
       spec:
-        targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-engine/REPLACE_AFTER_APPLY
+        targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-tg-sandbox/c943f57c5bea0682
   # queueURL thật lấy từ: terraform output (SQS module) — buffer/intake queue
   - patch: |
       apiVersion: keda.sh/v1alpha1
@@ -44,7 +49,11 @@ patches:
             authenticationRef:
               name: keda-aws-sqs-auth
             metadata:
-              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-intake-sandbox
+              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
               queueLength: "5"
               awsRegion: us-east-1
               identityOwner: operator
+images:
+  - name: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
+    newTag: "4e2e5ee"
+

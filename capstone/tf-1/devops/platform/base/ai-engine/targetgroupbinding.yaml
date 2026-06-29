@@ -1,9 +1,11 @@
 # Gắn Internal ALB Target Group (tạo bởi Terraform module alb, target_type=ip)
 # vào Service tf1-api. Nhờ vậy ALB route request /v1/triage → pod tf1-api.
 #
-# targetGroupARN lấy từ: terraform output target_group_arn
-# Giá trị này khác nhau theo môi trường → patch trong overlays/<env>/.
-# Placeholder dưới đây sẽ bị overlay ghi đè (kustomize patch).
+# ⚠️  PLACEHOLDER CỐ Ý — KHÔNG SỬA FILE NÀY
+# Giá trị ARN thật được patch tự động bởi CI/CD pipeline tại:
+#   overlays/<env>/kustomization.yaml → spec.targetGroupARN
+# Sandbox ARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:
+#              targetgroup/triage-hub-ai-tg-sandbox/c943f57c5bea0682
 apiVersion: elbv2.k8s.aws/v1beta1
 kind: TargetGroupBinding
 metadata:
@@ -14,5 +16,4 @@ spec:
     name: tf1-api
     port: 8080
   targetType: ip
-  # TODO(env): thay bằng module.alb.target_group_arn của môi trường tương ứng
-  targetGroupARN: REPLACE_WITH_TARGET_GROUP_ARN
+  targetGroupARN: REPLACE_WITH_TARGET_GROUP_ARN  # bị overlay ghi đè
