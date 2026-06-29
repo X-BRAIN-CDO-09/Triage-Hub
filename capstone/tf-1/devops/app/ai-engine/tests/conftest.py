@@ -29,7 +29,13 @@ sys.modules["opentelemetry.exporter.otlp"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp.proto"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp.proto.http"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = mock_otlp
-
+# thêm mock cho sklearn.ensemble.IsolationForest để tránh lỗi AttributeError khi test
+mock_sklearn = MagicMock()
+mock_isolation_forest = MagicMock()
+mock_isolation_forest.__name__ = "IsolationForest"
+mock_sklearn.ensemble.IsolationForest = mock_isolation_forest
+sys.modules["sklearn"] = mock_sklearn
+sys.modules["sklearn.ensemble"] = mock_sklearn.ensemble
 
 @pytest.fixture(autouse=True)
 def isolate_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
