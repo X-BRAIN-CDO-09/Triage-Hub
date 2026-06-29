@@ -20,28 +20,55 @@ async function getAuthToken() {
   return cachedToken;
 }
 
+const SERVICE_NAME = process.env.SERVICE_NAME || "push-to-ai";
+const ENVIRONMENT = process.env.ENVIRONMENT || "unknown";
+
+function log(severity, message, correlationId, data = {}) {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    severity,
+    message,
+    "service.name": SERVICE_NAME,
+    environment: ENVIRONMENT,
+    trace_id: process.env._X_AMZN_TRACE_ID || "unknown",
+    span_id: "unknown",
+    correlation_id: correlationId || "unknown",
+    ...data
+  };
+  console[severity === "error" ? "error" : "log"](JSON.stringify(logEntry));
+}
+
 exports.handler = async (event) => {
-  console.log("Processing SQS batch of size:", event.Records.length);
+  log("info", "Processing SQS batch", "unknown", { batchSize: event.Records.length });
 
   // Contract ai-api-contract:64 — Authorization bắt buộc khi gọi /v1/triage
   const authToken = await getAuthToken();
 
   for (const record of event.Records) {
+    let correlationId = "unknown";
+    if (record.messageAttributes && record.messageAttributes.CorrelationId) {
+      correlationId = record.messageAttributes.CorrelationId.stringValue;
+    }
+
     try {
+      log("info", "Forwarding message to EKS", correlationId, { messageId: record.messageId });
+      
       console.log("Forwarding message to EKS:", record.messageId);
 
       const payload = JSON.parse(record.body);
 
-      const headers = {
+      const requestHeaders = {
         "Content-Type": "application/json",
-        "X-Correlation-Id": payload.correlation_id || "unknown",
+        "X-Correlation-Id": correlationId !== "unknown" ? correlationId : (payload.correlation_id || "unknown"),
         "X-Tenant-Id": payload.tenant_id || "unknown"
       };
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      if (authToken) {
+        requestHeaders["Authorization"] = `Bearer ${authToken}`;
+      }
 
       const response = await fetch(AI_ENGINE_URL, {
         method: "POST",
-        headers,
+        headers: requestHeaders,
         body: record.body
       });
 
@@ -50,10 +77,10 @@ exports.handler = async (event) => {
       }
 
       const result = await response.json();
-      console.log("Successfully triaged incident. EKS Result:", JSON.stringify(result));
+      log("info", "Successfully triaged incident", correlationId, { EKSResult: result });
       
     } catch (err) {
-      console.error("Failed to forward record to EKS:", err);
+      log("error", "Failed to forward record to EKS", correlationId, { error: err.message, stack: err.stack });
       // Ném lỗi để SQS đưa vào DLQ hoặc retry
       throw err;
     }

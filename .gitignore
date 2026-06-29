@@ -28,6 +28,28 @@ override.tf.json
 ehthumbs.db
 Thumbs.db
 
+# Build artifacts
+*.zip
+*.jar
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
 # Python
 __pycache__/
 *.py[cod]

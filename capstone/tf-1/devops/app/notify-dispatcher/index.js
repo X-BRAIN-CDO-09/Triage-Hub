@@ -13,6 +13,7 @@
 
 const { DynamoDBClient, GetItemCommand, PutItemCommand } = require("@aws-sdk/client-dynamodb");
 const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
+const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
 
 // Timeout mặc định cho các request HTTP bên ngoài (ms)
 const EXTERNAL_API_TIMEOUT_MS = 10000;
@@ -26,8 +27,29 @@ const SLACK_BOT_TOKEN_ARN = process.env.SLACK_BOT_TOKEN_ARN;
 const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 
 // Cache secrets trong warm Lambda container
-let cachedSlackSecret = null;  // { token, default_channel }
-let cachedJiraSecret = null;   // { email, token, base_url }
+let cachedSlackSecret = null;
+let cachedJiraSecret = null;
+
+// =============================================================================
+// Structured Logging Helper
+// =============================================================================
+const SERVICE_NAME = process.env.SERVICE_NAME || "notify-dispatcher";
+const ENVIRONMENT = process.env.ENVIRONMENT || "unknown";
+
+function log(severity, message, correlationId, data = {}) {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    severity,
+    message,
+    "service.name": SERVICE_NAME,
+    environment: ENVIRONMENT,
+    trace_id: process.env._X_AMZN_TRACE_ID || "unknown",
+    span_id: "unknown",
+    correlation_id: correlationId || "unknown",
+    ...data
+  };
+  console[severity === "error" ? "error" : "log"](JSON.stringify(logEntry));
+}
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -53,9 +75,43 @@ async function getJiraSecret() {
 }
 
 // =============================================================================
+// Helper: Lấy thông tin Jira user
+// =============================================================================
+async function getJiraUserDetails(jiraCreds, accountId, correlationId) {
+  const { email, token, base_url } = jiraCreds;
+  const auth = Buffer.from(`${email}:${token}`).toString("base64");
+  
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${base_url}/rest/api/3/user?accountId=${encodeURIComponent(accountId)}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+  } catch (e) {
+    log("warn", "Jira user API fetch failed", correlationId, { error: e.message });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    log("warn", `Jira user API error: status ${response.status}`, correlationId);
+    return null;
+  }
+  return await response.json();
+}
+
+// =============================================================================
 // Helper: Query DynamoDB lấy Jira issue key theo incident_id
 // =============================================================================
-async function getJiraMapping(incidentId, tenantId) {
+async function getJiraMapping(incidentId, tenantId, correlationId) {
   const command = new GetItemCommand({
     TableName: DYNAMODB_TABLE,
     Key: {
@@ -65,9 +121,8 @@ async function getJiraMapping(incidentId, tenantId) {
   });
 
   const response = await dynamoClient.send(command);
-
   if (!response.Item) {
-    console.warn(`No Jira mapping found for incident ${incidentId}, tenant ${tenantId}`);
+    log("warn", `No Jira mapping found for incident ${incidentId}`, correlationId);
     return null;
   }
 
@@ -115,7 +170,7 @@ async function getJiraUser(jiraCreds, accountId) {
 // =============================================================================
 // Helper: Lưu notification audit trail vào DynamoDB
 // =============================================================================
-async function saveNotificationAudit(incidentId, tenantId, slackResponse) {
+async function saveNotificationAudit(incidentId, tenantId, slackResponse, correlationId) {
   const command = new PutItemCommand({
     TableName: DYNAMODB_TABLE,
     Item: {
@@ -131,6 +186,7 @@ async function saveNotificationAudit(incidentId, tenantId, slackResponse) {
   });
 
   await dynamoClient.send(command);
+  log("info", "Notification audit saved", correlationId, { incidentId, channel: slackResponse.channel });
 }
 
 // =============================================================================
@@ -173,22 +229,15 @@ function escapeSlackMrkdwn(text) {
 // =============================================================================
 function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
   const severity = getSeverityDisplay(triageResult.severity);
-  const service = triageResult.ticket_payload?.fields?.owner_team
-    || triageResult.alert?.service
-    || "unknown-service";
+  const service = triageResult.ticket_payload?.fields?.owner_team || triageResult.alert?.service || "unknown-service";
   const incidentId = triageResult.incident_id;
   const classification = triageResult.classification || "unknown";
-  const confidence = triageResult.confidence != null
-    ? `🎯 ${Math.round(triageResult.confidence * 100)}%`
-    : "N/A";
+  const confidence = triageResult.confidence != null ? `🎯 ${Math.round(triageResult.confidence * 100)}%` : "N/A";
   const status = getStatusDisplay(triageResult.status);
   const jiraIssueKey = jiraMapping?.issueKey || "Pending...";
-  const jiraUrl = jiraMapping?.issueKey
-    ? `${jiraBaseUrl}/browse/${jiraMapping.issueKey}`
-    : null;
+  const jiraUrl = jiraMapping?.issueKey ? `${jiraBaseUrl}/browse/${jiraMapping.issueKey}` : null;
 
   const blocks = [
-    // Header
     {
       type: "header",
       text: {
@@ -281,7 +330,6 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
 
   blocks.push({ type: "divider" });
 
-  // AI Assignment Suggestion (Human-in-the-loop)
   if (triageResult.suggested_assignee_account_id) {
     let assigneeText = `\`${escapeSlackMrkdwn(triageResult.suggested_assignee_account_id)}\``;
     if (assigneeDetails && assigneeDetails.displayName) {
@@ -451,7 +499,7 @@ async function postToSlack(token, channel, blocks, fallbackText) {
   const result = await response.json();
 
   if (!result.ok) {
-    console.error("Slack API error:", result.error);
+    console.error("Slack API error:", result.error, result.response_metadata);
     throw new Error(`Slack API error: ${result.error}`);
   }
 
@@ -463,42 +511,116 @@ async function postToSlack(token, channel, blocks, fallbackText) {
 // Main Handler
 // =============================================================================
 exports.handler = async (event) => {
-  console.log("notify-dispatcher invoked.");
+  console.log("notify-dispatcher invoked. Event:", JSON.stringify(event));
 
-  // -------------------------------------------------------------------------
-  // SQS batch processing: xử lý tất cả records, trả về batchItemFailures
-  // -------------------------------------------------------------------------
-  if (event.Records && event.Records.length > 0) {
-    const batchItemFailures = [];
-
-    for (const record of event.Records) {
-      try {
-        const triageResult = JSON.parse(record.body);
-        await processTriageResult(triageResult);
-      } catch (err) {
-        console.error(`Failed to process SQS record ${record.messageId}:`, err.message);
-        batchItemFailures.push({ itemIdentifier: record.messageId });
-      }
-    }
-
-    return { batchItemFailures };
-  }
-
-  // -------------------------------------------------------------------------
-  // Direct invoke (non-SQS)
-  // -------------------------------------------------------------------------
   try {
     let triageResult;
-    if (event.body) {
+
+    if (event.Records && event.Records.length > 0) {
+      triageResult = JSON.parse(event.Records[0].body);
+    } else if (event.body) {
       triageResult = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
     } else {
       triageResult = event;
     }
 
-    const result = await processTriageResult(triageResult);
+    console.log("Triage result parsed:", JSON.stringify(triageResult));
+
+    if (!triageResult.incident_id) {
+      console.error("Missing incident_id in triage result");
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing incident_id in triage result" }),
+      };
+    }
+
+    const incidentId = triageResult.incident_id;
+    const tenantId = triageResult.tenant_id || "unknown";
+
+    // 1. Invoke jira-dispatcher to create the Jira issue synchronously
+    let jiraMapping = null;
+    const JIRA_DISPATCHER_ARN = process.env.JIRA_DISPATCHER_ARN;
+    if (JIRA_DISPATCHER_ARN) {
+      try {
+        const lambdaClient = new LambdaClient({});
+        const invokeCommand = new InvokeCommand({
+          FunctionName: JIRA_DISPATCHER_ARN,
+          InvocationType: "RequestResponse",
+          Payload: Buffer.from(JSON.stringify(triageResult)),
+        });
+        const response = await lambdaClient.send(invokeCommand);
+        const payloadString = Buffer.from(response.Payload).toString();
+        const payloadObj = JSON.parse(payloadString);
+        
+        if (payloadObj.statusCode === 201 || payloadObj.statusCode === 200) {
+          const bodyObj = typeof payloadObj.body === "string" ? JSON.parse(payloadObj.body) : payloadObj.body;
+          jiraMapping = { issueKey: bodyObj.jira_issue_key };
+          console.log("Jira ticket created/found:", jiraMapping.issueKey);
+        } else {
+          console.warn("Jira dispatcher returned non-success:", payloadString);
+          jiraMapping = await getJiraMapping(incidentId, tenantId);
+        }
+      } catch (err) {
+        console.error("Failed to invoke jira-dispatcher:", err.message);
+        jiraMapping = await getJiraMapping(incidentId, tenantId);
+      }
+    } else {
+      try {
+        jiraMapping = await getJiraMapping(incidentId, tenantId);
+        console.log("Jira mapping found:", jiraMapping?.issueKey || "none");
+      } catch (err) {
+        console.warn("Failed to fetch Jira mapping, continuing without it:", err.message);
+      }
+    }
+
+    // 2. Lấy Secrets từ Secrets Manager
+    const slackSecret = await getSlackSecret();
+    const jiraSecret = await getJiraSecret();
+
+    // 3. Fetch Jira user details if we have an assignee suggestion
+    let assigneeDetails = null;
+    if (triageResult.suggested_assignee_account_id) {
+      try {
+        assigneeDetails = await getJiraUser(jiraSecret, triageResult.suggested_assignee_account_id);
+        console.log("Fetched Jira user details successfully");
+      } catch (err) {
+        console.warn("Failed to fetch Jira user details:", err.message);
+      }
+    }
+
+    // 4. Build Slack Block Kit message
+    const blocks = buildSlackBlocks(triageResult, jiraMapping, jiraSecret.base_url, assigneeDetails);
+
+    const fallbackText = `🚨 [${(triageResult.severity || "unknown").toUpperCase()}] Incident ${incidentId}: ${triageResult.suspected_root_cause?.summary || triageResult.classification || "New incident detected"}`;
+
+    let targetChannel = slackSecret.default_channel || "#oncall-alerts";
+    const requestedChannel = triageResult.ownership?.slack_channel;
+    if (requestedChannel && /^(#[a-zA-Z0-9_-]+|[CG][A-Z0-9]+)$/.test(requestedChannel)) {
+      targetChannel = requestedChannel;
+    } else if (requestedChannel) {
+      console.warn("Invalid slack_channel in payload, using default:", requestedChannel);
+    }
+
+    // 5. Post to Slack
+    const slackResponse = await postToSlack(slackSecret.token, targetChannel, blocks, fallbackText);
+
+    // 6. Lưu notification audit trail
+    try {
+      await saveNotificationAudit(incidentId, tenantId, slackResponse);
+      console.log("Notification audit saved to DynamoDB");
+    } catch (err) {
+      console.error("Failed to save notification audit (non-fatal):", err.message);
+    }
+
     return {
       statusCode: 200,
-      body: JSON.stringify(result),
+      body: JSON.stringify({
+        status: "notified",
+        incident_id: incidentId,
+        slack_channel: targetChannel,
+        slack_ts: slackResponse.ts,
+        jira_issue_key: jiraMapping?.issueKey || null,
+      }),
     };
   } catch (err) {
     console.error("notify-dispatcher error:", err.message);
@@ -506,6 +628,7 @@ exports.handler = async (event) => {
       statusCode: 500,
       body: JSON.stringify({
         error: "Failed to dispatch notification",
+        message: err.message,
       }),
     };
   }

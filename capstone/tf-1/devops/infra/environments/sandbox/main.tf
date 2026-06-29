@@ -57,6 +57,14 @@ module "ecr" {
   }
 }
 
+# 4b. CloudWatch Module
+module "cloudwatch" {
+  source            = "../../modules/cloudwatch"
+  project_name      = var.project_name
+  environment       = var.environment
+  retention_in_days = 14
+}
+
 # 5. EKS Module
 module "eks" {
   source = "../../modules/eks"
@@ -70,6 +78,31 @@ module "eks" {
   public_access_cidrs    = var.public_access_cidrs
   cluster_admin_arns     = var.cluster_admin_arns
 }
+
+# 5b. OpenTelemetry Collector Module
+module "otel_collector" {
+  source             = "../../modules/otel_collector"
+  cluster_name       = module.eks.cluster_name
+  eks_log_group_name = module.cloudwatch.eks_log_group_name
+  aws_region         = var.aws_region
+  environment        = var.environment
+  depends_on         = [module.eks]
+}
+
+# 5c. Prometheus Module (KAN-215)
+module "prometheus" {
+  source                   = "../../modules/prometheus"
+  project_name             = var.project_name
+  environment              = var.environment
+  aws_region               = var.aws_region
+  prometheus_storage_size  = "20Gi"
+  prometheus_retention     = "15d"
+  alertmanager_webhook_url = "${module.api_gateway.invoke_url}/alerts"
+  slack_webhook_url        = var.slack_webhook_url
+
+  depends_on = [module.eks]
+}
+
 
 # 6. SQS Module (Buffer and Dispatch queues)
 module "sqs" {
@@ -138,6 +171,8 @@ module "lambda" {
       environment_variables = {
         SQS_QUEUE_URL  = module.sqs.queue_urls["buffer-queue"]
         DYNAMODB_TABLE = module.dynamodb.table_name
+        ENVIRONMENT    = var.environment
+        SERVICE_NAME   = "alert-ingest"
       }
       iam_policy_statements = [
         {
@@ -161,6 +196,8 @@ module "lambda" {
         DYNAMODB_TABLE           = module.dynamodb.table_name
         JIRA_SECRET_ARN          = module.secrets_manager.secret_arns["jira_api_token"]
         SLACK_SIGNING_SECRET_ARN = module.secrets_manager.secret_arns["slack_signing_secret"]
+        ENVIRONMENT              = var.environment
+        SERVICE_NAME             = "jira-dispatcher"
       }
       iam_policy_statements = [
         {

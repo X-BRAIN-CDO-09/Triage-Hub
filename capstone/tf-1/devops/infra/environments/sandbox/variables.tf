@@ -103,3 +103,10 @@ variable "cluster_admin_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "slack_webhook_url" {
+  type        = string
+  description = "Slack Webhook URL for Alertmanager"
+  sensitive   = true
+  default     = ""
+}

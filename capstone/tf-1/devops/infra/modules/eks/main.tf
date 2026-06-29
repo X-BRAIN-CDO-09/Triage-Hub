@@ -84,9 +84,28 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
     "AmazonEKSWorkerNodePolicy",
     "AmazonEKS_CNI_Policy",
     "AmazonEC2ContainerRegistryReadOnly", # pull signed image từ ECR
+    "CloudWatchAgentServerPolicy",        # OTel Collector ghi log vào CloudWatch
+    "AWSXRayDaemonWriteAccess",           # OTel Collector gửi trace lên X-Ray
   ])
   role       = aws_iam_role.node.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
+}
+
+# --- Launch template: enforce IMDSv2 với hop-limit=2 để pod trên node có thể
+#     lấy credentials từ EC2 IMDS (cần cho OTel Collector → CloudWatch / X-Ray)
+resource "aws_launch_template" "node" {
+  name_prefix = "${var.project_name}-ng-lt-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 2          # default=1 chặn pod, 2 cho phép pod lấy creds
+    http_tokens                 = "required" # IMDSv2 only
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags          = { Name = "${var.project_name}-ng" }
+  }
 }
 
 # --- Managed node group (private, autoscaling KAN-205) --------------------
@@ -101,6 +120,11 @@ resource "aws_eks_node_group" "this" {
     min_size     = var.node_scaling.min_size
     max_size     = var.node_scaling.max_size
     desired_size = var.node_scaling.desired_size
+  }
+
+  launch_template {
+    id      = aws_launch_template.node.id
+    version = aws_launch_template.node.latest_version
   }
 
   depends_on = [aws_iam_role_policy_attachment.node_policies]

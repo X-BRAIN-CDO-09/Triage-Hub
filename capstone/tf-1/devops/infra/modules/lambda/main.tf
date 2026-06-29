@@ -58,6 +58,13 @@ resource "aws_iam_role_policy_attachment" "basic_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# 3b. X-Ray tracing policy
+resource "aws_iam_role_policy_attachment" "xray_execution" {
+  for_each   = var.lambdas
+  role       = aws_iam_role.this[each.key].name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
+}
+
 # 4. VPC execution policy (chỉ attach khi lambda chạy trong VPC)
 resource "aws_iam_role_policy_attachment" "vpc_execution" {
   for_each   = local.lambdas_in_vpc
@@ -121,6 +128,10 @@ resource "aws_lambda_function" "this" {
       subnet_ids         = coalesce(each.value.vpc_subnet_ids, var.default_vpc_subnet_ids)
       security_group_ids = coalesce(each.value.vpc_security_group_ids, var.default_vpc_security_group_ids)
     }
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 
   tags = { Name = "${var.project_name}-${each.key}" }

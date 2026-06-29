@@ -1,0 +1,82 @@
+{
+  "title": "Business Dashboard",
+  "tags": ["business", "triage-hub"],
+  "timezone": "browser",
+  "refresh": "5m",
+  "schemaVersion": 30,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Tickets Created",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(triage_tickets_created_total[24h])) or vector(0)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Tickets Resolved",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(triage_tickets_resolved_total[24h])) or vector(0)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Users",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(active_users_total) or vector(0)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Avg Processing Time (s)",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "avg(rate(triage_processing_duration_seconds_sum[5m]) / rate(triage_processing_duration_seconds_count[5m])) or vector(0)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ticket Operations Over Time",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum(rate(triage_tickets_created_total[1h]))",
+          "legendFormat": "Created",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(triage_tickets_resolved_total[1h]))",
+          "legendFormat": "Resolved",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "System Latency & Processing Time",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95 Latency",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
