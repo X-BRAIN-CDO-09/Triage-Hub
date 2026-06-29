@@ -1,0 +1,109 @@
+name: Auto Sync AI Upstream
+
+on:
+  schedule:
+    - cron: "0 * * * *" # Run every hour
+  workflow_dispatch: # Enable manual run from GitHub UI
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CDO Repo
+        uses: actions/checkout@v4
+        with:
+          ref: develop # Sync changes into CDO develop branch
+
+      - name: Check for Upstream Changes
+        id: check_upstream
+        run: |
+          REMOTE_SHA=$(git ls-remote https://github.com/c0mmie-b0msh3ll/xBrain-capstone2.git refs/heads/main | cut -f1)
+          echo "Latest upstream commit SHA: $REMOTE_SHA"
+          
+          if [ -f .github/ai-upstream-sha.txt ]; then
+            LOCAL_SHA=$(cat .github/ai-upstream-sha.txt)
+          else
+            LOCAL_SHA=""
+          fi
+          echo "Last synced commit SHA: $LOCAL_SHA"
+          
+          if [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
+            echo "No new changes from upstream AI repo."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "New changes detected!"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "remote_sha=$REMOTE_SHA" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Clone AI Repo (Shallow)
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: c0mmie-b0msh3ll/xBrain-capstone2
+          ref: main
+          path: temp-ai-repo
+          depth: 1
+
+      - name: Sync and Overwrite Code Files
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        run: |
+          # Clean CDO app directory
+          rm -rf capstone/tf-1/devops/app/ai-engine/app/*
+          # Copy new app files from AI repo
+          cp -r temp-ai-repo/capstone/tf-1/ai/engine-skeleton/app/* capstone/tf-1/devops/app/ai-engine/app/
+          
+          # Sync tests if they exist
+          if [ -d "temp-ai-repo/capstone/tf-1/ai/engine-skeleton/tests" ]; then
+            rm -rf capstone/tf-1/devops/app/ai-engine/tests/*
+            cp -r temp-ai-repo/capstone/tf-1/ai/engine-skeleton/tests/* capstone/tf-1/devops/app/ai-engine/tests/
+          fi
+          
+          # Clean up temporary clone
+          rm -rf temp-ai-repo
+
+      - name: Set up Python
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Format and Fix Code style
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        run: |
+          pip install ruff
+          ruff format capstone/tf-1/devops/app/ai-engine/
+          ruff check --fix capstone/tf-1/devops/app/ai-engine/ || true
+
+      - name: Update Synced SHA File
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        run: |
+          mkdir -p .github
+          echo "${{ steps.check_upstream.outputs.remote_sha }}" > .github/ai-upstream-sha.txt
+
+      - name: Create Pull Request
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: sync/ai-engine-upstream
+          base: develop
+          title: "chore(ai-engine): sync latest updates from AI team upstream"
+          body: |
+            Automated synchronization of the AI Engine codebase from the upstream AI repository.
+            
+            **Upstream Commit SHA:** `${{ steps.check_upstream.outputs.remote_sha }}`
+            
+            **Actions Performed:**
+            - Overwrote `ai-engine/app/` and `ai-engine/tests/` with upstream files.
+            - Executed `ruff format` and `ruff check --fix` to enforce CDO code standards.
+            - Updated SHA reference tracking in `.github/ai-upstream-sha.txt`.
+            
+            Please review the differences and verify the CI test suite before merging.
+          labels: |
+            automated-pr
+            sync-upstream
