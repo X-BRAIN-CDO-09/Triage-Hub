@@ -441,7 +441,7 @@ data "aws_iam_policy_document" "tf1_api_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:default:tf1-api-sa"]
+      values   = ["system:serviceaccount:triage-hub:tf1-api-sa"]
     }
   }
 }
@@ -522,7 +522,7 @@ data "aws_iam_policy_document" "tf1_worker_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:default:tf1-worker-sa"]
+      values   = ["system:serviceaccount:triage-hub:tf1-worker-sa"]
     }
   }
 }
