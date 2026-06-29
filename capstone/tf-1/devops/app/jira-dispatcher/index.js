@@ -392,10 +392,6 @@ function verifySlackSignature(signingSecret, requestBody, timestamp, signature, 
   if (myBuf.length !== theirBuf.length) return false;
 
   return crypto.timingSafeEqual(myBuf, theirBuf);
-  return crypto.timingSafeEqual(
-    Buffer.from(mySignature, "utf8"),
-    Buffer.from(signature, "utf8")
-  );
 }
 
 // =============================================================================
@@ -556,8 +552,16 @@ async function handleCreateTicket(event, correlationId) {
 // Handler: GĐ 3 — Slack Callback (Confirm & Assign)
 // =============================================================================
 async function handleSlackCallback(event, correlationId) {
-  const rawBody = event.body || "";
+  let rawBody = event.body || "";
+  if (event.isBase64Encoded) {
+    rawBody = Buffer.from(rawBody, "base64").toString("utf8");
+  }
   const headers = event.headers || {};
+
+  // Nếu có cờ isAsyncBackground, tiến hành xử lý ngầm (bỏ qua bước parse rawBody vì payload đã được parse)
+  if (event.isAsyncBackground) {
+    return await processAsyncSlackCallback(event, correlationId);
+  }
 
   if (!SLACK_SIGNING_SECRET_ARN) {
     log("error", "SLACK_SIGNING_SECRET_ARN is not configured — rejecting request", correlationId);
@@ -573,20 +577,49 @@ async function handleSlackCallback(event, correlationId) {
     return { statusCode: 401, body: "Unauthorized" };
   }
 
-  const params = new URLSearchParams(rawBody);
-  const payloadStr = params.get("payload");
-  if (!payloadStr) {
-    log("error", "Missing payload field in Slack callback body", correlationId);
-    return { statusCode: 400, body: "Bad Request: missing payload" };
+  // 2. Invoke Self Asynchronously
+  try {
+    const params = new URLSearchParams(rawBody);
+    const payloadStr = params.get("payload");
+    if (!payloadStr) {
+      log("error", "Missing payload field in Slack callback body", correlationId);
+      return { statusCode: 400, body: "Bad Request: missing payload" };
+    }
+
+    let payloadObj;
+    try {
+      payloadObj = JSON.parse(payloadStr);
+    } catch {
+      log("error", "Invalid JSON in Slack callback payload", correlationId);
+      return { statusCode: 400, body: "Bad Request: invalid payload" };
+    }
+    
+    await lambdaClient.send(new InvokeCommand({
+      FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
+      InvocationType: "Event", // Background execution
+      Payload: JSON.stringify({
+        ...event,
+        isAsyncBackground: true,
+        parsedSlackPayload: payloadObj // Truyền thẳng payload đã parse
+      })
+    }));
+    
+    log("info", "Dispatched to background execution successfully", correlationId);
+  } catch (err) {
+    log("error", "Failed to dispatch async background process", correlationId, { error: err.message });
+    return { statusCode: 500, body: "Internal Server Error" };
   }
 
-  let payload;
-  try {
-    payload = JSON.parse(payloadStr);
-  } catch {
-    log("error", "Invalid JSON in Slack callback payload", correlationId);
-    return { statusCode: 400, body: "Bad Request: invalid payload" };
-  }
+  // 3. Lập tức trả về 200 OK cho Slack trong vòng 100ms
+  return { statusCode: 200, body: "" };
+}
+
+// =============================================================================
+// Background Worker (Asynchronous)
+// =============================================================================
+async function processAsyncSlackCallback(event, correlationId) {
+  const payload = event.parsedSlackPayload;
+  const jiraCredsPromise = getJiraSecret(); // Fetch sớm
 
   const action = payload.actions?.[0];
   const slackUserId = payload.user?.id || "unknown";
@@ -617,44 +650,54 @@ async function handleSlackCallback(event, correlationId) {
     let jiraCreds;
 
     if (issueKey && assigneeAccountId) {
-      jiraCreds = await getJiraSecret();
-      try {
-        await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId, correlationId);
-      } catch (err) {
-        log("error", "Assign Error", correlationId, { error: err.message });
+      jiraCreds = await jiraCredsPromise;
+      
+      // Chạy song song Jira API và DynamoDB để tiết kiệm tối đa thời gian (tránh timeout 3s)
+      const assignPromise = assignJiraTicket(jiraCreds, issueKey, assigneeAccountId, correlationId).catch(err => {
+        log("error", "Assign ticket failed", correlationId, { issue_key: issueKey, error: err.message });
         status = "FAILED_API";
-      }
+      });
+      
+      const auditPromise = saveCallbackAudit(incidentId, tenantId, slackUser, "CONFIRM_ASSIGN", issueKey, assigneeAccountId, "SUCCESS").catch(err => {
+        log("warn", "Failed to save audit", correlationId, { error: err.message });
+      });
+
+      await Promise.all([assignPromise, auditPromise]);
     } else {
       status = "MISSING_INFO";
+      await saveCallbackAudit(incidentId, tenantId, slackUser, "CONFIRM_ASSIGN", issueKey, assigneeAccountId, status);
     }
 
-    await saveCallbackAudit(incidentId, tenantId, slackUser, "CONFIRM_ASSIGN", issueKey, assigneeAccountId, status);
-
     let assigneeName = assigneeAccountId || "N/A";
-    let jiraBaseUrl = "";
-    if (jiraCreds && assigneeAccountId) {
-      jiraBaseUrl = jiraCreds.base_url;
-      try {
-        const auth = Buffer.from(`${jiraCreds.email}:${jiraCreds.token}`).toString("base64");
+    let jiraBaseUrl = jiraCreds?.base_url || "";
+    
+    if (actionValue.assignee_name) {
+      assigneeName = `*${actionValue.assignee_name}*`;
+      if (actionValue.assignee_email) assigneeName += ` (${actionValue.assignee_email})`;
+    } else {
+      if (jiraCreds && assigneeAccountId) {
+        try {
+          const auth = Buffer.from(`${jiraCreds.email}:${jiraCreds.token}`).toString("base64");
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
 
-        const userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
-          method: "GET",
-          headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
-          signal: controller.signal
-        });
-        clearTimeout(timeout);
+          const userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
+            method: "GET",
+            headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+            signal: controller.signal
+          });
+          clearTimeout(timeout);
 
-        if (userResp.ok) {
-          const userData = await userResp.json();
-          const name = userData.displayName || assigneeAccountId;
-          const email = userData.emailAddress ? ` (${userData.emailAddress})` : "";
-          assigneeName = `${name}${email}`;
+          if (userResp.ok) {
+            const userData = await userResp.json();
+            const name = userData.displayName || assigneeAccountId;
+            const email = userData.emailAddress ? ` (${userData.emailAddress})` : "";
+            assigneeName = `${name}${email}`;
+          }
+        } catch (err) {
+          log("warn", "Failed to fetch assignee name", correlationId, { error: err.message });
         }
-      } catch (err) {
-        log("warn", "Failed to fetch assignee name", correlationId, { error: err.message });
       }
     }
 
