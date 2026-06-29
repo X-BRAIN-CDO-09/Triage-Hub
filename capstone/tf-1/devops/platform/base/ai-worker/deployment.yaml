@@ -45,7 +45,10 @@ spec:
               drop:
                 - ALL
           env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: AIOPS_OBSERVABILITY_ENABLED
+
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
