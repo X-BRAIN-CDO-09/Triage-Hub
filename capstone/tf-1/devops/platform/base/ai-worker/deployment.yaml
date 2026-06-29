@@ -52,6 +52,8 @@ spec:
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
+            - name: REPORTS_DIR
+              value: "/tmp"
             - name: SQS_WAIT_SECONDS
               value: "5"
             - name: SQS_MAX_MESSAGES
