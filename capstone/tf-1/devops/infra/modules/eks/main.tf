@@ -89,13 +89,36 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
 }
 
+# Launch Template để cấu hình Metadata Options (hop limit = 2 cho IMDSv2)
+resource "aws_launch_template" "eks_node" {
+  name_prefix = "${var.project_name}-eks-node-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.project_name}-ng-node"
+    }
+  }
+}
+
 # --- Managed node group (private, autoscaling KAN-205) --------------------
 resource "aws_eks_node_group" "this" {
   cluster_name    = aws_eks_cluster.this.name
-  node_group_name = "${var.project_name}-ng-v3"
+  node_group_name = "${var.project_name}-ng-v4"
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.private_subnet_ids
   instance_types  = var.node_instance_types
+
+  launch_template {
+    id      = aws_launch_template.eks_node.id
+    version = aws_launch_template.eks_node.latest_version
+  }
 
   scaling_config {
     min_size     = var.node_scaling.min_size
