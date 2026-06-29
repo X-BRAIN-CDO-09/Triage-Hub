@@ -4,12 +4,30 @@ on:
   push:
     branches: ["develop", "main"]
     paths:
-      - "capstone/tf-1/devops/app/**"
+      - "capstone/tf-1/devops/app/alert-ingest/**"
+      - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/context-collector/**"
+      - "capstone/tf-1/devops/app/jira-dispatcher/**"
+      - "capstone/tf-1/devops/app/jira-connector/**"
+      - "capstone/tf-1/devops/app/notify-dispatcher/**"
+      - "capstone/tf-1/devops/app/push-to-ai/**"
+      - "capstone/tf-1/devops/app/slack-dispatcher/**"
+      - "capstone/tf-1/devops/app/slack-notifier/**"
+      - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
   pull_request:
     branches: ["develop", "main"]
     paths:
-      - "capstone/tf-1/devops/app/**"
+      - "capstone/tf-1/devops/app/alert-ingest/**"
+      - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/context-collector/**"
+      - "capstone/tf-1/devops/app/jira-dispatcher/**"
+      - "capstone/tf-1/devops/app/jira-connector/**"
+      - "capstone/tf-1/devops/app/notify-dispatcher/**"
+      - "capstone/tf-1/devops/app/push-to-ai/**"
+      - "capstone/tf-1/devops/app/slack-dispatcher/**"
+      - "capstone/tf-1/devops/app/slack-notifier/**"
+      - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
   workflow_dispatch:
     inputs:
@@ -33,7 +51,17 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   PYTHON_VERSION: "3.12"
   APP_ROOT: capstone/tf-1/devops/app
-  IMAGE_TAG: ${{ github.sha }}
+  APP_LINT_ROOTS: >-
+    capstone/tf-1/devops/app/alert-ingest
+    capstone/tf-1/devops/app/alert-ingestion
+    capstone/tf-1/devops/app/context-collector
+    capstone/tf-1/devops/app/jira-dispatcher
+    capstone/tf-1/devops/app/jira-connector
+    capstone/tf-1/devops/app/notify-dispatcher
+    capstone/tf-1/devops/app/push-to-ai
+    capstone/tf-1/devops/app/slack-dispatcher
+    capstone/tf-1/devops/app/slack-notifier
+    capstone/tf-1/devops/app/shared
 
 jobs:
   detect-changes:
@@ -41,7 +69,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_changed: ${{ steps.filter.outputs.app }}
-      ai_engine: ${{ steps.filter.outputs.ai_engine }}
       lambdas: ${{ steps.filter.outputs.lambdas }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
@@ -54,15 +81,24 @@ jobs:
         with:
           filters: |
             app:
-              - 'capstone/tf-1/devops/app/**'
-            ai_engine:
-              - 'capstone/tf-1/devops/app/ai-engine/**'
-              - 'capstone/tf-1/devops/app/shared/**'
-            lambdas:
+              - 'capstone/tf-1/devops/app/alert-ingest/**'
               - 'capstone/tf-1/devops/app/alert-ingestion/**'
               - 'capstone/tf-1/devops/app/context-collector/**'
               - 'capstone/tf-1/devops/app/jira-dispatcher/**'
               - 'capstone/tf-1/devops/app/jira-connector/**'
+              - 'capstone/tf-1/devops/app/notify-dispatcher/**'
+              - 'capstone/tf-1/devops/app/push-to-ai/**'
+              - 'capstone/tf-1/devops/app/slack-dispatcher/**'
+              - 'capstone/tf-1/devops/app/slack-notifier/**'
+              - 'capstone/tf-1/devops/app/shared/**'
+            lambdas:
+              - 'capstone/tf-1/devops/app/alert-ingest/**'
+              - 'capstone/tf-1/devops/app/alert-ingestion/**'
+              - 'capstone/tf-1/devops/app/context-collector/**'
+              - 'capstone/tf-1/devops/app/jira-dispatcher/**'
+              - 'capstone/tf-1/devops/app/jira-connector/**'
+              - 'capstone/tf-1/devops/app/notify-dispatcher/**'
+              - 'capstone/tf-1/devops/app/push-to-ai/**'
               - 'capstone/tf-1/devops/app/slack-dispatcher/**'
               - 'capstone/tf-1/devops/app/slack-notifier/**'
               - 'capstone/tf-1/devops/app/shared/**'
@@ -80,10 +116,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve app integration roots
+        run: |
+          {
+            echo "APP_CHECK_ROOTS<<EOF"
+            for dir in $APP_LINT_ROOTS; do
+              [ -d "$dir" ] && echo "$dir"
+            done
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Detect Python dependency manifests
         id: python-deps
         run: |
-          if find "$APP_ROOT" \( -name requirements.txt -o -name pyproject.toml \) -print -quit | grep -q .; then
+          if find $APP_CHECK_ROOTS \( -name requirements.txt -o -name pyproject.toml \) -print -quit | grep -q .; then
             echo "has_manifest=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_manifest=false" >> "$GITHUB_OUTPUT"
@@ -96,8 +142,20 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
-            capstone/tf-1/devops/app/**/requirements.txt
-            capstone/tf-1/devops/app/**/pyproject.toml
+            capstone/tf-1/devops/app/alert-*/requirements.txt
+            capstone/tf-1/devops/app/context-collector/requirements.txt
+            capstone/tf-1/devops/app/jira-*/requirements.txt
+            capstone/tf-1/devops/app/notify-dispatcher/requirements.txt
+            capstone/tf-1/devops/app/push-to-ai/requirements.txt
+            capstone/tf-1/devops/app/slack-*/requirements.txt
+            capstone/tf-1/devops/app/shared/requirements.txt
+            capstone/tf-1/devops/app/alert-*/pyproject.toml
+            capstone/tf-1/devops/app/context-collector/pyproject.toml
+            capstone/tf-1/devops/app/jira-*/pyproject.toml
+            capstone/tf-1/devops/app/notify-dispatcher/pyproject.toml
+            capstone/tf-1/devops/app/push-to-ai/pyproject.toml
+            capstone/tf-1/devops/app/slack-*/pyproject.toml
+            capstone/tf-1/devops/app/shared/pyproject.toml
 
       - name: Setup Python without pip cache
         if: steps.python-deps.outputs.has_manifest != 'true'
@@ -112,7 +170,7 @@ jobs:
           while IFS= read -r requirements_file; do
             echo "Installing dependencies from $requirements_file"
             python -m pip install -r "$requirements_file"
-          done < <(find "$APP_ROOT" -name requirements.txt -print)
+          done < <(find $APP_CHECK_ROOTS -name requirements.txt -print)
 
           while IFS= read -r pyproject_file; do
             echo "Installing dependencies declared in $pyproject_file"
@@ -134,48 +192,42 @@ jobs:
           if dependencies:
               subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
           PY
-          done < <(find "$APP_ROOT" -name pyproject.toml -print)
+          done < <(find $APP_CHECK_ROOTS -name pyproject.toml -print)
 
 
       - name: Ruff lint
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            ruff check "$APP_ROOT" --output-format=github
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            ruff check $APP_CHECK_ROOTS --output-format=github
           else
-            echo "No Python source found under $APP_ROOT; skipping ruff."
+            echo "No Python source found under app integration roots; skipping ruff."
           fi
 
       - name: Ruff format check
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            ruff format --check "$APP_ROOT"
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            ruff format --check $APP_CHECK_ROOTS
           else
-            echo "No Python source found under $APP_ROOT; skipping format check."
+            echo "No Python source found under app integration roots; skipping format check."
           fi
 
       - name: Bandit security scan
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            bandit -r "$APP_ROOT" -ll
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            bandit -r $APP_CHECK_ROOTS -ll
           else
-            echo "No Python source found under $APP_ROOT; skipping bandit."
+            echo "No Python source found under app integration roots; skipping bandit."
           fi
 
       - name: Run unit tests
         run: |
           export PYTHONPATH="$GITHUB_WORKSPACE/$APP_ROOT:${PYTHONPATH:-}"
-          if [ -d "$GITHUB_WORKSPACE/$APP_ROOT/ai-engine" ]; then
-            export PYTHONPATH="$GITHUB_WORKSPACE/$APP_ROOT/ai-engine:$PYTHONPATH"
-            cd "$GITHUB_WORKSPACE/$APP_ROOT/ai-engine"
-            pytest -v --tb=short
+          TEST_PATHS=$(find $APP_CHECK_ROOTS -type d -name tests -print)
+          TEST_FILES=$(find $APP_CHECK_ROOTS -type f -name 'test_*.py' -print)
+          if [ -n "$TEST_PATHS$TEST_FILES" ]; then
+            pytest $APP_CHECK_ROOTS -v --tb=short
           else
-            TEST_PATHS=$(find "$APP_ROOT" -type d -name tests -print)
-            TEST_FILES=$(find "$APP_ROOT" -type f -name 'test_*.py' -print)
-            if [ -n "$TEST_PATHS$TEST_FILES" ]; then
-              pytest "$APP_ROOT" -v --tb=short
-            else
-              echo "No tests found yet; skipping pytest for skeleton repository."
-            fi
+            echo "No app integration tests found yet; skipping pytest."
           fi
 
       - name: Gitleaks secret scan
@@ -255,8 +307,17 @@ jobs:
     name: Deploy Lambda dispatchers
     needs: package-lambdas
     if: |
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+      (
+        github.event_name == 'push' &&
+        (
+          github.ref == 'refs/heads/develop' ||
+          github.ref == 'refs/heads/main'
+        )
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.deploy == 'true'
+      )
     runs-on: ubuntu-latest
     environment: sandbox
     strategy:
@@ -311,8 +372,19 @@ jobs:
     needs: [deploy-lambdas]
     if: |
       always() &&
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+      (
+        (
+          github.event_name == 'push' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            github.ref == 'refs/heads/main'
+          )
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy == 'true'
+        )
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials
