@@ -53,3 +53,7 @@ patches:
               queueLength: "5"
               awsRegion: us-east-1
               identityOwner: operator
+images:
+  - name: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
+    newTag: "4241044"
+
