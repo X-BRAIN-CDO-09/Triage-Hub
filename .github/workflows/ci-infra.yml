@@ -11,6 +11,9 @@ on:
     paths:
       - "capstone/tf-1/devops/infra/**"
       - ".github/workflows/ci-infra.yml"
+  schedule:
+    # 08:00 ICT (UTC+7) every day
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -42,6 +45,7 @@ concurrency:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_VERSION: "1.14.8"
+  TF_LOCK_TIMEOUT: "10m"
   TF_ROOT: capstone/tf-1/devops/infra/environments/sandbox
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'triage-hub-tfstate-bucket' }}
   TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -65,6 +69,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -129,6 +135,9 @@ jobs:
     needs: terraform-static-checks
     runs-on: ubuntu-latest
     environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
@@ -137,6 +146,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -180,11 +191,24 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
+      - name: Clean deprecated K8s resources from state
+        run: |
+          set +e
+          echo "🧹 Cleaning deprecated resources from state..."
+          terraform state rm terraform_data.argocd_root || true
+          terraform state rm helm_release.argocd || true
+          terraform state rm module.otel_collector.helm_release.opentelemetry_collector || true
+          terraform state rm module.prometheus.helm_release.kube_prometheus_stack || true
+          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_application_dashboard || true
+          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_business_dashboard || true
+          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_executive_dashboard || true
+          set -e
+
       - name: Terraform plan
         id: plan
         run: |
           set +e
-          terraform plan -no-color -input=false -detailed-exitcode -out=tfplan
+          terraform plan -no-color -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -detailed-exitcode -out=tfplan
           PLAN_EXIT=$?
           set -e
 
@@ -235,10 +259,15 @@ jobs:
     needs: terraform-plan
     if: |
       needs.terraform-plan.outputs.has_changes == 'true' &&
-      github.event_name != 'pull_request' &&
       (
-        github.ref == 'refs/heads/develop' ||
-        github.ref == 'refs/heads/main' ||
+        github.event_name == 'schedule' ||
+        (
+          github.event_name == 'push' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            github.ref == 'refs/heads/main'
+          )
+        ) ||
         (
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.apply == 'true' &&
@@ -247,12 +276,17 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -276,7 +310,158 @@ jobs:
         run: terraform init -input=false
 
       - name: Terraform apply
-        run: terraform apply -auto-approve -input=false tfplan
+        run: terraform apply -auto-approve -input=false -lock-timeout="$TF_LOCK_TIMEOUT" tfplan
 
       - name: Export deployment outputs
         run: terraform output -no-color || true
+
+  # ====================================================================== #
+  # Stage 2: Bootstrap ArgoCD                                              #
+  # Chạy RIÊNG sau terraform-apply với token EKS MỚI → không bao giờ     #
+  # bị lỗi token hết hạn như khi dùng helm_release trong Terraform        #
+  # ====================================================================== #
+  bootstrap-argocd:
+    name: Bootstrap ArgoCD vào EKS
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    environment: sandbox
+    permissions:
+      contents: write
+      id-token: write
+
+    env:
+      CLUSTER_NAME: triage-hub-eks
+      ARGOCD_NAMESPACE: argocd
+      ARGOCD_CHART_VERSION: "7.8.26"
+      ROOT_APP_PATH: capstone/tf-1/devops/platform/argocd/root-app.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.17.0"
+
+      - name: Cập nhật kubeconfig (token MỚI - không bị hết hạn)
+        run: |
+          aws eks update-kubeconfig \
+            --name "$CLUSTER_NAME" \
+            --region "$AWS_REGION"
+          echo "✅ kubeconfig đã được cập nhật"
+          kubectl cluster-info
+
+      - name: Cài ArgoCD qua Helm (idempotent - an toàn chạy lại nhiều lần)
+        run: |
+          set -euo pipefail
+
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace "$ARGOCD_NAMESPACE" \
+            --create-namespace \
+            --version "$ARGOCD_CHART_VERSION" \
+            --set server.service.type=ClusterIP \
+            --wait \
+            --timeout 5m
+
+          echo "✅ ArgoCD đã cài xong"
+          kubectl get pods -n "$ARGOCD_NAMESPACE"
+
+      - name: Apply ArgoCD Root App (App of Apps)
+        run: |
+          set -euo pipefail
+
+          # Chờ ArgoCD CRDs sẵn sàng
+          kubectl wait --for=condition=established \
+            crd/applications.argoproj.io \
+            --timeout=60s
+
+          kubectl apply -f "$ROOT_APP_PATH"
+          echo "✅ Root App đã được apply - ArgoCD sẽ tự sync các app còn lại"
+
+      - name: Kiểm tra trạng thái ArgoCD
+        run: |
+          echo "=== ArgoCD Pods ==="
+          kubectl get pods -n "$ARGOCD_NAMESPACE"
+          echo ""
+          echo "=== ArgoCD Applications ==="
+          kubectl get applications -n "$ARGOCD_NAMESPACE" || true
+
+      # ------------------------------------------------------------------ #
+      # Auto-patch: Đọc ARN từ SSM và cập nhật vào kustomization.yaml     #
+      # Mỗi lần terraform apply tạo lại ALB, bước này tự động commit ARN mới  #
+      # ------------------------------------------------------------------ #
+      - name: Checkout full repo (for git push)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (re-auth for SSM)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Patch kustomization.yaml với ARN mới từ SSM
+        env:
+          KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          SSM_PARAM: /triage-hub/sandbox/alb_target_group_arn
+        run: |
+          set -euo pipefail
+
+          # Kiểm tra xem file kustomization.yaml có dòng targetGroupARN không (tránh patch trượt âm thầm)
+          if ! grep -q "targetGroupARN:" "$KUSTOMIZATION_FILE"; then
+            echo "❌ Error: Không tìm thấy targetGroupARN trong file $KUSTOMIZATION_FILE"
+            exit 1
+          fi
+
+          # Đọc ARN từ SSM
+          ARN=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          echo "✅ ARN lấy từ SSM: $ARN"
+
+          # Patch vào kustomization.yaml (chỉ thay dòng có targetGroupARN)
+          sed -i "s|targetGroupARN:.*|targetGroupARN: ${ARN}|" "$KUSTOMIZATION_FILE"
+
+          echo "✅ kustomization.yaml sau patch:"
+          grep -A2 'targetGroupARN' "$KUSTOMIZATION_FILE"
+
+      - name: Commit và push ARN mới lên Git
+        env:
+          KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Chỉ commit nếu file thực sự thay đổi (tránh empty commit)
+          if git diff --quiet "$KUSTOMIZATION_FILE"; then
+            echo "ℹ️ ARN không thay đổi, bỏ qua bước commit."
+          else
+            git add "$KUSTOMIZATION_FILE"
+            git commit -m "ci(infra): auto-patch targetGroupARN từ SSM [skip ci]"
+            # Sử dụng HEAD:<branch_name> để push an toàn cả khi ở trạng thái detached HEAD
+            git push origin HEAD:"$BRANCH_NAME"
+            echo "✅ Đã push ARN mới lên branch $BRANCH_NAME"
+          fi

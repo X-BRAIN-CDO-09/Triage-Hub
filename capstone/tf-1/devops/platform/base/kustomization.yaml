@@ -20,4 +20,5 @@ resources:
   - secrets/cluster-secret-store.yaml
   - secrets/external-secret.yaml
   - security/cluster-image-policy.yaml
+
   - security/rbac.yaml
