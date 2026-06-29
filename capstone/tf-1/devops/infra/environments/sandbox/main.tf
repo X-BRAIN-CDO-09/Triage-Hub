@@ -656,5 +656,3 @@ resource "terraform_data" "argocd_root" {
   depends_on = [helm_release.argocd]
 }
 
-
-
