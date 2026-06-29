@@ -15,6 +15,13 @@ const crypto = require("crypto");
 // Timeout mặc định cho các request HTTP bên ngoài (ms)
 const EXTERNAL_API_TIMEOUT_MS = 10000;
 
+// Retry settings for external API calls (429/5xx)
+const MAX_RETRIES = 3;
+const BASE_RETRY_DELAY_MS = 500;
+
+let cachedJiraSecret = null;
+let cachedSlackSigningSecret = null;
+
 const dynamoClient = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 
@@ -22,10 +29,6 @@ const secretsClient = new SecretsManagerClient({});
 const DYNAMODB_TABLE = process.env.DYNAMODB_TABLE;
 const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 const SLACK_SIGNING_SECRET_ARN = process.env.SLACK_SIGNING_SECRET_ARN;
-
-// Cache secrets trong warm Lambda container
-let cachedJiraSecret = null;
-let cachedSlackSigningSecret = null;
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -50,6 +53,113 @@ async function getSlackSigningSecret() {
 }
 
 // =============================================================================
+// Helper: Fetch with retry (exponential backoff + jitter)
+// =============================================================================
+async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+    if (!isRetryable || attempt === retries) {
+      return response;
+    }
+
+    const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
+    logStructured("WARN", "Retryable response, backing off", {
+      attempt,
+      status: response.status,
+      delay_ms: Math.round(delay),
+      url: url.split("/").pop(),
+    });
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return null;
+}
+
+// =============================================================================
+// Structured JSON logger
+// =============================================================================
+function logStructured(level, message, extra = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    service: "jira-dispatcher",
+    message,
+    ...extra,
+  };
+  if (level === "ERROR") {
+    console.error(JSON.stringify(entry));
+  } else {
+    console.log(JSON.stringify(entry));
+  }
+}
+
+// =============================================================================
+// Helper: Convert plain text / Markdown to Atlassian Document Format (ADF)
+// =============================================================================
+function markdownToAdf(text) {
+  if (!text) {
+    return { type: "doc", version: 1, content: [{ type: "paragraph", content: [] }] };
+  }
+  const lines = text.split("\n");
+  const content = [];
+  for (const line of lines) {
+    content.push({
+      type: "paragraph",
+      content: [{ type: "text", text: line || " " }],
+    });
+  }
+  return { type: "doc", version: 1, content };
+}
+
+// =============================================================================
+// Helper: Map AI confidence & status → Jira priority + labels
+// =============================================================================
+function confidenceRouting(confidence, aiStatus) {
+  const result = { priority: null, extraLabels: [] };
+
+  // Priority based on confidence level
+  if (confidence != null) {
+    if (confidence > 0.7) {
+      result.priority = { id: "2" }; // High
+    } else if (confidence >= 0.4) {
+      result.priority = { id: "3" }; // Medium
+    } else {
+      result.priority = { id: "4" }; // Low
+    }
+  }
+
+  // Extra labels based on AI status
+  if (aiStatus) {
+    switch (aiStatus) {
+      case "INVESTIGATE":
+        result.extraLabels.push("investigation");
+        break;
+      case "INSUFFICIENT_CONTEXT":
+        result.extraLabels.push("needs-context");
+        break;
+      case "UNSAFE_SUGGESTION_BLOCKED":
+        result.extraLabels.push("safety-blocked");
+        break;
+    }
+  }
+
+  return result;
+}
+
+// Default Jira reporter account ID (Project Lead — Phong).
+// Override via alertPayload.ownership?.jira_reporter_account_id.
+const DEFAULT_JIRA_REPORTER_ACCOUNT_ID = "70121:f5ca0e65-3bf5-4102-ad3d-1313fdcb9f7e";
+
+// =============================================================================
 // GĐ 1: Tạo Jira Ticket qua REST API
 // =============================================================================
 async function createJiraTicket(jiraCreds, alertPayload) {
@@ -58,8 +168,48 @@ async function createJiraTicket(jiraCreds, alertPayload) {
   // Basic auth: email:token → base64
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
 
-  const ticketPayload = {
-    fields: {
+  // Detect input mode: AI contract (ticket_payload) vs legacy flat alert
+  let fields;
+  if (alertPayload.ticket_payload) {
+    const tp = alertPayload.ticket_payload;
+    const extra = tp.fields || {};
+
+    const descParts = [];
+    if (tp.description) descParts.push(tp.description);
+    if (alertPayload.incident_id) descParts.push(`\nIncident ID: ${alertPayload.incident_id}`);
+    if (extra.audit_id) descParts.push(`Audit ID: ${extra.audit_id}`);
+    if (extra.confidence != null) descParts.push(`Confidence: ${Math.round(extra.confidence * 100)}%`);
+    if (extra.owner_team) descParts.push(`Owner Team: ${extra.owner_team}`);
+    if (extra.suggestion_reason) descParts.push(`Suggestion: ${extra.suggestion_reason}`);
+    descParts.push("\nGenerated by Triage Hub AI System.");
+
+    // Confidence-based routing: priority + extra labels
+    const confidence = extra.confidence != null ? extra.confidence : alertPayload.confidence;
+    const routing = confidenceRouting(confidence, alertPayload.status);
+
+    const labels = [...new Set([...(tp.labels || []), "ai-triage", ...routing.extraLabels])];
+
+    fields = {
+      project: { key: tp.project || "TRIAGE" },
+      summary: tp.summary || "Untitled incident",
+      description: markdownToAdf(descParts.join("\n")),
+      issuetype: { name: "Bug" },
+      labels,
+      reporter: { id: alertPayload.ownership?.jira_reporter_account_id || DEFAULT_JIRA_REPORTER_ACCOUNT_ID },
+    };
+
+    if (routing.priority) {
+      fields.priority = routing.priority;
+    }
+
+    // Map suggested_assignee_account_id to assignee if present (human must
+    // confirm per AI contract — this is consumed by GĐ 3 Slack callback,
+    // not for auto-assignment here).
+    if (extra.suggested_assignee_account_id) {
+      fields.assignee = { id: extra.suggested_assignee_account_id };
+    }
+  } else {
+    fields = {
       project: {
         key: alertPayload.ownership?.jira_project || "TRIAGE",
       },
@@ -83,38 +233,47 @@ async function createJiraTicket(jiraCreds, alertPayload) {
         name: "Bug",
       },
       labels: ["ai-triage", alertPayload.tenant_id || "unknown-tenant"],
-    },
-  };
+      reporter: { id: alertPayload.ownership?.jira_reporter_account_id || DEFAULT_JIRA_REPORTER_ACCOUNT_ID },
+    };
+  }
 
-  console.log("Creating Jira ticket for incident:", alertPayload.incident_id, "project:", alertPayload.ownership?.jira_project);
+  const ticketPayload = { fields };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+  const startTime = Date.now();
+  logStructured("INFO", "Creating Jira ticket", {
+    incident_id: alertPayload.incident_id,
+    project: fields.project.key,
+  });
 
   let response;
-  try {
-    response = await fetch(`${base_url}/rest/api/3/issue`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(ticketPayload),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+  response = await fetchWithRetry(`${base_url}/rest/api/3/issue`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(ticketPayload),
+  });
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error("Jira API error:", response.status);
+    logStructured("ERROR", "Jira API error", {
+      incident_id: alertPayload.incident_id,
+      status: response.status,
+      error_body: errorBody,
+      execution_time_ms: Date.now() - startTime,
+    });
     throw new Error(`Jira API error: status ${response.status}`);
   }
 
   const result = await response.json();
-  console.log("Jira ticket created:", result.key, result.id);
+  logStructured("INFO", "Jira ticket created", {
+    incident_id: alertPayload.incident_id,
+    issue_key: result.key,
+    issue_id: result.id,
+    execution_time_ms: Date.now() - startTime,
+  });
 
   return {
     issueKey: result.key,     // e.g. "TRIAGE-42"
@@ -142,7 +301,11 @@ async function reserveIncidentMapping(incidentId, tenantId, alertId) {
   });
 
   await dynamoClient.send(command);
-  console.log("Incident reserved in DynamoDB:", `TENANT#${tenantId}`, `INCIDENT#${incidentId}`);
+  logStructured("INFO", "Incident reserved in DynamoDB", {
+    tenant_id: tenantId,
+    incident_id: incidentId,
+    table_key: `TENANT#${tenantId}#INCIDENT#${incidentId}`,
+  });
 }
 
 // =============================================================================
@@ -164,7 +327,36 @@ async function updateJiraMapping(incidentId, tenantId, jiraResult) {
   });
 
   await dynamoClient.send(command);
-  console.log("Jira mapping updated in DynamoDB:", `TENANT#${tenantId}`, `INCIDENT#${incidentId}`);
+  logStructured("INFO", "Jira mapping updated in DynamoDB", {
+    tenant_id: tenantId,
+    incident_id: incidentId,
+    jira_issue_key: jiraResult.issueKey,
+  });
+}
+
+// =============================================================================
+// DLQ: Capture failed ticket creation to DynamoDB
+// =============================================================================
+async function dlqCapture(incidentId, tenantId, alertId, errorMessage) {
+  try {
+    const command = new PutItemCommand({
+      TableName: DYNAMODB_TABLE,
+      Item: {
+        PK: { S: `TENANT#${tenantId}` },
+        SK: { S: `DLQ#${incidentId}` },
+        incident_id: { S: incidentId },
+        tenant_id: { S: tenantId },
+        alert_id: { S: alertId || "unknown" },
+        status: { S: "FAILED" },
+        error: { S: errorMessage || "unknown" },
+        failed_at: { S: new Date().toISOString() },
+      },
+    });
+    await dynamoClient.send(command);
+    logStructured("INFO", "DLQ record written", { incident_id: incidentId, tenant_id: tenantId });
+  } catch (dlqErr) {
+    logStructured("ERROR", "Failed to write DLQ record", { incident_id: incidentId, error: dlqErr.message });
+  }
 }
 
 // =============================================================================
@@ -174,7 +366,7 @@ function verifySlackSignature(signingSecret, requestBody, timestamp, signature) 
   // Reject stale requests (> 5 phút)
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - parseInt(timestamp)) > 300) {
-    console.warn("Slack request timestamp is stale");
+    logStructured("WARN", "Slack request timestamp is stale", { timestamp, now });
     return false;
   }
 
@@ -199,30 +391,24 @@ async function assignJiraTicket(jiraCreds, issueKey, accountId) {
   const { email, token, base_url } = jiraCreds;
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
-
-  let response;
-  try {
-    response = await fetch(`${base_url}/rest/api/3/issue/${issueKey}/assignee`, {
-      method: "PUT",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ accountId }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+  const response = await fetchWithRetry(`${base_url}/rest/api/3/issue/${issueKey}/assignee`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ accountId }),
+  });
 
   if (!response.ok) {
-    console.error(`Jira assign error: status ${response.status}`);
+    logStructured("ERROR", "Jira assign error", {
+      issue_key: issueKey,
+      status: response.status,
+    });
     throw new Error(`Jira assign error: status ${response.status}`);
   }
 
-  console.log(`Jira ticket ${issueKey} assigned to ${accountId}`);
+  logStructured("INFO", "Jira ticket assigned", { issue_key: issueKey, account_id: accountId });
 }
 
 // =============================================================================
@@ -254,7 +440,8 @@ async function saveCallbackAudit(incidentId, tenantId, slackUser, actionType, is
 // Main Handler — Route theo loại event
 // =============================================================================
 exports.handler = async (event) => {
-  console.log("jira-dispatcher invoked. Route:", event.headers?.["x-slack-signature"] ? "slack-callback" : "create-ticket");
+  const route = event.headers?.["x-slack-signature"] ? "slack-callback" : "create-ticket";
+  logStructured("INFO", "jira-dispatcher invoked", { route });
 
   try {
     // =========================================================================
@@ -273,7 +460,7 @@ exports.handler = async (event) => {
     return await handleCreateTicket(event);
 
   } catch (err) {
-    console.error("jira-dispatcher error:", err.message);
+    logStructured("ERROR", "jira-dispatcher unhandled error", { error: err.message });
     return {
       statusCode: 500,
       body: JSON.stringify({ error: "Internal server error" }),
@@ -308,7 +495,7 @@ async function handleCreateTicket(event) {
     await reserveIncidentMapping(incidentId, tenantId, alertId);
   } catch (err) {
     if (err.name === "ConditionalCheckFailedException") {
-      console.log("Incident already exists, returning existing mapping:", incidentId);
+      logStructured("INFO", "Incident already exists, returning existing mapping", { incident_id: incidentId });
       const existing = await dynamoClient.send(new GetItemCommand({
         TableName: DYNAMODB_TABLE,
         Key: { PK: { S: `TENANT#${tenantId}` }, SK: { S: `INCIDENT#${incidentId}` } },
@@ -328,14 +515,14 @@ async function handleCreateTicket(event) {
   // 2. Lấy Jira credentials từ Secrets Manager
   const jiraCreds = await getJiraSecret();
 
-  // 3. Tạo Jira ticket (nếu fail thì xóa reservation để cho phép retry)
+  // 3. Tạo Jira ticket (nếu fail → DLQ + cleanup PENDING)
   let jiraResult;
   try {
     jiraResult = await createJiraTicket(jiraCreds, alertPayload);
     await updateJiraMapping(incidentId, tenantId, jiraResult);
   } catch (err) {
-    // Xóa reservation PENDING để lần gọi tiếp theo có thể retry
-    console.error("Jira ticket creation failed, removing PENDING reservation:", err.message);
+    await dlqCapture(incidentId, tenantId, alertId, err.message);
+    logStructured("ERROR", "Jira ticket creation failed, removing PENDING reservation", { incident_id: incidentId, error: err.message });
     try {
       const { DeleteItemCommand } = require("@aws-sdk/client-dynamodb");
       await dynamoClient.send(new DeleteItemCommand({
@@ -343,7 +530,7 @@ async function handleCreateTicket(event) {
         Key: { PK: { S: `TENANT#${tenantId}` }, SK: { S: `INCIDENT#${incidentId}` } },
       }));
     } catch (deleteErr) {
-      console.error("Failed to clean up PENDING reservation:", deleteErr.message);
+      logStructured("ERROR", "Failed to clean up PENDING reservation", { incident_id: incidentId, error: deleteErr.message });
     }
     throw err;
   }
@@ -363,32 +550,22 @@ async function handleCreateTicket(event) {
 // =============================================================================
 async function updateSlackMessage(responseUrl, updatedBlocks) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
-
-    let response;
-    try {
-      response = await fetch(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          replace_original: true,
-          blocks: updatedBlocks,
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    const response = await fetchWithRetry(responseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        replace_original: true,
+        blocks: updatedBlocks,
+      }),
+    });
 
     if (!response.ok) {
-      console.error("Slack response_url error:", response.status);
+      logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
     } else {
-      console.log("Slack message updated successfully via response_url");
+      logStructured("INFO", "Slack message updated via response_url", { response_url: responseUrl });
     }
   } catch (err) {
-    // Non-fatal: Jira assignment đã thành công, chỉ Slack UI chưa cập nhật
-    console.error("Failed to update Slack message (non-fatal):", err.message);
+    logStructured("ERROR", "Failed to update Slack message (non-fatal)", { error: err.message });
   }
 }
 
@@ -401,7 +578,7 @@ async function handleSlackCallback(event) {
 
   // 1. Verify Slack Signature (fail-closed: bắt buộc có signing secret)
   if (!SLACK_SIGNING_SECRET_ARN) {
-    console.error("SLACK_SIGNING_SECRET_ARN is not configured — rejecting request");
+    logStructured("ERROR", "SLACK_SIGNING_SECRET_ARN not configured — rejecting request");
     return { statusCode: 500, body: "Server misconfiguration" };
   }
 
@@ -410,7 +587,7 @@ async function handleSlackCallback(event) {
   const signature = headers["x-slack-signature"] || headers["X-Slack-Signature"];
 
   if (!timestamp || !signature || !verifySlackSignature(signingSecret, rawBody, timestamp, signature)) {
-    console.error("Slack signature verification failed");
+    logStructured("ERROR", "Slack signature verification failed");
     return { statusCode: 401, body: "Unauthorized" };
   }
 
@@ -418,7 +595,7 @@ async function handleSlackCallback(event) {
   const params = new URLSearchParams(rawBody);
   const payloadStr = params.get("payload");
   if (!payloadStr) {
-    console.error("Missing payload field in Slack callback body");
+    logStructured("ERROR", "Missing payload field in Slack callback body");
     return { statusCode: 400, body: "Bad Request: missing payload" };
   }
 
@@ -426,7 +603,7 @@ async function handleSlackCallback(event) {
   try {
     payload = JSON.parse(payloadStr);
   } catch {
-    console.error("Invalid JSON in Slack callback payload");
+    logStructured("ERROR", "Invalid JSON in Slack callback payload");
     return { statusCode: 400, body: "Bad Request: invalid payload" };
   }
 
@@ -440,7 +617,10 @@ async function handleSlackCallback(event) {
     return { statusCode: 200, body: "No action found" };
   }
 
-  console.log("Slack action received:", action.action_id, "by user:", slackUserName);
+  logStructured("INFO", "Slack action received", {
+    action_id: action.action_id,
+    slack_user: slackUserName,
+  });
 
   // 3. Parse action value
   let actionValue;
@@ -466,7 +646,7 @@ async function handleSlackCallback(event) {
       try {
         await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId);
       } catch (err) {
-        console.error("Assign Error:", err);
+        logStructured("ERROR", "Assign ticket failed", { issue_key: issueKey, error: err.message });
         status = "FAILED_API";
       }
     } else {
@@ -482,18 +662,11 @@ async function handleSlackCallback(event) {
       jiraBaseUrl = jiraCreds.base_url;
       try {
         const auth = Buffer.from(`${jiraCreds.email}:${jiraCreds.token}`).toString("base64");
-        const userController = new AbortController();
-        const userTimeout = setTimeout(() => userController.abort(), EXTERNAL_API_TIMEOUT_MS);
         let userResp;
-        try {
-          userResp = await fetch(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
-            method: "GET",
-            headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
-            signal: userController.signal,
-          });
-        } finally {
-          clearTimeout(userTimeout);
-        }
+        userResp = await fetchWithRetry(`${jiraCreds.base_url}/rest/api/3/user?accountId=${encodeURIComponent(assigneeAccountId)}`, {
+          method: "GET",
+          headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+        });
         if (userResp.ok) {
           const userData = await userResp.json();
           const name = userData.displayName || assigneeAccountId;
@@ -501,7 +674,7 @@ async function handleSlackCallback(event) {
           assigneeName = `${name}${email}`;
         }
       } catch (err) {
-        console.warn("Failed to fetch assignee name:", err.message);
+        logStructured("WARN", "Failed to fetch assignee name", { error: err.message });
       }
     }
 
