@@ -3,6 +3,8 @@
 # Module composition — gọi các shared modules
 # =============================================================================
 
+data "aws_caller_identity" "current" {}
+
 # 1. Platform VPC Module
 module "vpc_platform" {
   source = "../../modules/vpc"
@@ -75,7 +77,8 @@ module "sqs" {
 
   project_name = var.project_name
   queues = {
-    "buffer-queue" = {}
+    "buffer-queue"   = {}
+    "dispatch-queue" = {}
   }
 }
 
@@ -176,32 +179,6 @@ module "lambda" {
       ]
     }
 
-    "push-to-ai" = {
-      handler                = "index.handler"
-      runtime                = "nodejs20.x"
-      source_dir             = "../../../app/push-to-ai"
-      vpc_subnet_ids         = module.vpc_platform.private_subnet_ids
-      vpc_security_group_ids = [module.lambda_sg.security_group_id]
-      environment_variables = {
-        SQS_QUEUE_URL = module.sqs.queue_urls["buffer-queue"]
-        AI_ENGINE_URL = "http://${module.alb.dns_name}:8080/v1/triage"
-        # Đọc CÙNG secret service_auth_token với engine (ESO) → token luôn khớp (khớp file teammate)
-        SERVICE_AUTH_TOKEN_ARN = module.secrets_manager.secret_arns["service_auth_token"]
-      }
-      iam_policy_statements = [
-        {
-          effect    = "Allow"
-          actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
-          resources = [module.sqs.queue_arns["buffer-queue"]]
-        },
-        {
-          effect    = "Allow"
-          actions   = ["secretsmanager:GetSecretValue"]
-          resources = [module.secrets_manager.secret_arns["service_auth_token"]]
-        }
-      ]
-    }
-
     "notify-dispatcher" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
@@ -210,6 +187,7 @@ module "lambda" {
         DYNAMODB_TABLE      = module.dynamodb.table_name
         JIRA_SECRET_ARN     = module.secrets_manager.secret_arns["jira_api_token"]
         SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
+        JIRA_DISPATCHER_ARN = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-jira-dispatcher"
       }
       iam_policy_statements = [
         {
@@ -224,6 +202,16 @@ module "lambda" {
             module.secrets_manager.secret_arns["jira_api_token"],
             module.secrets_manager.secret_arns["slack_bot_token"]
           ]
+        },
+        {
+          effect    = "Allow"
+          actions   = ["lambda:InvokeFunction"]
+          resources = ["arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-jira-dispatcher"]
+        },
+        {
+          effect    = "Allow"
+          actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+          resources = [module.sqs.queue_arns["dispatch-queue"]]
         }
       ]
     }
@@ -256,9 +244,9 @@ module "api_gateway" {
 }
 
 # 13. SQS Event Source Mappings (Triggers)
-resource "aws_lambda_event_source_mapping" "push_to_ai" {
-  event_source_arn = module.sqs.queue_arns["buffer-queue"]
-  function_name    = module.lambda.function_names["push-to-ai"]
+resource "aws_lambda_event_source_mapping" "notify_dispatcher" {
+  event_source_arn = module.sqs.queue_arns["dispatch-queue"]
+  function_name    = module.lambda.function_names["notify-dispatcher"]
   batch_size       = 10
   enabled          = true
 }
@@ -332,7 +320,21 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
   }
 }
 
-# 16c. ECR API + ECR DKR VPC Endpoints — Required for EKS private node image pulling
+# 16c. SQS VPC Endpoint (Interface) — Cho phép Pod giao tiếp SQS ngầm nội bộ
+resource "aws_vpc_endpoint" "sqs" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.sqs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-sqs-vpce-${var.environment}"
+  }
+}
+
+# 16d. ECR API + ECR DKR VPC Endpoints — Required for EKS private node image pulling
 resource "aws_vpc_endpoint" "ecr_api" {
   vpc_id              = module.vpc_platform.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
@@ -541,10 +543,21 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
       {
         Effect = "Allow"
         Action = [
-          "lambda:InvokeFunction"
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
         ]
         Resource = [
-          module.lambda.function_arns["notify-dispatcher"]
+          module.sqs.queue_arns["buffer-queue"]
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage"
+        ]
+        Resource = [
+          module.sqs.queue_arns["dispatch-queue"]
         ]
       }
     ]
