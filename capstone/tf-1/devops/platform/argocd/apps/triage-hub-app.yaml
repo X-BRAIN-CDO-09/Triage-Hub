@@ -3,6 +3,11 @@ kind: Application
 metadata:
   name: triage-hub-app
   namespace: argocd
+  annotations:
+    argocd-image-updater.argoproj.io/write-back-method: argocd
+    argocd-image-updater.argoproj.io/image-list: aiops=730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
+    argocd-image-updater.argoproj.io/aiops.update-strategy: latest
+    argocd-image-updater.argoproj.io/aiops.allow-tags: regexp:^[0-9a-f]{7}$
 spec:
   project: triage-hub
   source:
