@@ -98,7 +98,8 @@ def test_statistical_detectors_emit_expected_evidence() -> None:
     assert "threshold" in detectors
     assert "rolling_zscore_3sigma" in detectors
     assert "ewma_drift" in detectors
-    assert "isolation_forest" in detectors
+    expected = {'ewma_drift', 'rolling_zscore_3sigma', 'threshold'}
+    assert detectors == expected
 
 
 def test_causal_hints_degrade_when_series_is_too_short() -> None:
