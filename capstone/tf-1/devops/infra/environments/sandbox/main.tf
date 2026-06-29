@@ -635,5 +635,3 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
 # Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
 
-
-
