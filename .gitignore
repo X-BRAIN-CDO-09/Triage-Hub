@@ -35,3 +35,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+
+# Runtime audit data (not source)
+capstone/tf-1/devops/app/ai-engine/audit/
+*.jsonl
