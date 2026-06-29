@@ -7,7 +7,7 @@ spec:
   project: triage-hub
   source:
     repoURL: https://github.com/X-BRAIN-CDO-09/Triage-Hub.git
-    targetRevision: main
+    targetRevision: develop
     path: capstone/tf-1/devops/platform/overlays/sandbox
   destination:
     server: https://kubernetes.default.svc
