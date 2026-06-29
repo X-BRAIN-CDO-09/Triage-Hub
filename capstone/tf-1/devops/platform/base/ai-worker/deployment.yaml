@@ -55,7 +55,8 @@ spec:
               value: "1"
             # TRIAGE_URL: worker gọi tf1-api nội bộ (aiops_worker.py:22)
             - name: TRIAGE_URL
-              value: "http://tf1-api.triage-hub.svc.cluster.local:8080"
+              value: "http://tf1-api.triage-hub.svc.cluster.local:8080/v1/triage"
+
             - name: SQS_QUEUE_URL
               valueFrom:
                 secretKeyRef:
