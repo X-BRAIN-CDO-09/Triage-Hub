@@ -28,7 +28,7 @@ spec:
           image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine:v1.0.0
           imagePullPolicy: IfNotPresent
           # Worker role: chạy SQS consumer (engine image dùng chung, override command)
-          command: ["python", "-m", "app.aiops_worker"]
+          command: ["python", "-m", "app.aiops_worker", "--poll-seconds", "10"]
           resources:
             requests:
               cpu: "512m"
