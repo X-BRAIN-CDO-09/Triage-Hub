@@ -19,5 +19,6 @@ resources:
   - networking/netpol-default.yaml
   - secrets/cluster-secret-store.yaml
   - secrets/external-secret.yaml
-  - security/cluster-image-policy.yaml
+  # - security/cluster-image-policy.yaml  # TODO: re-enable after sigstore-policy-controller CRD is installed
+
   - security/rbac.yaml
