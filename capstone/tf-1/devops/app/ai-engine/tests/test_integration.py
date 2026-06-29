@@ -1,8 +1,9 @@
-import pytest
 from fastapi.testclient import TestClient
+
 from app.main import app
 
 client = TestClient(app)
+
 
 def test_healthz_endpoint():
     response = client.get("/healthz")
@@ -11,6 +12,7 @@ def test_healthz_endpoint():
     res_data = response.json()
     assert res_data["status"] == "ok"
     assert "service" in res_data
+
 
 def test_tenant_isolation_forbidden_access():
     headers = {"X-Tenant-Id": "tenant-A", "X-Correlation-Id": "corr-125"}

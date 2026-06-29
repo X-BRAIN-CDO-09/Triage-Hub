@@ -11,10 +11,12 @@ Key fixture: `isolate_auth_env`
 
 from __future__ import annotations
 
-import pytest
-import sys
 import os
+import sys
 from unittest.mock import MagicMock
+
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # 2. Giả lập (Mock) hoàn toàn thư viện numpy để Python không báo lỗi thiếu module
