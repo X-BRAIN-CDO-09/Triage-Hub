@@ -28,8 +28,13 @@ spec:
     - group: admissionregistration.k8s.io
       kind: MutatingWebhookConfiguration
       name: policy.sigstore.dev
+      jsonPointers:
+        - /webhooks
     - group: admissionregistration.k8s.io
       kind: ValidatingWebhookConfiguration
       name: policy.sigstore.dev
+      jsonPointers:
+        - /webhooks
+
 
 
