@@ -214,8 +214,8 @@ module "lambda" {
           ]
         },
         {
-          effect  = "Allow"
-          actions = ["lambda:InvokeFunction"]
+          effect    = "Allow"
+          actions   = ["lambda:InvokeFunction"]
           resources = ["arn:aws:lambda:us-east-1:*:function:triage-hub-jira-dispatcher"]
         }
       ]
