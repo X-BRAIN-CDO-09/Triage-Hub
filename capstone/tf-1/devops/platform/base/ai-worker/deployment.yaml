@@ -31,11 +31,11 @@ spec:
           command: ["python", "-m", "app.aiops_worker", "--poll-seconds", "10"]
           resources:
             requests:
-              cpu: "512m"
-              memory: "1Gi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "1000m"
-              memory: "2Gi"
+              cpu: "500m"
+              memory: "1Gi"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
