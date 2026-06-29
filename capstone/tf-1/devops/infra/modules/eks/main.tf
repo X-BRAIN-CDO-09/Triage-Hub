@@ -92,7 +92,7 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
 # --- Managed node group (private, autoscaling KAN-205) --------------------
 resource "aws_eks_node_group" "this" {
   cluster_name    = aws_eks_cluster.this.name
-  node_group_name = "${var.project_name}-ng-v2"
+  node_group_name = "${var.project_name}-ng-v3"
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.private_subnet_ids
   instance_types  = var.node_instance_types
