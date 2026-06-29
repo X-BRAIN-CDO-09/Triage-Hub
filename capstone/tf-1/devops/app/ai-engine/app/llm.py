@@ -24,7 +24,7 @@ DEFAULT_MODEL_IDS = [
     "us.amazon.nova-2-lite-v1:0",
 ]
 
-_LLM_USAGE_ITEMS: ContextVar[list[dict[str, Any]] | None] = ContextVar("llm_usage_items", default=None)
+_LLM_USAGE_ITEMS: ContextVar[list[dict[str, Any]]] = ContextVar("llm_usage_items", default=[])
 
 
 def reset_llm_usage() -> None:
@@ -32,7 +32,7 @@ def reset_llm_usage() -> None:
 
 
 def current_llm_usage_summary() -> dict[str, Any]:
-    items = list(_LLM_USAGE_ITEMS.get() or [])
+    items = list(_LLM_USAGE_ITEMS.get())
     return {
         "currency": "USD",
         "total_estimated_cost_usd": round(sum(float(item.get("estimated_cost_usd", 0.0)) for item in items), 8),
@@ -257,7 +257,7 @@ def tracked_llm_call(
     LLM_TOKENS_TOTAL.labels(stage=stage, model=model, type="prompt").inc(prompt_tokens)
     LLM_TOKENS_TOTAL.labels(stage=stage, model=model, type="completion").inc(completion_tokens)
     LLM_ESTIMATED_COST_USD_TOTAL.labels(stage=stage, model=model).inc(estimated_cost)
-    usage = list(_LLM_USAGE_ITEMS.get() or [])
+    usage = list(_LLM_USAGE_ITEMS.get())
     usage.append(
         {
             "stage": stage,

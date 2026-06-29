@@ -25,6 +25,8 @@ from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
 from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
+    IdempotencyCompletedError,
+    IdempotencyInProgressError,
     complete_record,
     fail_record,
     is_stale,
@@ -379,7 +381,17 @@ def triage_with_local_guards(request: TriageRequest, audit_id: str) -> TriageRes
         elif record and record.get("status") == "failed_retryable":
             IDEMPOTENCY_EVENTS_TOTAL.labels(result="failed_retryable_reprocessed").inc()
 
-        start_record(audit_id, hash_value)
+        try:
+            start_record(audit_id, hash_value)
+        except IdempotencyCompletedError as exc:
+            if isinstance(exc.record.get("response"), dict):
+                IDEMPOTENCY_EVENTS_TOTAL.labels(result="replayed_completed").inc()
+                return TriageResponse.model_validate(exc.record["response"])
+            raise
+        except IdempotencyInProgressError:
+            IDEMPOTENCY_EVENTS_TOTAL.labels(result="in_progress_rejected").inc()
+            TRIAGE_REJECTED_TOTAL.labels(reason="idempotency_in_progress").inc()
+            raise HTTPException(status_code=409, detail="Triage is already in progress for this audit_id")
         response = triage_request(request, audit_id, idempotency_metadata)
         complete_record(audit_id, hash_value, response)
         IDEMPOTENCY_EVENTS_TOTAL.labels(result="completed").inc()
@@ -902,7 +914,7 @@ def build_response(
         }
     else:
         action_wording = reword_catalog_actions(request, decision, rca, selected_actions)
-    action_payloads: list[dict[str, Any]] = [a for a in action_wording["actions"] if isinstance(a, dict)]
+    action_payloads = action_wording["actions"]
     llm_metadata["action_wording"] = action_wording["metadata"]
     llm_metadata["cost_estimate"] = current_llm_usage_summary()
     actions = [RecommendedAction(**action) for action in action_payloads]
