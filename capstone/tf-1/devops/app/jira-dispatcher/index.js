@@ -282,7 +282,16 @@ async function handleSlackCallback(event) {
   // 2. Invoke Self Asynchronously
   try {
     const payloadStr = new URLSearchParams(rawBody).get("payload");
-    const payloadObj = JSON.parse(payloadStr); // Parse trước để ném sang background
+    if (!payloadStr) {
+      logStructured("WARN", "Slack callback missing payload");
+      return { statusCode: 400, body: "Missing payload" };
+    }
+
+    const payloadObj = JSON.parse(payloadStr);
+    if (!payloadObj || typeof payloadObj !== "object") {
+      logStructured("WARN", "Slack callback payload is invalid");
+      return { statusCode: 400, body: "Invalid payload" };
+    }
     
     await lambdaClient.send(new InvokeCommand({
       FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
