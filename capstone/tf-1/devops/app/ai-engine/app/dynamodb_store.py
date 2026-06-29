@@ -9,7 +9,6 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
-
 DEFAULT_IDEMPOTENCY_RETENTION_DAYS = 7
 
 
@@ -106,7 +105,9 @@ def read_idempotency_record(audit_id: str) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def write_idempotency_record(audit_id: str, record: dict[str, Any], retention_days: int = DEFAULT_IDEMPOTENCY_RETENTION_DAYS) -> None:
+def write_idempotency_record(
+    audit_id: str, record: dict[str, Any], retention_days: int = DEFAULT_IDEMPOTENCY_RETENTION_DAYS
+) -> None:
     dynamodb_table().put_item(
         Item=_to_dynamodb_value(
             {
@@ -126,7 +127,10 @@ def start_idempotency_record(audit_id: str, record: dict[str, Any], stale_before
         Attr("PK").not_exists()
         | Attr("record.status").eq("failed_retryable")
         | (Attr("record.status").eq("completed") & Attr("record.request_hash").ne(request_hash))
-        | (Attr("record.status").eq("in_progress") & (Attr("record.updated_at").lt(stale_before) | Attr("record.updated_at").not_exists()))
+        | (
+            Attr("record.status").eq("in_progress")
+            & (Attr("record.updated_at").lt(stale_before) | Attr("record.updated_at").not_exists())
+        )
     )
     try:
         table.put_item(
