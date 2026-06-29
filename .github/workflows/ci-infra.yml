@@ -327,6 +327,8 @@ jobs:
     environment: sandbox
     permissions:
       contents: write
+      id-token: write
+
     env:
       CLUSTER_NAME: triage-hub-eks
       ARGOCD_NAMESPACE: argocd
