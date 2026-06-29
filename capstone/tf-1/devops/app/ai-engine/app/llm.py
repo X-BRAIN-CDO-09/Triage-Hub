@@ -257,7 +257,7 @@ def tracked_llm_call(
     LLM_TOKENS_TOTAL.labels(stage=stage, model=model, type="prompt").inc(prompt_tokens)
     LLM_TOKENS_TOTAL.labels(stage=stage, model=model, type="completion").inc(completion_tokens)
     LLM_ESTIMATED_COST_USD_TOTAL.labels(stage=stage, model=model).inc(estimated_cost)
-    usage = list(_LLM_USAGE_ITEMS.get() or [])
+    usage = list(_LLM_USAGE_ITEMS.get())
     usage.append(
         {
             "stage": stage,
@@ -371,6 +371,7 @@ def build_tool_prompt_payload(
     max_calls: int,
 ) -> dict[str, Any]:
     return {
+        "task": "tool_planning",
         "incident_scope": {
             "tenant_id": request.tenant_id,
             "environment": request.environment,
