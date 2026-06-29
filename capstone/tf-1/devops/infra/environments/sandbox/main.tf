@@ -646,6 +646,17 @@ resource "helm_release" "argocd" {
   ]
 }
 
+# 20. Ghi ARN Target Group vào SSM để CI/CD tự động patch vào kustomization.yaml
+# CI/CD đọc giá trị này sau terraform apply và commit lên Git — không cần hardcode ARN
+resource "aws_ssm_parameter" "alb_tg_arn" {
+  name        = "/triage-hub/${var.environment}/alb_target_group_arn"
+  description = "Internal ALB Target Group ARN for ai-engine (tf1-api)"
+  type        = "String"
+  value       = module.alb.target_group_arn
+
+  tags = { Name = "triage-hub-alb-tg-arn-${var.environment}" }
+}
+
 resource "terraform_data" "argocd_root" {
   input = filemd5("${path.module}/../../../platform/argocd/root-app.yaml")
 

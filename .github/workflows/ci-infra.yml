@@ -30,7 +30,7 @@ on:
         required: true
         type: string
 permissions:
-  contents: read
+  contents: write
   id-token: write
   pull-requests: write
   security-events: write
@@ -280,3 +280,59 @@ jobs:
 
       - name: Export deployment outputs
         run: terraform output -no-color || true
+
+      # ------------------------------------------------------------------ #
+      # Auto-patch: Đọc ARN từ SSM và cập nhật vào kustomization.yaml     #
+      # Mỗi lần terraform apply tạo lại ALB, bước này tự động commit ARN mới  #
+      # ------------------------------------------------------------------ #
+      - name: Checkout full repo (for git push)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (re-auth for SSM)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Patch kustomization.yaml với ARN mới từ SSM
+        env:
+          KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          SSM_PARAM: /triage-hub/sandbox/alb_target_group_arn
+        run: |
+          set -euo pipefail
+
+          # Đọc ARN từ SSM
+          ARN=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          echo "✅ ARN lấy từ SSM: $ARN"
+
+          # Patch vào kustomization.yaml (chỉ thay dòng có targetGroupARN)
+          sed -i "s|targetGroupARN:.*|targetGroupARN: ${ARN}|" "$KUSTOMIZATION_FILE"
+
+          echo "✅ kustomization.yaml sau patch:"
+          grep -A2 'targetGroupARN' "$KUSTOMIZATION_FILE"
+
+      - name: Commit và push ARN mới lên Git
+        env:
+          KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Chỉ commit nếu file thực sự thay đổi (tránh empty commit)
+          if git diff --quiet "$KUSTOMIZATION_FILE"; then
+            echo "ℹ️ ARN không thay đổi, bỏ qua bước commit."
+          else
+            git add "$KUSTOMIZATION_FILE"
+            git commit -m "ci(infra): auto-patch targetGroupARN từ SSM [skip ci]"
+            git push origin "${{ github.ref_name }}"
+            echo "✅ Đã push ARN mới lên branch ${{ github.ref_name }}"
+          fi
