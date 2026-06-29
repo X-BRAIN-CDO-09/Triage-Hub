@@ -1,6 +1,9 @@
 name: Terraform Destroy
 
 on:
+  schedule:
+    # 00:00 ICT (UTC+7) every day
+    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -22,13 +25,23 @@ permissions:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_VERSION: "1.14.8"
+  TF_LOCK_TIMEOUT: "10m"
 
 jobs:
   destroy:
     name: Destroy sandbox infrastructure
-    if: github.event.inputs.environment == 'sandbox' && github.event.inputs.confirm == 'destroy-sandbox'
+    if: |
+      github.event_name == 'schedule' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.environment == 'sandbox' &&
+        github.event.inputs.confirm == 'destroy-sandbox'
+      )
     runs-on: ubuntu-latest
     environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: capstone/tf-1/devops/infra/environments/sandbox
@@ -76,7 +89,7 @@ jobs:
             --name "triage-hub-eks"
 
       - name: Terraform destroy plan
-        run: terraform plan -destroy -no-color -input=false -out=tfdestroy
+        run: terraform plan -destroy -no-color -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -out=tfdestroy
 
       - name: Terraform destroy
-        run: terraform apply -auto-approve -input=false tfdestroy
+        run: terraform apply -auto-approve -input=false -lock-timeout="$TF_LOCK_TIMEOUT" tfdestroy

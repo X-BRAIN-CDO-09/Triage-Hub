@@ -11,6 +11,9 @@ on:
     paths:
       - "capstone/tf-1/devops/infra/**"
       - ".github/workflows/ci-infra.yml"
+  schedule:
+    # 08:00 ICT (UTC+7) every day
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -42,6 +45,7 @@ concurrency:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_VERSION: "1.14.8"
+  TF_LOCK_TIMEOUT: "10m"
   TF_ROOT: capstone/tf-1/devops/infra/environments/sandbox
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'triage-hub-tfstate-bucket' }}
   TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -129,6 +133,9 @@ jobs:
     needs: terraform-static-checks
     runs-on: ubuntu-latest
     environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
@@ -184,7 +191,7 @@ jobs:
         id: plan
         run: |
           set +e
-          terraform plan -no-color -input=false -detailed-exitcode -out=tfplan
+          terraform plan -no-color -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -detailed-exitcode -out=tfplan
           PLAN_EXIT=$?
           set -e
 
@@ -235,10 +242,15 @@ jobs:
     needs: terraform-plan
     if: |
       needs.terraform-plan.outputs.has_changes == 'true' &&
-      github.event_name != 'pull_request' &&
       (
-        github.ref == 'refs/heads/develop' ||
-        github.ref == 'refs/heads/main' ||
+        github.event_name == 'schedule' ||
+        (
+          github.event_name == 'push' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            github.ref == 'refs/heads/main'
+          )
+        ) ||
         (
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.apply == 'true' &&
@@ -247,6 +259,9 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.TF_ROOT }}
@@ -276,7 +291,7 @@ jobs:
         run: terraform init -input=false
 
       - name: Terraform apply
-        run: terraform apply -auto-approve -input=false tfplan
+        run: terraform apply -auto-approve -input=false -lock-timeout="$TF_LOCK_TIMEOUT" tfplan
 
       - name: Export deployment outputs
         run: terraform output -no-color || true
