@@ -281,6 +281,87 @@ jobs:
       - name: Export deployment outputs
         run: terraform output -no-color || true
 
+  # ====================================================================== #
+  # Stage 2: Bootstrap ArgoCD                                              #
+  # Chạy RIÊNG sau terraform-apply với token EKS MỚI → không bao giờ     #
+  # bị lỗi token hết hạn như khi dùng helm_release trong Terraform        #
+  # ====================================================================== #
+  bootstrap-argocd:
+    name: Bootstrap ArgoCD vào EKS
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    environment: sandbox
+    env:
+      CLUSTER_NAME: triage-hub-eks
+      ARGOCD_NAMESPACE: argocd
+      ARGOCD_CHART_VERSION: "7.8.26"
+      ROOT_APP_PATH: capstone/tf-1/devops/platform/argocd/root-app.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.17.0"
+
+      - name: Cập nhật kubeconfig (token MỚI - không bị hết hạn)
+        run: |
+          aws eks update-kubeconfig \
+            --name "$CLUSTER_NAME" \
+            --region "$AWS_REGION"
+          echo "✅ kubeconfig đã được cập nhật"
+          kubectl cluster-info
+
+      - name: Cài ArgoCD qua Helm (idempotent - an toàn chạy lại nhiều lần)
+        run: |
+          set -euo pipefail
+
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace "$ARGOCD_NAMESPACE" \
+            --create-namespace \
+            --version "$ARGOCD_CHART_VERSION" \
+            --set server.service.type=ClusterIP \
+            --wait \
+            --timeout 5m
+
+          echo "✅ ArgoCD đã cài xong"
+          kubectl get pods -n "$ARGOCD_NAMESPACE"
+
+      - name: Apply ArgoCD Root App (App of Apps)
+        run: |
+          set -euo pipefail
+
+          # Chờ ArgoCD CRDs sẵn sàng
+          kubectl wait --for=condition=established \
+            crd/applications.argoproj.io \
+            --timeout=60s
+
+          kubectl apply -f "$ROOT_APP_PATH"
+          echo "✅ Root App đã được apply - ArgoCD sẽ tự sync các app còn lại"
+
+      - name: Kiểm tra trạng thái ArgoCD
+        run: |
+          echo "=== ArgoCD Pods ==="
+          kubectl get pods -n "$ARGOCD_NAMESPACE"
+          echo ""
+          echo "=== ArgoCD Applications ==="
+          kubectl get applications -n "$ARGOCD_NAMESPACE" || true
+
       # ------------------------------------------------------------------ #
       # Auto-patch: Đọc ARN từ SSM và cập nhật vào kustomization.yaml     #
       # Mỗi lần terraform apply tạo lại ALB, bước này tự động commit ARN mới  #

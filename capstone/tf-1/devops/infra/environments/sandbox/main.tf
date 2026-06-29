@@ -630,42 +630,10 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
   })
 }
 
-# 19. GitOps Bootstrapping: ArgoCD + Root App
-resource "helm_release" "argocd" {
-  name             = "argocd"
-  repository       = "https://argoproj.github.io/argo-helm"
-  chart            = "argo-cd"
-  namespace        = "argocd"
-  create_namespace = true
+# 19. GitOps Bootstrapping: ArgoCD được cài bởi CI/CD pipeline (bootstrap-argocd job)
+# Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
+# Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
-  set = [
-    {
-      name  = "server.service.type"
-      value = "ClusterIP"
-    }
-  ]
-}
-
-# 20. Ghi ARN Target Group vào SSM để CI/CD tự động patch vào kustomization.yaml
-# CI/CD đọc giá trị này sau terraform apply và commit lên Git — không cần hardcode ARN
-resource "aws_ssm_parameter" "alb_tg_arn" {
-  name        = "/triage-hub/${var.environment}/alb_target_group_arn"
-  description = "Internal ALB Target Group ARN for ai-engine (tf1-api)"
-  type        = "String"
-  value       = module.alb.target_group_arn
-
-  tags = { Name = "triage-hub-alb-tg-arn-${var.environment}" }
-}
-
-resource "terraform_data" "argocd_root" {
-  input = filemd5("${path.module}/../../../platform/argocd/root-app.yaml")
-
-  provisioner "local-exec" {
-    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} && kubectl apply -f \"${path.module}/../../../platform/argocd/root-app.yaml\""
-  }
-
-  depends_on = [helm_release.argocd]
-}
 
 
 
