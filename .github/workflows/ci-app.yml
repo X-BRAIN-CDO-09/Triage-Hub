@@ -93,7 +93,6 @@ jobs:
               - 'capstone/tf-1/devops/app/shared/**'
             lambdas:
               - 'capstone/tf-1/devops/app/alert-ingest/**'
-              - 'capstone/tf-1/devops/app/alert-ingestion/**'
               - 'capstone/tf-1/devops/app/context-collector/**'
               - 'capstone/tf-1/devops/app/jira-dispatcher/**'
               - 'capstone/tf-1/devops/app/jira-connector/**'
@@ -245,10 +244,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: alert-ingestion
-            source_dir: alert-ingestion
+          - id: alert-ingest
+            source_dir: alert-ingest
             fallback_dir: ""
-            function_suffix: alert-ingestion
+            function_suffix: alert-ingest
           - id: context-collector
             source_dir: context-collector
             fallback_dir: ""
@@ -324,8 +323,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: alert-ingestion
-            function_suffix: alert-ingestion
+          - id: alert-ingest
+            function_suffix: alert-ingest
           - id: context-collector
             function_suffix: context-collector
           - id: jira-dispatcher
@@ -336,7 +335,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Download Lambda artifact
@@ -390,7 +389,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify API Gateway health
