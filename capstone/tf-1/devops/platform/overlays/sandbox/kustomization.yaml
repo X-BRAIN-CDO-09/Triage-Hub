@@ -30,7 +30,7 @@ patches:
         name: tf1-api-tgb
         namespace: triage-hub
       spec:
-        targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-engine/REPLACE_AFTER_APPLY
+        targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-tg-sandbox/c943f57c5bea0682
   # queueURL thật lấy từ: terraform output (SQS module) — buffer/intake queue
   - patch: |
       apiVersion: keda.sh/v1alpha1
@@ -44,7 +44,7 @@ patches:
             authenticationRef:
               name: keda-aws-sqs-auth
             metadata:
-              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-intake-sandbox
+              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
               queueLength: "5"
               awsRegion: us-east-1
               identityOwner: operator
