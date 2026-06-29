@@ -12,7 +12,21 @@ Key fixture: `isolate_auth_env`
 from __future__ import annotations
 
 import pytest
+import sys
+import os
+from unittest.mock import MagicMock
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# 2. Giả lập (Mock) hoàn toàn thư viện numpy để Python không báo lỗi thiếu module
+sys.modules['numpy'] = MagicMock()
+sys.modules['sklearn'] = MagicMock()
+sys.modules['sklearn.ensemble'] = MagicMock()
+mock_otlp = MagicMock()
+sys.modules['opentelemetry.exporter'] = mock_otlp
+sys.modules['opentelemetry.exporter.otlp'] = mock_otlp
+sys.modules['opentelemetry.exporter.otlp.proto'] = mock_otlp
+sys.modules['opentelemetry.exporter.otlp.proto.http'] = mock_otlp
+sys.modules['opentelemetry.exporter.otlp.proto.http.trace_exporter'] = mock_otlp
 
 @pytest.fixture(autouse=True)
 def isolate_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
