@@ -256,6 +256,10 @@ jobs:
             source_dir: jira-dispatcher
             fallback_dir: jira-connector
             function_suffix: jira-dispatcher
+          - id: notify-dispatcher
+            source_dir: notify-dispatcher
+            fallback_dir: ""
+            function_suffix: notify-dispatcher
           - id: slack-dispatcher
             source_dir: slack-dispatcher
             fallback_dir: slack-notifier
@@ -329,6 +333,8 @@ jobs:
             function_suffix: context-collector
           - id: jira-dispatcher
             function_suffix: jira-dispatcher
+          - id: notify-dispatcher
+            function_suffix: notify-dispatcher
           - id: slack-dispatcher
             function_suffix: slack-dispatcher
     steps:
@@ -347,7 +353,7 @@ jobs:
 
       - name: Update Lambda code
         env:
-          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub-sandbox' }}
+          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub' }}
         run: |
           set -euo pipefail
           ZIP_FILE="${{ matrix.id }}.zip"
@@ -404,7 +410,7 @@ jobs:
 
       - name: Verify SQS buffers and DLQs
         env:
-          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-alert-buffer,triage-context-buffer,triage-slack-buffer' }}
+          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-hub-buffer-queue,triage-hub-dispatch-queue,triage-hub-buffer-queue-dlq,triage-hub-dispatch-queue-dlq' }}
         run: |
           IFS=',' read -ra QUEUES <<< "$QUEUE_NAMES"
           for queue in "${QUEUES[@]}"; do
