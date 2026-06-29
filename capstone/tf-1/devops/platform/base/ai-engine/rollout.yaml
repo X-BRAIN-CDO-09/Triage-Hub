@@ -82,6 +82,56 @@ spec:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: BEDROCK_MODEL_ID
+            # Persistence backend (thay file backend mặc định -> DynamoDB)
+            - name: AIOPS_PERSISTENCE_BACKEND
+              value: "dynamodb"
+            - name: AIOPS_DYNAMODB_TABLE
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: AIOPS_DYNAMODB_TABLE
+            # Evidence/context integrations
+            - name: PROMETHEUS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: PROMETHEUS_URL
+            - name: LOKI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: LOKI_URL
+            - name: JAEGER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: JAEGER_URL
+            # SQS Notify handoff (Jira/Slack dispatcher)
+            - name: TRIAGE_HUB_NOTIFY_SQS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: TRIAGE_HUB_NOTIFY_SQS_URL
+            - name: TRIAGE_HUB_NOTIFY_SQS_DRY_RUN
+              value: "false"
+            # Runtime config
+            - name: APP_ENV
+              value: "sandbox"
+            - name: AIOPS_INVESTIGATION_MODE
+              value: "auto"
+            - name: AIOPS_TRIAGE_DEADLINE_SECONDS
+              value: "30"
+            - name: AIOPS_RATE_LIMIT_PER_MINUTE
+              value: "60"
+            # AgentCore (LLM Agent Runtime)
+            - name: ENABLE_AGENTCORE_LLM
+              value: "false"
+            - name: AGENTCORE_RUNTIME_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: AGENTCORE_RUNTIME_ARN
+                  optional: true
             # Lưu ý: tf1-api KHÔNG có SLACK_WEBHOOK_URL — Slack do tf1-worker gửi
           livenessProbe:
             httpGet:

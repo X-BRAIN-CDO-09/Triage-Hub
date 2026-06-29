@@ -78,3 +78,11 @@ spec:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: SLACK_WEBHOOK_URL
+            # SQS Notify handoff (Jira/Slack dispatcher)
+            - name: TRIAGE_HUB_NOTIFY_SQS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: TRIAGE_HUB_NOTIFY_SQS_URL
+            - name: TRIAGE_HUB_NOTIFY_SQS_DRY_RUN
+              value: "false"
