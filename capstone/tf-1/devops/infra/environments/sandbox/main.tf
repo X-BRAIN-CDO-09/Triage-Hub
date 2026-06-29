@@ -630,29 +630,8 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
   })
 }
 
-# 19. GitOps Bootstrapping: ArgoCD + Root App
-resource "helm_release" "argocd" {
-  name             = "argocd"
-  repository       = "https://argoproj.github.io/argo-helm"
-  chart            = "argo-cd"
-  namespace        = "argocd"
-  create_namespace = true
+# 19. GitOps Bootstrapping: ArgoCD được cài bởi CI/CD pipeline (bootstrap-argocd job)
+# Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
+# Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
-  set = [
-    {
-      name  = "server.service.type"
-      value = "ClusterIP"
-    }
-  ]
-}
-
-resource "terraform_data" "argocd_root" {
-  input = filemd5("${path.module}/../../../platform/argocd/root-app.yaml")
-
-  provisioner "local-exec" {
-    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} && kubectl apply -f \"${path.module}/../../../platform/argocd/root-app.yaml\""
-  }
-
-  depends_on = [helm_release.argocd]
-}
 
