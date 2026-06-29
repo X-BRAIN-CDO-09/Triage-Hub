@@ -30,9 +30,9 @@ on:
         required: true
         type: string
 permissions:
-  contents: write
+  contents: read
   id-token: write
-  pull-requests: write
+  pull-requests: read
   security-events: write
 
 concurrency:
@@ -65,6 +65,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -137,6 +139,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -266,6 +270,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -304,6 +310,8 @@ jobs:
     needs: terraform-apply
     runs-on: ubuntu-latest
     environment: sandbox
+    permissions:
+      contents: write
     env:
       CLUSTER_NAME: triage-hub-eks
       ARGOCD_NAMESPACE: argocd
@@ -312,6 +320,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -398,6 +408,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Kiểm tra xem file kustomization.yaml có dòng targetGroupARN không (tránh patch trượt âm thầm)
+          if ! grep -q "targetGroupARN:" "$KUSTOMIZATION_FILE"; then
+            echo "❌ Error: Không tìm thấy targetGroupARN trong file $KUSTOMIZATION_FILE"
+            exit 1
+          fi
+
           # Đọc ARN từ SSM
           ARN=$(aws ssm get-parameter \
             --name "$SSM_PARAM" \
@@ -415,6 +431,7 @@ jobs:
       - name: Commit và push ARN mới lên Git
         env:
           KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          BRANCH_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -427,6 +444,7 @@ jobs:
           else
             git add "$KUSTOMIZATION_FILE"
             git commit -m "ci(infra): auto-patch targetGroupARN từ SSM [skip ci]"
-            git push origin "${{ github.ref_name }}"
-            echo "✅ Đã push ARN mới lên branch ${{ github.ref_name }}"
+            # Sử dụng HEAD:<branch_name> để push an toàn cả khi ở trạng thái detached HEAD
+            git push origin HEAD:"$BRANCH_NAME"
+            echo "✅ Đã push ARN mới lên branch $BRANCH_NAME"
           fi
