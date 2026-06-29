@@ -70,6 +70,9 @@ spec:
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
+            - name: AWS_ROLE_ARN
+              value: "arn:aws:iam::265808836805:role/CrossAccountBedrockRole"
+
 
             # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
             - name: BEDROCK_MODEL_ID

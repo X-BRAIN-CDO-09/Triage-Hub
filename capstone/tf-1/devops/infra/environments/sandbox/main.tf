@@ -461,6 +461,11 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
         Resource = ["arn:aws:bedrock:${var.aws_region}::foundation-model/*"]
       },
       {
+        Effect = "Allow"
+        Action = ["sts:AssumeRole"]
+        Resource = ["arn:aws:iam::265808836805:role/CrossAccountBedrockRole"]
+      },
+      {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
         Resource = ["arn:aws:bedrock-agentcore:${var.aws_region}:*:runtime/*"]
