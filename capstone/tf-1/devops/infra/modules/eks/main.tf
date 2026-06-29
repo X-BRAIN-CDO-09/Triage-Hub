@@ -89,6 +89,31 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
 }
 
+resource "aws_iam_role_policy" "node_autoscaling" {
+  name = "${var.project_name}-eks-node-autoscaling-policy"
+  role = aws_iam_role.node.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLaunchConfigurations",
+          "autoscaling:DescribeTags",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+          "ec2:DescribeLaunchTemplateVersions"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
 # Launch Template để cấu hình Metadata Options (hop limit = 2 cho IMDSv2)
 resource "aws_launch_template" "eks_node" {
   name_prefix = "${var.project_name}-eks-node-"
