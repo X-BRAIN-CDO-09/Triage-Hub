@@ -6,6 +6,7 @@ on:
     paths:
       - "capstone/tf-1/devops/app/alert-ingest/**"
       - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/broadcast-notifier/**"
       - "capstone/tf-1/devops/app/context-collector/**"
       - "capstone/tf-1/devops/app/jira-dispatcher/**"
       - "capstone/tf-1/devops/app/jira-connector/**"
@@ -20,6 +21,7 @@ on:
     paths:
       - "capstone/tf-1/devops/app/alert-ingest/**"
       - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/broadcast-notifier/**"
       - "capstone/tf-1/devops/app/context-collector/**"
       - "capstone/tf-1/devops/app/jira-dispatcher/**"
       - "capstone/tf-1/devops/app/jira-connector/**"
@@ -29,6 +31,9 @@ on:
       - "capstone/tf-1/devops/app/slack-notifier/**"
       - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
+  workflow_run:
+    workflows: ["Infra CI/CD"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       deploy:
@@ -54,6 +59,7 @@ env:
   APP_LINT_ROOTS: >-
     capstone/tf-1/devops/app/alert-ingest
     capstone/tf-1/devops/app/alert-ingestion
+    capstone/tf-1/devops/app/broadcast-notifier
     capstone/tf-1/devops/app/context-collector
     capstone/tf-1/devops/app/jira-dispatcher
     capstone/tf-1/devops/app/jira-connector
@@ -83,6 +89,7 @@ jobs:
             app:
               - 'capstone/tf-1/devops/app/alert-ingest/**'
               - 'capstone/tf-1/devops/app/alert-ingestion/**'
+              - 'capstone/tf-1/devops/app/broadcast-notifier/**'
               - 'capstone/tf-1/devops/app/context-collector/**'
               - 'capstone/tf-1/devops/app/jira-dispatcher/**'
               - 'capstone/tf-1/devops/app/jira-connector/**'
@@ -93,6 +100,7 @@ jobs:
               - 'capstone/tf-1/devops/app/shared/**'
             lambdas:
               - 'capstone/tf-1/devops/app/alert-ingest/**'
+              - 'capstone/tf-1/devops/app/broadcast-notifier/**'
               - 'capstone/tf-1/devops/app/context-collector/**'
               - 'capstone/tf-1/devops/app/jira-dispatcher/**'
               - 'capstone/tf-1/devops/app/jira-connector/**'
@@ -107,7 +115,14 @@ jobs:
   lint-test:
     name: Lint, unit test, secret scan
     needs: detect-changes
-    if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
+    if: |
+      needs.detect-changes.outputs.app_changed == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'schedule' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -230,6 +245,7 @@ jobs:
           fi
 
       - name: Gitleaks secret scan
+        if: github.event_name != 'workflow_run'
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -238,7 +254,14 @@ jobs:
   package-lambdas:
     name: Package Lambda dispatchers
     needs: [detect-changes, lint-test]
-    if: needs.detect-changes.outputs.lambdas == 'true' || github.event_name == 'workflow_dispatch'
+    if: |
+      needs.detect-changes.outputs.lambdas == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'schedule' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -252,6 +275,10 @@ jobs:
             source_dir: context-collector
             fallback_dir: ""
             function_suffix: context-collector
+          - id: broadcast-notifier
+            source_dir: broadcast-notifier
+            fallback_dir: ""
+            function_suffix: broadcast-notifier
           - id: jira-dispatcher
             source_dir: jira-dispatcher
             fallback_dir: jira-connector
@@ -318,6 +345,11 @@ jobs:
         )
       ) ||
       (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'schedule' &&
+        github.event.workflow_run.conclusion == 'success'
+      ) ||
+      (
         github.event_name == 'workflow_dispatch' &&
         github.event.inputs.deploy == 'true'
       )
@@ -331,6 +363,8 @@ jobs:
             function_suffix: alert-ingest
           - id: context-collector
             function_suffix: context-collector
+          - id: broadcast-notifier
+            function_suffix: broadcast-notifier
           - id: jira-dispatcher
             function_suffix: jira-dispatcher
           - id: notify-dispatcher
@@ -384,6 +418,11 @@ jobs:
             github.ref == 'refs/heads/develop' ||
             github.ref == 'refs/heads/main'
           )
+        ) ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.event == 'schedule' &&
+          github.event.workflow_run.conclusion == 'success'
         ) ||
         (
           github.event_name == 'workflow_dispatch' &&

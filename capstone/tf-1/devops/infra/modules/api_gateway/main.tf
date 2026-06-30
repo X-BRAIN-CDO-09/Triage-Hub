@@ -2,6 +2,22 @@
 # API Gateway Module
 # =============================================================================
 
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
+locals {
+  lambda_integrations = {
+    for k, v in var.integrations : k => v
+    if try(v.integration_type, "lambda_proxy") == "lambda_proxy"
+  }
+
+  sqs_integrations = {
+    for k, v in var.integrations : k => v
+    if try(v.integration_type, "lambda_proxy") == "sqs_send_message"
+  }
+}
+
 resource "aws_api_gateway_rest_api" "this" {
   name        = "${var.project_name}-apigw-${var.environment}"
   description = "API Gateway for Triage Hub ${var.environment}"
@@ -32,8 +48,8 @@ resource "aws_api_gateway_method" "this" {
 }
 
 # 3. Lambda Integrations
-resource "aws_api_gateway_integration" "this" {
-  for_each = var.integrations
+resource "aws_api_gateway_integration" "lambda_proxy" {
+  for_each = local.lambda_integrations
 
   rest_api_id             = aws_api_gateway_rest_api.this.id
   resource_id             = aws_api_gateway_resource.this[each.key].id
@@ -47,9 +63,97 @@ resource "aws_api_gateway_integration" "this" {
   ]
 }
 
-# 4. Lambda Permissions
+# 4. SQS Integrations
+resource "aws_iam_role" "apigw_sqs" {
+  count = length(local.sqs_integrations) > 0 ? 1 : 0
+
+  name = "${var.project_name}-apigw-sqs-role-${var.environment}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "apigateway.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "apigw_sqs" {
+  count = length(local.sqs_integrations) > 0 ? 1 : 0
+
+  name = "${var.project_name}-apigw-sqs-policy-${var.environment}"
+  role = aws_iam_role.apigw_sqs[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = [for integration in values(local.sqs_integrations) : integration.sqs_queue_arn]
+      }
+    ]
+  })
+}
+
+resource "aws_api_gateway_integration" "sqs_send_message" {
+  for_each = local.sqs_integrations
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.this[each.key].id
+  http_method             = aws_api_gateway_method.this[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS"
+  credentials             = aws_iam_role.apigw_sqs[0].arn
+  uri                     = "arn:${data.aws_partition.current.partition}:apigateway:${data.aws_region.current.name}:sqs:path/${data.aws_caller_identity.current.account_id}/${each.value.sqs_queue_name}"
+
+  request_parameters = {
+    "integration.request.header.Content-Type" = "'application/x-www-form-urlencoded'"
+  }
+
+  request_templates = {
+    "application/json" = <<-EOT
+#set($attributeIndex = 1)##
+Action=SendMessage&MessageBody=$util.urlEncode($input.body)#if($input.params('X-Tenant-Id') != "")&MessageAttribute.$${attributeIndex}.Name=TenantId&MessageAttribute.$${attributeIndex}.Value.DataType=String&MessageAttribute.$${attributeIndex}.Value.StringValue=$util.urlEncode($input.params('X-Tenant-Id'))#set($attributeIndex = $attributeIndex + 1)#end#if($input.params('X-Correlation-Id') != "")&MessageAttribute.$${attributeIndex}.Name=CorrelationId&MessageAttribute.$${attributeIndex}.Value.DataType=String&MessageAttribute.$${attributeIndex}.Value.StringValue=$util.urlEncode($input.params('X-Correlation-Id'))#set($attributeIndex = $attributeIndex + 1)#end#if($input.params('X-Source') != "")&MessageAttribute.$${attributeIndex}.Name=Source&MessageAttribute.$${attributeIndex}.Value.DataType=String&MessageAttribute.$${attributeIndex}.Value.StringValue=$util.urlEncode($input.params('X-Source'))#end#set($tg = $input.params('X-Tenant-Id'))#if($tg == "")#set($tg = "default-group")#end&MessageGroupId=$util.urlEncode($tg)
+    EOT
+  }
+
+  depends_on = [
+    aws_api_gateway_method.this,
+    aws_iam_role_policy.apigw_sqs
+  ]
+}
+
+resource "aws_api_gateway_method_response" "sqs_send_message_200" {
+  for_each = local.sqs_integrations
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.this[each.key].id
+  http_method = aws_api_gateway_method.this[each.key].http_method
+  status_code = "200"
+}
+
+resource "aws_api_gateway_integration_response" "sqs_send_message_200" {
+  for_each = local.sqs_integrations
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.this[each.key].id
+  http_method = aws_api_gateway_method.this[each.key].http_method
+  status_code = aws_api_gateway_method_response.sqs_send_message_200[each.key].status_code
+
+  depends_on = [
+    aws_api_gateway_integration.sqs_send_message
+  ]
+}
+
+# 5. Lambda Permissions
 resource "aws_lambda_permission" "apigw" {
-  for_each = var.integrations
+  for_each = local.lambda_integrations
 
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
@@ -58,7 +162,7 @@ resource "aws_lambda_permission" "apigw" {
   source_arn    = "${aws_api_gateway_rest_api.this.execution_arn}/*/*"
 }
 
-# 5. Deployment & Stage
+# 6. Deployment & Stage
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
@@ -67,7 +171,9 @@ resource "aws_api_gateway_deployment" "this" {
   }
 
   depends_on = [
-    aws_api_gateway_integration.this
+    aws_api_gateway_integration.lambda_proxy,
+    aws_api_gateway_integration.sqs_send_message,
+    aws_api_gateway_integration_response.sqs_send_message_200
   ]
 }
 
@@ -175,5 +281,3 @@ resource "aws_iam_role_policy_attachment" "apigw_cloudwatch" {
 resource "aws_api_gateway_account" "this" {
   cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch.arn
 }
-
-data "aws_region" "current" {}

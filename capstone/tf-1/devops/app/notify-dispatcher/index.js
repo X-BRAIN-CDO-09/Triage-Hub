@@ -91,17 +91,23 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
     let response;
     try {
       response = await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      console.warn(`Fetch error on attempt ${attempt}:`, err.message);
     } finally {
       clearTimeout(timeout);
     }
 
-    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
-    if (!isRetryable || attempt === retries) {
-      return response;
+    if (response) {
+      const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+      if (!isRetryable || attempt === retries) {
+        return response;
+      }
+    } else if (attempt === retries) {
+      return null;
     }
 
     const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
-    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response.status, delay_ms: Math.round(delay) }));
+    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response ? response.status : "error", delay_ms: Math.round(delay) }));
     await new Promise((r) => setTimeout(r, delay));
   }
   return null;
@@ -245,9 +251,18 @@ async function updateJiraMapping(incidentId, tenantId, jiraResult) {
       status: { S: "UNASSIGNED" },
       created_at: { S: new Date().toISOString() },
     },
+    ConditionExpression: "attribute_not_exists(PK)",
   });
-  await dynamoClient.send(command);
-  console.log("Jira mapping updated in DynamoDB:", jiraResult.issueKey);
+  try {
+    await dynamoClient.send(command);
+    console.log("Jira mapping created in DynamoDB:", jiraResult.issueKey);
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") {
+      console.warn("Mapping already exists (concurrent invocation). Skipping duplicate Jira creation.");
+      return;
+    }
+    throw err;
+  }
 }
 
 // =============================================================================
@@ -334,10 +349,12 @@ function escapeSlackMrkdwn(text) {
 // Core: Build Slack Block Kit message từ AI triage result
 // =============================================================================
 function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
-  const severity = getSeverityDisplay(triageResult.severity);
+  const severityStr = triageResult.severity || "medium";
+  const severity = getSeverityDisplay(severityStr);
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
     || "unknown-service";
+  const title = triageResult.alert?.title || triageResult.ticket_payload?.summary || "Untitled incident";
   const incidentId = triageResult.incident_id;
   const classification = triageResult.classification || "unknown";
   const confidence = triageResult.confidence != null
@@ -408,14 +425,14 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*🔍 Root Cause Diagnosis:*\n${rootCause.summary}`,
+        text: `*🔍 Root Cause Diagnosis:*\n${escapeSlackMrkdwn(rootCause.summary)}`,
       },
     });
 
     // Evidence items
     if (rootCause.evidence && rootCause.evidence.length > 0) {
       const evidenceText = rootCause.evidence
-        .map((e, i) => `${i + 1}. ${e}`)
+        .map((e, i) => `${i + 1}. ${escapeSlackMrkdwn(e)}`)
         .join("\n");
       blocks.push({
         type: "section",
@@ -430,7 +447,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
   // Recommended actions
   if (triageResult.recommended_actions && triageResult.recommended_actions.length > 0) {
     const actionsText = triageResult.recommended_actions
-      .map((a, i) => `${i + 1}. *[${a.type}]* ${a.summary}`)
+      .map((a, i) => `${i + 1}. *[${escapeSlackMrkdwn(a.type)}]* ${escapeSlackMrkdwn(a.summary)}`)
       .join("\n");
     blocks.push({
       type: "section",
@@ -482,6 +499,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             audit_id: triageResult.audit_id || null,
             assignee_name: assigneeDetails?.displayName || null,
             assignee_email: assigneeDetails?.emailAddress || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];
@@ -540,6 +561,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             tenant_id: triageResult.tenant_id || "unknown",
             jira_issue_key: jiraMapping.issueKey,
             audit_id: triageResult.audit_id || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];
@@ -587,35 +612,25 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
 }
 
 // =============================================================================
-// Helper: Gọi Slack API chat.postMessage
+// Helper: Gọi Slack API chat.postMessage (có retry 429/5xx)
 // =============================================================================
 async function postToSlack(token, channel, blocks, fallbackText) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+  const response = await fetchWithRetry("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel, text: fallbackText, blocks }),
+  });
 
-  let response;
-  try {
-    response = await fetch("https://slack.com/api/chat.postMessage", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        channel: channel,
-        text: fallbackText,
-        blocks: blocks,
-      }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
+  if (!response) {
+    throw new Error("Slack API error: all retries exhausted");
   }
 
   const result = await response.json();
 
   if (!result.ok) {
-    console.error("Slack API error:", result.error);
     throw new Error(`Slack API error: ${result.error}`);
   }
 
