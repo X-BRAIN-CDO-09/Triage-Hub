@@ -516,8 +516,8 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = ["arn:aws:iam::265808836805:role/CrossAccountBedrockRole"]
+        Action   = ["bedrock:InvokeAgent"]
+        Resource = ["arn:aws:bedrock-agentcore:us-east-1:589077667575:runtime/tf1_ai_investigator-D48STMEUHo"]
       },
       {
         Effect   = "Allow"
