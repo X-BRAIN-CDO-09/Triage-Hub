@@ -8,6 +8,9 @@ from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry
 
 
+from app.main import MetricSeries, LogEntry, RecentDeploy, Ownership
+
+
 class IncidentSeed(BaseModel):
     schema_version: Literal["tf1.incident_seed.v1"]
     tenant_id: str = Field(min_length=1)
@@ -21,12 +24,12 @@ class IncidentSeed(BaseModel):
     started_at: str = Field(min_length=1)
     received_at: str = Field(min_length=1)
     labels: dict[str, Any] = Field(default_factory=dict)
-    # Bổ sung các trường context để nhận dữ liệu từ SQS
-    metrics: list[dict[str, Any]] = Field(default_factory=list)
-    logs: list[dict[str, Any]] = Field(default_factory=list)
+    # Bổ sung các trường với kiểu class chuẩn
+    metrics: list[MetricSeries] = Field(default_factory=list)
+    logs: list[LogEntry] = Field(default_factory=list)
     traces: list[dict[str, Any]] = Field(default_factory=list)
-    recent_deploys: list[dict[str, Any]] = Field(default_factory=list)
-    ownership: dict[str, Any] | None = None
+    recent_deploys: list[RecentDeploy] = Field(default_factory=list)
+    ownership: Ownership | None = None
 
 
 def build_triage_request_from_seed(seed: IncidentSeed, registry: ToolRegistry | None = None) -> dict[str, Any]:
