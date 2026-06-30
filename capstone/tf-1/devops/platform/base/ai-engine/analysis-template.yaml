@@ -18,7 +18,7 @@ spec:
       failureLimit: 1
       provider:
         prometheus:
-          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          address: http://52.91.255.214:9000
           query: |
             histogram_quantile(0.99,
               sum(rate(http_request_duration_seconds_bucket{job="tf1-api"}[2m])) by (le)
@@ -33,7 +33,7 @@ spec:
       failureLimit: 1
       provider:
         prometheus:
-          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          address: http://52.91.255.214:9000
           query: |
             sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
             /
