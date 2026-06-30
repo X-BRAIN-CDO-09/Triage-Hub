@@ -762,4 +762,25 @@ resource "aws_ssm_parameter" "prometheus_ip" {
   }
 }
 
+# Cấp quyền SQS cho EKS Node Group để KEDA Operator có thể quét độ dài hàng đợi
+resource "aws_iam_role_policy" "eks_node_sqs_policy" {
+  name = "${var.project_name}-eks-node-sqs-policy-${var.environment}"
+  role = "${var.project_name}-eks-node-role" # Tên role của Node Group
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage"
+        ]
+        Resource = module.sqs.queue_arns["buffer-queue"]
+      }
+    ]
+  })
+}
+
 
