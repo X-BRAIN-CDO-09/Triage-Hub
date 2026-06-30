@@ -394,6 +394,20 @@ module "alb" {
   alb_security_group_id = module.alb_sg.security_group_id
 }
 
+# Publish ALB target group ARN vào SSM để CI/CD pipeline tự patch TargetGroupBinding
+# (overlays/sandbox/kustomization.yaml). TG ARN đổi mỗi lần cluster/ALB tạo lại nên
+# KHÔNG hardcode lâu dài — CI đọc /triage-hub/sandbox/alb_target_group_arn rồi patch.
+resource "aws_ssm_parameter" "alb_target_group_arn" {
+  name        = "/${var.project_name}/${var.environment}/alb_target_group_arn"
+  description = "Internal ALB target group ARN cho TargetGroupBinding (KEDA/ArgoCD overlay)"
+  type        = "String"
+  value       = module.alb.target_group_arn
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
 # 16e. Observability Module
 module "observability" {
   source = "../../modules/observability"
