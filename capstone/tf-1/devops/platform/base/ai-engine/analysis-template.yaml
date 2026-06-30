@@ -16,6 +16,7 @@ spec:
       interval: 1m
       count: 5
       failureLimit: 1
+      dryRun: true
       provider:
         prometheus:
           address: http://prometheus-operated.monitoring.svc.cluster.local:9090
@@ -31,6 +32,7 @@ spec:
       interval: 1m
       count: 5
       failureLimit: 1
+      dryRun: true
       provider:
         prometheus:
           address: http://prometheus-operated.monitoring.svc.cluster.local:9090
