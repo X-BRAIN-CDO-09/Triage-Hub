@@ -698,4 +698,21 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
 # Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
 # Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
+# Tự động truy vấn IP của EC2 Prometheus
+data "aws_instance" "prometheus_ec2" {
+  instance_id = "i-09b8613caba420fc3"
+}
+
+# Lưu IP động của EC2 Prometheus vào SSM Parameter để CI/CD pipeline đọc
+resource "aws_ssm_parameter" "prometheus_ip" {
+  name      = "/${var.project_name}/${var.environment}/prometheus_ip"
+  type      = "String"
+  value     = data.aws_instance.prometheus_ec2.public_ip
+  overwrite = true
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
 
