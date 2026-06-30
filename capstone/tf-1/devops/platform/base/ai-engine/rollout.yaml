@@ -1,0 +1,195 @@
+# Argo Rollouts — tf1-api canary (thay cho Deployment thường).
+# Canary 10% → 50% → 100% với background AnalysisRun; abort tự rollback nếu
+# p99 vượt ngưỡng (deployment-contract.md: abort khi p99 > 800ms / error rate > 1%).
+# Basic canary (không traffic router): Argo Rollouts chia traffic theo tỉ lệ replica,
+# Service tf1-api + TargetGroupBinding gửi tới cả pod stable lẫn canary.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: tf1-api
+  namespace: triage-hub
+  labels:
+    app: tf1-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tf1-api
+  strategy:
+    canary:
+      # Background analysis: chạy từ bước canary đầu tiên, fail → abort + rollback
+      analysis:
+        startingStep: 1
+        templates:
+          - templateName: tf1-api-latency
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: tf1-api
+    spec:
+      serviceAccountName: tf1-api-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ai-engine
+          image: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # API role: chạy FastAPI (engine image dùng chung, override command)
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: "512m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: AIOPS_OBSERVABILITY_ENABLED
+              value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: AWS_ROLE_ARN
+              value: "arn:aws:iam::265808836805:role/CrossAccountBedrockRole"
+
+
+            # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
+            - name: BEDROCK_MODEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: BEDROCK_MODEL_ID
+            # Persistence backend (thay file backend mặc định -> DynamoDB)
+            - name: AIOPS_PERSISTENCE_BACKEND
+              value: "dynamodb"
+            - name: AIOPS_DYNAMODB_TABLE
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: AIOPS_DYNAMODB_TABLE
+            # Evidence/context integrations
+            - name: PROMETHEUS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: PROMETHEUS_URL
+            - name: LOKI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: LOKI_URL
+            - name: JAEGER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: JAEGER_URL
+            # SQS Notify handoff (Jira/Slack dispatcher)
+            - name: TRIAGE_HUB_NOTIFY_SQS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: TRIAGE_HUB_NOTIFY_SQS_URL
+            - name: TRIAGE_HUB_NOTIFY_SQS_DRY_RUN
+              value: "false"
+            # Runtime config
+            - name: APP_ENV
+              value: "sandbox"
+            - name: JIRA_HISTORY_PATH
+              value: "app/jira_history.json"
+            - name: AIOPS_INVESTIGATION_MODE
+              value: "auto"
+            - name: AIOPS_TRIAGE_DEADLINE_SECONDS
+              value: "30"
+            - name: AIOPS_RATE_LIMIT_PER_MINUTE
+              value: "60"
+            # AgentCore (LLM Agent Runtime)
+            - name: ENABLE_AGENTCORE_LLM
+              value: "false"
+            - name: ENABLE_AGENTCORE_LLM_TOOLS
+              value: "false"
+            - name: AGENTCORE_RUNTIME_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: AGENTCORE_RUNTIME_ARN
+                  optional: true
+            # DynamoDB audit / idempotency retention
+            - name: AIOPS_AUDIT_RETENTION_DAYS
+              value: "90"
+            - name: AIOPS_IDEMPOTENCY_STALE_SECONDS
+              value: "120"
+            # Request guardrails
+            - name: AIOPS_MAX_REQUEST_BYTES
+              value: "524288"
+            - name: AIOPS_MAX_CONCURRENT_TRIAGE_REQUESTS
+              value: "0"
+            # Bedrock / AgentCore token & agent loop caps
+            - name: BEDROCK_MAX_TOKENS
+              value: "700"
+            - name: AIOPS_AGENT_MAX_ITERATIONS
+              value: "2"
+            - name: AIOPS_AGENT_MAX_TOOL_CALLS
+              value: "5"
+            - name: AIOPS_ASSISTED_COMPLEXITY_THRESHOLD
+              value: "3"
+            - name: AIOPS_AGENT_COMPLEXITY_THRESHOLD
+              value: "6"
+            # Evidence budget caps
+            - name: AIOPS_MAX_EVIDENCE_BYTES
+              value: "262144"
+            - name: AIOPS_MAX_METRIC_SERIES
+              value: "20"
+            - name: AIOPS_MAX_METRIC_POINTS_PER_SERIES
+              value: "120"
+            - name: AIOPS_MAX_LOG_RECORDS
+              value: "50"
+            - name: AIOPS_MAX_TRACE_RECORDS
+              value: "20"
+            - name: AIOPS_MAX_LOG_MESSAGE_CHARS
+              value: "500"
+            - name: AIOPS_MAX_TRACE_LABEL_BYTES
+              value: "2048"
+            # Observability / logging
+            - name: AIOPS_LOG_LEVEL
+              value: "INFO"
+            - name: AIOPS_LOG_POLICY
+              value: "metadata_only"
+            # QA
+            - name: AIOPS_QA_MAX_ITERATIONS
+              value: "1"
+            - name: AIOPS_QA_REPAIR_MAX_ITERATIONS
+              value: "1"
+            # Lưu ý: tf1-api KHÔNG có SLACK_WEBHOOK_URL — Slack do tf1-worker gửi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10

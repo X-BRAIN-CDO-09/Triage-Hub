@@ -34,3 +34,21 @@ variable "node_scaling" {
   })
   default = {}
 }
+
+variable "endpoint_public_access" {
+  description = "Cho phép public access vào API server endpoint. Design private-first = false. Bật true ở sandbox cho dev kubectl (nên giới hạn public_access_cidrs)."
+  type        = bool
+  default     = false
+}
+
+variable "public_access_cidrs" {
+  description = "Danh sách CIDR được phép vào public API server endpoint (chỉ áp dụng khi endpoint_public_access = true)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "cluster_admin_arns" {
+  description = "Danh sách IAM User/Role ARN được cấp quyền admin vào EKS Kubernetes API"
+  type        = list(string)
+  default     = []
+}

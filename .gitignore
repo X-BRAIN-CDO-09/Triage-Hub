@@ -27,3 +27,15 @@ override.tf.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+
+# Runtime audit data (not source)
+capstone/tf-1/devops/app/ai-engine/audit/
+capstone/tf-1/devops/app/ai-engine/audit/*.jsonl

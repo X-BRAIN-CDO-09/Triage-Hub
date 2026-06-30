@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: triage-hub-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/X-BRAIN-CDO-09/Triage-Hub.git
+    targetRevision: develop
+    path: capstone/tf-1/devops/platform/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,43 @@
+# AnalysisTemplate cho canary tf1-api — abort criteria theo deployment-contract.md:
+#   - p99 latency > 800ms  → fail → Rollout tự abort + rollback về stable
+#   - error rate (5xx) > 1% → fail
+# Nguồn metric: Prometheus in-cluster (kube-prometheus-stack).
+# Prometheus endpoint: prometheus-operated.monitoring.svc.cluster.local:9090
+#   → Đây là địa chỉ chuẩn của kube-prometheus-stack (prometheus-operator).
+#   → Đã xác nhận khớp với prometheus-adapter ArgoCD app trong cluster này.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: tf1-api-latency
+  namespace: triage-hub
+spec:
+  metrics:
+    - name: p99-latency
+      interval: 1m
+      count: 5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{job="tf1-api"}[2m])) by (le)
+            )
+      # giây — 0.8 = 800ms
+      successCondition: result[0] <= 0.8
+      failureCondition: result[0] > 0.8
+
+    - name: error-rate
+      interval: 1m
+      count: 5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
+            /
+            sum(rate(http_requests_total{job="tf1-api"}[2m]))
+      # 0.01 = 1%
+      successCondition: result[0] <= 0.01
+      failureCondition: result[0] > 0.01

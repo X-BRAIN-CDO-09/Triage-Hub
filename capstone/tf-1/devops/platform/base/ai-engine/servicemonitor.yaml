@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tf1-api-monitor
+  namespace: triage-hub
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: tf1-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

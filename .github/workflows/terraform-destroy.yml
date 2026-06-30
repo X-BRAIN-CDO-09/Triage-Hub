@@ -1,17 +1,19 @@
 name: Terraform Destroy
 
 on:
+  schedule:
+    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       environment:
         description: "Environment to destroy"
         required: true
-        default: "dev"
+        default: "sandbox"
         type: choice
         options:
-          - dev
+          - sandbox
       confirm:
-        description: 'Type "destroy-dev" to confirm'
+        description: 'Type "destroy-sandbox" to confirm'
         required: true
         type: string
 
@@ -21,20 +23,111 @@ permissions:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-  TF_VERSION: "1.9.0"
+  TF_VERSION: "1.14.8"
+  TF_LOCK_TIMEOUT: "10m"
 
 jobs:
-  destroy:
-    name: Destroy dev infrastructure
-    if: github.event.inputs.environment == 'dev' && github.event.inputs.confirm == 'destroy-dev'
+  destroy-guard:
+    name: Evaluate destroy guardrails
     runs-on: ubuntu-latest
-    environment: dev
+    outputs:
+      should_destroy: ${{ steps.guard.outputs.should_destroy }}
+      reason: ${{ steps.guard.outputs.reason }}
+    steps:
+      - name: Evaluate schedule policy
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_CONFIRM: ${{ github.event.inputs.confirm }}
+          ENABLE_AUTO_DESTROY: ${{ vars.ENABLE_AUTO_DESTROY || 'false' }}
+          SKIP_AUTO_DESTROY: ${{ vars.SKIP_AUTO_DESTROY || 'false' }}
+          LEASE_UNTIL: ${{ vars.LEASE_UNTIL || '' }}
+        run: |
+          set -euo pipefail
+
+          normalize_bool() {
+            printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$INPUT_ENVIRONMENT" = "sandbox" ] && [ "$INPUT_CONFIRM" = "destroy-sandbox" ]; then
+              echo "should_destroy=true" >> "$GITHUB_OUTPUT"
+              echo "reason=manual_confirmed" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+              echo "reason=manual_not_confirmed" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          if [ "$(normalize_bool "$ENABLE_AUTO_DESTROY")" != "true" ]; then
+            echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+            echo "reason=auto_destroy_disabled" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$(normalize_bool "$SKIP_AUTO_DESTROY")" = "true" ]; then
+            echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+            echo "reason=skip_flag_enabled" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$LEASE_UNTIL" ]; then
+            if ! lease_epoch=$(date -u -d "$LEASE_UNTIL" +%s 2>/dev/null); then
+              echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+              echo "reason=invalid_lease_until" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            now_epoch=$(date -u +%s)
+            if [ "$now_epoch" -lt "$lease_epoch" ]; then
+              echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+              echo "reason=lease_active" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "should_destroy=true" >> "$GITHUB_OUTPUT"
+          echo "reason=schedule_allowed" >> "$GITHUB_OUTPUT"
+
+      - name: Report destroy decision
+        run: |
+          echo "should_destroy=${{ steps.guard.outputs.should_destroy }}"
+          echo "reason=${{ steps.guard.outputs.reason }}"
+
+  destroy:
+    name: Destroy sandbox infrastructure
+    needs: destroy-guard
+    if: needs.destroy-guard.outputs.should_destroy == 'true'
+    runs-on: ubuntu-latest
+    environment: sandbox
+    concurrency:
+      group: terraform-sandbox-state
+      cancel-in-progress: false
     defaults:
       run:
-        working-directory: capstone/tf-1/devops/infra/environments/dev
+        working-directory: capstone/tf-1/devops/infra/environments/sandbox
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Debug OIDC token claims
+        run: |
+          token_json="$(curl -sSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
+          token="$(echo "$token_json" | jq -r '.value')"
+          payload="$(python3 - "$token" <<'PY'
+          import base64
+          import sys
+
+          part = sys.argv[1].split(".")[1]
+          part += "=" * (-len(part) % 4)
+          print(base64.urlsafe_b64decode(part).decode())
+          PY
+          )"
+          echo "$payload" | jq '{iss, aud, sub, repository, ref, environment, job_workflow_ref}'
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,8 +144,15 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
+      - name: Configure kubeconfig for EKS resources
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "triage-hub-eks"
+
       - name: Terraform destroy plan
-        run: terraform plan -destroy -no-color -input=false -out=tfdestroy
+        run: terraform plan -destroy -no-color -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -out=tfdestroy
 
       - name: Terraform destroy
-        run: terraform apply -auto-approve -input=false tfdestroy
+        run: terraform apply -auto-approve -input=false -lock-timeout="$TF_LOCK_TIMEOUT" tfdestroy

@@ -52,6 +52,15 @@ resource "aws_security_group" "ec2_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Monitoring Proxy (Prometheus/Loki/Jaeger)"
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_inbound_cidrs
+  }
+
+
   egress {
     from_port        = 0
     to_port          = 0
@@ -61,11 +70,11 @@ resource "aws_security_group" "ec2_sg" {
   }
 
   tags = {
-    Name = "ec2-spot-sg-${var.environment}"
+    Name = "ec2-sg-${var.environment}"
   }
 }
 
-# EC2 Instance for Customer App (deployed as Spot Instance)
+# EC2 Instance for Customer App (deployed as On-Demand Instance)
 resource "aws_instance" "spot_instance" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -79,19 +88,15 @@ resource "aws_instance" "spot_instance" {
     volume_type = "gp3"
   }
 
-  instance_market_options {
-    market_type = "spot"
-    spot_options {
-      max_price          = null
-      spot_instance_type = "one-time"
-    }
-  }
-
   user_data_replace_on_change = true
-  user_data                   = file("${path.module}/scripts/setup.sh")
+  user_data = templatefile("${path.module}/scripts/setup.sh", {
+    api_gateway_url = var.api_gateway_url
+    api_key         = var.api_key
+    tenant_id       = var.tenant_id
+  })
 
   tags = {
-    Name = "t3-large-spot-instance"
+    Name = "t3-large-instance"
   }
 }
 

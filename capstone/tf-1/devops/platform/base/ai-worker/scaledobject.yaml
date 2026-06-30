@@ -1,0 +1,39 @@
+# KEDA ScaledObject — tf1-worker scale theo độ sâu hàng đợi SQS.
+# Worker là background consumer → autoscale theo queue length hợp lý hơn CPU.
+# Auth: KEDA dùng pod identity (IRSA) — KEDA operator SA cần quyền
+#   sqs:GetQueueAttributes trên queue tương ứng.
+#
+# ⚠️  PLACEHOLDER CỐ Ý — KHÔNG SỬA FILE NÀY
+# queueURL thật được patch bởi overlays/<env>/kustomization.yaml
+# Sandbox URL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-aws-sqs-auth
+  namespace: triage-hub
+spec:
+  podIdentity:
+    provider: aws
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: tf1-worker-scaler
+  namespace: triage-hub
+spec:
+  scaleTargetRef:
+    name: tf1-worker
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  cooldownPeriod: 300
+  pollingInterval: 15
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: keda-aws-sqs-auth
+      metadata:
+        queueURL: REPLACE_WITH_SQS_QUEUE_URL  # bị overlay ghi đè
+        queueLength: "5" # ~5 message/replica trước khi scale thêm
+        awsRegion: us-east-1
+        identityOwner: operator

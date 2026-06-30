@@ -4,12 +4,30 @@ on:
   push:
     branches: ["develop", "main"]
     paths:
-      - "capstone/tf-1/devops/app/**"
+      - "capstone/tf-1/devops/app/alert-ingest/**"
+      - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/context-collector/**"
+      - "capstone/tf-1/devops/app/jira-dispatcher/**"
+      - "capstone/tf-1/devops/app/jira-connector/**"
+      - "capstone/tf-1/devops/app/notify-dispatcher/**"
+      - "capstone/tf-1/devops/app/push-to-ai/**"
+      - "capstone/tf-1/devops/app/slack-dispatcher/**"
+      - "capstone/tf-1/devops/app/slack-notifier/**"
+      - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
   pull_request:
     branches: ["develop", "main"]
     paths:
-      - "capstone/tf-1/devops/app/**"
+      - "capstone/tf-1/devops/app/alert-ingest/**"
+      - "capstone/tf-1/devops/app/alert-ingestion/**"
+      - "capstone/tf-1/devops/app/context-collector/**"
+      - "capstone/tf-1/devops/app/jira-dispatcher/**"
+      - "capstone/tf-1/devops/app/jira-connector/**"
+      - "capstone/tf-1/devops/app/notify-dispatcher/**"
+      - "capstone/tf-1/devops/app/push-to-ai/**"
+      - "capstone/tf-1/devops/app/slack-dispatcher/**"
+      - "capstone/tf-1/devops/app/slack-notifier/**"
+      - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
   workflow_dispatch:
     inputs:
@@ -33,7 +51,17 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   PYTHON_VERSION: "3.12"
   APP_ROOT: capstone/tf-1/devops/app
-  IMAGE_TAG: ${{ github.sha }}
+  APP_LINT_ROOTS: >-
+    capstone/tf-1/devops/app/alert-ingest
+    capstone/tf-1/devops/app/alert-ingestion
+    capstone/tf-1/devops/app/context-collector
+    capstone/tf-1/devops/app/jira-dispatcher
+    capstone/tf-1/devops/app/jira-connector
+    capstone/tf-1/devops/app/notify-dispatcher
+    capstone/tf-1/devops/app/push-to-ai
+    capstone/tf-1/devops/app/slack-dispatcher
+    capstone/tf-1/devops/app/slack-notifier
+    capstone/tf-1/devops/app/shared
 
 jobs:
   detect-changes:
@@ -41,7 +69,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_changed: ${{ steps.filter.outputs.app }}
-      ai_engine: ${{ steps.filter.outputs.ai_engine }}
       lambdas: ${{ steps.filter.outputs.lambdas }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
@@ -54,15 +81,23 @@ jobs:
         with:
           filters: |
             app:
-              - 'capstone/tf-1/devops/app/**'
-            ai_engine:
-              - 'capstone/tf-1/devops/app/ai-engine/**'
-              - 'capstone/tf-1/devops/app/shared/**'
-            lambdas:
+              - 'capstone/tf-1/devops/app/alert-ingest/**'
               - 'capstone/tf-1/devops/app/alert-ingestion/**'
               - 'capstone/tf-1/devops/app/context-collector/**'
               - 'capstone/tf-1/devops/app/jira-dispatcher/**'
               - 'capstone/tf-1/devops/app/jira-connector/**'
+              - 'capstone/tf-1/devops/app/notify-dispatcher/**'
+              - 'capstone/tf-1/devops/app/push-to-ai/**'
+              - 'capstone/tf-1/devops/app/slack-dispatcher/**'
+              - 'capstone/tf-1/devops/app/slack-notifier/**'
+              - 'capstone/tf-1/devops/app/shared/**'
+            lambdas:
+              - 'capstone/tf-1/devops/app/alert-ingest/**'
+              - 'capstone/tf-1/devops/app/context-collector/**'
+              - 'capstone/tf-1/devops/app/jira-dispatcher/**'
+              - 'capstone/tf-1/devops/app/jira-connector/**'
+              - 'capstone/tf-1/devops/app/notify-dispatcher/**'
+              - 'capstone/tf-1/devops/app/push-to-ai/**'
               - 'capstone/tf-1/devops/app/slack-dispatcher/**'
               - 'capstone/tf-1/devops/app/slack-notifier/**'
               - 'capstone/tf-1/devops/app/shared/**'
@@ -77,126 +112,128 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Python
+      - name: Resolve app integration roots
+        run: |
+          {
+            echo "APP_CHECK_ROOTS<<EOF"
+            for dir in $APP_LINT_ROOTS; do
+              [ -d "$dir" ] && echo "$dir"
+            done
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Detect Python dependency manifests
+        id: python-deps
+        run: |
+          if find $APP_CHECK_ROOTS \( -name requirements.txt -o -name pyproject.toml \) -print -quit | grep -q .; then
+            echo "has_manifest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_manifest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python with pip cache
+        if: steps.python-deps.outputs.has_manifest == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+          cache-dependency-path: |
+            capstone/tf-1/devops/app/alert-*/requirements.txt
+            capstone/tf-1/devops/app/context-collector/requirements.txt
+            capstone/tf-1/devops/app/jira-*/requirements.txt
+            capstone/tf-1/devops/app/notify-dispatcher/requirements.txt
+            capstone/tf-1/devops/app/push-to-ai/requirements.txt
+            capstone/tf-1/devops/app/slack-*/requirements.txt
+            capstone/tf-1/devops/app/shared/requirements.txt
+            capstone/tf-1/devops/app/alert-*/pyproject.toml
+            capstone/tf-1/devops/app/context-collector/pyproject.toml
+            capstone/tf-1/devops/app/jira-*/pyproject.toml
+            capstone/tf-1/devops/app/notify-dispatcher/pyproject.toml
+            capstone/tf-1/devops/app/push-to-ai/pyproject.toml
+            capstone/tf-1/devops/app/slack-*/pyproject.toml
+            capstone/tf-1/devops/app/shared/pyproject.toml
+
+      - name: Setup Python without pip cache
+        if: steps.python-deps.outputs.has_manifest != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Python QA tools
-        run: python -m pip install --upgrade ruff pytest bandit
+        run: |
+          python -m pip install --upgrade pip ruff pytest bandit
+
+          while IFS= read -r requirements_file; do
+            echo "Installing dependencies from $requirements_file"
+            python -m pip install -r "$requirements_file"
+          done < <(find $APP_CHECK_ROOTS -name requirements.txt -print)
+
+          while IFS= read -r pyproject_file; do
+            echo "Installing dependencies declared in $pyproject_file"
+            python - "$pyproject_file" <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open(sys.argv[1], "rb") as handle:
+              data = tomllib.load(handle)
+
+          project = data.get("project", {})
+          dependencies = list(project.get("dependencies", []))
+
+          optional = project.get("optional-dependencies", {})
+          for group in ("test", "tests", "dev"):
+              dependencies.extend(optional.get(group, []))
+
+          if dependencies:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+          PY
+          done < <(find $APP_CHECK_ROOTS -name pyproject.toml -print)
+
 
       - name: Ruff lint
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            ruff check "$APP_ROOT" --output-format=github
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            ruff check $APP_CHECK_ROOTS --output-format=github
           else
-            echo "No Python source found under $APP_ROOT; skipping ruff."
+            echo "No Python source found under app integration roots; skipping ruff."
           fi
 
       - name: Ruff format check
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            ruff format --check "$APP_ROOT"
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            ruff format --check $APP_CHECK_ROOTS
           else
-            echo "No Python source found under $APP_ROOT; skipping format check."
+            echo "No Python source found under app integration roots; skipping format check."
           fi
 
       - name: Bandit security scan
         run: |
-          if find "$APP_ROOT" -name '*.py' -print -quit | grep -q .; then
-            bandit -r "$APP_ROOT" -ll
+          if find $APP_CHECK_ROOTS -name '*.py' -print -quit | grep -q .; then
+            bandit -r $APP_CHECK_ROOTS -ll
           else
-            echo "No Python source found under $APP_ROOT; skipping bandit."
+            echo "No Python source found under app integration roots; skipping bandit."
           fi
 
       - name: Run unit tests
         run: |
-          TEST_PATHS=$(find "$APP_ROOT" -type d -name tests -print)
-          TEST_FILES=$(find "$APP_ROOT" -type f -name 'test_*.py' -print)
+          export PYTHONPATH="$GITHUB_WORKSPACE/$APP_ROOT:${PYTHONPATH:-}"
+          TEST_PATHS=$(find $APP_CHECK_ROOTS -type d -name tests -print)
+          TEST_FILES=$(find $APP_CHECK_ROOTS -type f -name 'test_*.py' -print)
           if [ -n "$TEST_PATHS$TEST_FILES" ]; then
-            pytest "$APP_ROOT" -v --tb=short
+            pytest $APP_CHECK_ROOTS -v --tb=short
           else
-            echo "No tests found yet; skipping pytest for skeleton repository."
+            echo "No app integration tests found yet; skipping pytest."
           fi
 
       - name: Gitleaks secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-ai-image:
-    name: Build and push AI engine image
-    needs: [detect-changes, lint-test]
-    if: |
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
-      (needs.detect-changes.outputs.ai_engine == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.image.outputs.image_uri }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build image
-        id: image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
-        run: |
-          set -euo pipefail
-          DOCKERFILE="$APP_ROOT/ai-engine/Dockerfile"
-          SHORT_SHA="${IMAGE_TAG::12}"
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA"
-
-          if [ ! -f "$DOCKERFILE" ]; then
-            echo "AI engine Dockerfile not found at $DOCKERFILE; skipping image build."
-            echo "image_uri=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          docker build \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            -t "$IMAGE_URI" \
-            -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
-            "$APP_ROOT/ai-engine"
-
-          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
-
-      - name: Scan image with Trivy
-        if: steps.image.outputs.image_uri != ''
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.image.outputs.image_uri }}
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Push image
-        if: steps.image.outputs.image_uri != ''
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ vars.AI_ECR_REPOSITORY || 'triage-hub-ai-engine' }}
-        run: |
-          SHORT_SHA="${IMAGE_TAG::12}"
-          docker push "$IMAGE_URI"
-          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          echo "Pushed $IMAGE_URI"
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   package-lambdas:
     name: Package Lambda dispatchers
@@ -207,10 +244,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: alert-ingestion
-            source_dir: alert-ingestion
+          - id: alert-ingest
+            source_dir: alert-ingest
             fallback_dir: ""
-            function_suffix: alert-ingestion
+            function_suffix: alert-ingest
           - id: context-collector
             source_dir: context-collector
             fallback_dir: ""
@@ -219,6 +256,10 @@ jobs:
             source_dir: jira-dispatcher
             fallback_dir: jira-connector
             function_suffix: jira-dispatcher
+          - id: notify-dispatcher
+            source_dir: notify-dispatcher
+            fallback_dir: ""
+            function_suffix: notify-dispatcher
           - id: slack-dispatcher
             source_dir: slack-dispatcher
             fallback_dir: slack-notifier
@@ -269,27 +310,38 @@ jobs:
     name: Deploy Lambda dispatchers
     needs: package-lambdas
     if: |
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+      (
+        github.event_name == 'push' &&
+        (
+          github.ref == 'refs/heads/develop' ||
+          github.ref == 'refs/heads/main'
+        )
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.deploy == 'true'
+      )
     runs-on: ubuntu-latest
-    environment: dev
+    environment: sandbox
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: alert-ingestion
-            function_suffix: alert-ingestion
+          - id: alert-ingest
+            function_suffix: alert-ingest
           - id: context-collector
             function_suffix: context-collector
           - id: jira-dispatcher
             function_suffix: jira-dispatcher
+          - id: notify-dispatcher
+            function_suffix: notify-dispatcher
           - id: slack-dispatcher
             function_suffix: slack-dispatcher
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Download Lambda artifact
@@ -301,7 +353,7 @@ jobs:
 
       - name: Update Lambda code
         env:
-          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub-dev' }}
+          LAMBDA_PREFIX: ${{ vars.LAMBDA_NAME_PREFIX || 'triage-hub' }}
         run: |
           set -euo pipefail
           ZIP_FILE="${{ matrix.id }}.zip"
@@ -320,56 +372,30 @@ jobs:
           aws lambda wait function-updated --function-name "$FUNCTION_NAME"
           echo "Updated $FUNCTION_NAME"
 
-  deploy-ai-engine:
-    name: Deploy AI engine to EKS
-    needs: build-ai-image
-    if: |
-      needs.build-ai-image.outputs.image_uri != '' &&
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
-    runs-on: ubuntu-latest
-    environment: dev
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Roll out image
-        env:
-          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
-          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'triage-hub' }}
-          K8S_DEPLOYMENT: ${{ vars.K8S_AI_DEPLOYMENT || 'ai-engine' }}
-          K8S_CONTAINER: ${{ vars.K8S_AI_CONTAINER || 'ai-engine' }}
-          IMAGE_URI: ${{ needs.build-ai-image.outputs.image_uri }}
-        run: |
-          set -euo pipefail
-          if [ -z "$EKS_CLUSTER_NAME" ]; then
-            echo "EKS_CLUSTER_NAME is not set; skipping EKS rollout."
-            exit 0
-          fi
-
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
-          kubectl -n "$K8S_NAMESPACE" set image "deployment/$K8S_DEPLOYMENT" "$K8S_CONTAINER=$IMAGE_URI"
-          kubectl -n "$K8S_NAMESPACE" rollout status "deployment/$K8S_DEPLOYMENT" --timeout=5m
-
   smoke-test:
     name: Smoke test triage flow
-    needs: [deploy-lambdas, deploy-ai-engine]
+    needs: [deploy-lambdas]
     if: |
       always() &&
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true')
+      (
+        (
+          github.event_name == 'push' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            github.ref == 'refs/heads/main'
+          )
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy == 'true'
+        )
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.APP_AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify API Gateway health
@@ -380,11 +406,11 @@ jobs:
             echo "TRIAGE_API_URL is not set; skipping API smoke test."
             exit 0
           fi
-          curl --fail --show-error --silent "$TRIAGE_API_URL/health"
+          curl --fail --show-error --silent "$TRIAGE_API_URL/healthz"
 
       - name: Verify SQS buffers and DLQs
         env:
-          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-alert-buffer,triage-context-buffer,triage-slack-buffer' }}
+          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-hub-buffer-queue,triage-hub-dispatch-queue,triage-hub-buffer-queue-dlq,triage-hub-dispatch-queue-dlq' }}
         run: |
           IFS=',' read -ra QUEUES <<< "$QUEUE_NAMES"
           for queue in "${QUEUES[@]}"; do
