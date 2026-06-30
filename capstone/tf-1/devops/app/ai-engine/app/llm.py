@@ -289,13 +289,12 @@ def invoke_agentcore_payload(request: Any, purpose: str, payload: dict[str, Any]
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
     import boto3
 
-    client = boto3.client("bedrock-agentcore", region_name=region)
-    response = client.invoke_agent_runtime(
-        agentRuntimeArn=runtime_arn,
-        runtimeSessionId=session_id or agentcore_session_id(request, purpose),
-        payload=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-        contentType="application/json",
-        accept="application/json",
+    client = boto3.client("bedrock-agent-runtime", region_name=region)
+    response = client.invoke_agent(
+        agentId=runtime_arn.split("/")[-1] if "/" in runtime_arn else runtime_arn,
+        agentAliasId="TSTALIASID",
+        sessionId=session_id or agentcore_session_id(request, purpose),
+        inputText=json.dumps(payload, ensure_ascii=True),
     )
     return read_agentcore_response(response)
 
