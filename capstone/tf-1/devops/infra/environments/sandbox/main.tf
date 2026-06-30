@@ -175,6 +175,7 @@ module "lambda" {
         SLACK_SIGNING_SECRET_ARN = module.secrets_manager.secret_arns["slack_signing_secret"]
         # Cần cho "Assign Me": map Slack user -> email (users.info) -> Jira accountId
         SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
+        EVENT_BUS_NAME      = aws_cloudwatch_event_bus.triage_hub_bus.name
       }
       iam_policy_statements = [
         {
@@ -195,6 +196,27 @@ module "lambda" {
           effect    = "Allow"
           actions   = ["lambda:InvokeFunction"]
           resources = ["arn:aws:lambda:us-east-1:*:function:triage-hub-jira-dispatcher"]
+        },
+        {
+          effect    = "Allow"
+          actions   = ["events:PutEvents"]
+          resources = [aws_cloudwatch_event_bus.triage_hub_bus.arn]
+        }
+      ]
+    }
+
+    "broadcast-notifier" = {
+      handler    = "index.handler"
+      runtime    = "nodejs20.x"
+      source_dir = "../../../app/broadcast-notifier"
+      environment_variables = {
+        SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
+      }
+      iam_policy_statements = [
+        {
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
+          resources = [module.secrets_manager.secret_arns["slack_bot_token"]]
         }
       ]
     }
@@ -758,6 +780,36 @@ resource "aws_ssm_parameter" "prometheus_ip" {
   tags = {
     Environment = var.environment
   }
+}
+
+# 20. EventBridge for Broadcast Notifications
+resource "aws_cloudwatch_event_bus" "triage_hub_bus" {
+  name = "${var.project_name}-event-bus-${var.environment}"
+}
+
+resource "aws_cloudwatch_event_rule" "jira_assigned" {
+  name           = "${var.project_name}-jira-assigned-rule-${var.environment}"
+  event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
+  description    = "Capture Jira assignment events from jira-dispatcher"
+  event_pattern = jsonencode({
+    "source"      = ["triage-hub.jira"],
+    "detail-type" = ["IncidentAssigned"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "broadcast_notifier" {
+  rule           = aws_cloudwatch_event_rule.jira_assigned.name
+  event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
+  target_id      = "BroadcastNotifier"
+  arn            = module.lambda.invoke_arns["broadcast-notifier"]
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_invoke" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda.function_names["broadcast-notifier"]
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.jira_assigned.arn
 }
 
 # Cấp quyền SQS cho EKS Node Group để KEDA Operator có thể quét độ dài hàng đợi

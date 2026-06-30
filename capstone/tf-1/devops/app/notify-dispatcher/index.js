@@ -91,17 +91,23 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
     let response;
     try {
       response = await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      console.warn(`Fetch error on attempt ${attempt}:`, err.message);
     } finally {
       clearTimeout(timeout);
     }
 
-    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
-    if (!isRetryable || attempt === retries) {
-      return response;
+    if (response) {
+      const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+      if (!isRetryable || attempt === retries) {
+        return response;
+      }
+    } else if (attempt === retries) {
+      return null;
     }
 
     const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
-    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response.status, delay_ms: Math.round(delay) }));
+    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response ? response.status : "error", delay_ms: Math.round(delay) }));
     await new Promise((r) => setTimeout(r, delay));
   }
   return null;
@@ -343,10 +349,12 @@ function escapeSlackMrkdwn(text) {
 // Core: Build Slack Block Kit message từ AI triage result
 // =============================================================================
 function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
-  const severity = getSeverityDisplay(triageResult.severity);
+  const severityStr = triageResult.severity || "medium";
+  const severity = getSeverityDisplay(severityStr);
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
     || "unknown-service";
+  const title = triageResult.alert?.title || triageResult.ticket_payload?.summary || "Untitled incident";
   const incidentId = triageResult.incident_id;
   const classification = triageResult.classification || "unknown";
   const confidence = triageResult.confidence != null
@@ -491,6 +499,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             audit_id: triageResult.audit_id || null,
             assignee_name: assigneeDetails?.displayName || null,
             assignee_email: assigneeDetails?.emailAddress || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];
@@ -549,6 +561,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             tenant_id: triageResult.tenant_id || "unknown",
             jira_issue_key: jiraMapping.issueKey,
             audit_id: triageResult.audit_id || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];
