@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-
 RISK_ORDER = {"low": 1, "medium": 2, "high": 3}
 
 

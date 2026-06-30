@@ -10,7 +10,6 @@ from typing import Any
 from app import dynamodb_store
 from app.dynamodb_store import use_dynamodb_backend
 
-
 DEFAULT_AUDIT_LOG_PATH = "audit/audit-log.jsonl"
 DEFAULT_RETENTION_DAYS = 90
 
