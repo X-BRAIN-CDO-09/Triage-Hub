@@ -84,6 +84,8 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
     "AmazonEKSWorkerNodePolicy",
     "AmazonEKS_CNI_Policy",
     "AmazonEC2ContainerRegistryReadOnly", # pull signed image từ ECR
+    "CloudWatchAgentServerPolicy",        # for Container Insights
+    "AWSXRayDaemonWriteAccess",           # for X-Ray tracing
   ])
   role       = aws_iam_role.node.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
@@ -179,4 +181,17 @@ resource "aws_eks_access_policy_association" "admin" {
   }
 
   depends_on = [aws_eks_access_entry.admin]
+}
+
+# --- CloudWatch Observability Add-on (Container Insights & X-Ray) ---------
+resource "aws_eks_addon" "cloudwatch_observability" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "amazon-cloudwatch-observability"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.this,
+    aws_iam_role_policy_attachment.node_policies
+  ]
 }
