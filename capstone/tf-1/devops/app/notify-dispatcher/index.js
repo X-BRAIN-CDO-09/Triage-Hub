@@ -91,17 +91,23 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
     let response;
     try {
       response = await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      console.warn(`Fetch error on attempt ${attempt}:`, err.message);
     } finally {
       clearTimeout(timeout);
     }
 
-    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
-    if (!isRetryable || attempt === retries) {
-      return response;
+    if (response) {
+      const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+      if (!isRetryable || attempt === retries) {
+        return response;
+      }
+    } else if (attempt === retries) {
+      return null;
     }
 
     const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
-    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response.status, delay_ms: Math.round(delay) }));
+    console.warn(JSON.stringify({ message: "Retryable response", attempt, status: response ? response.status : "error", delay_ms: Math.round(delay) }));
     await new Promise((r) => setTimeout(r, delay));
   }
   return null;
