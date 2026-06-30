@@ -12,8 +12,8 @@ on:
       - "capstone/tf-1/devops/infra/**"
       - ".github/workflows/ci-infra.yml"
   schedule:
-    # 08:00 ICT (UTC+7) every day
-    - cron: "0 1 * * *"
+    # 08:05 ICT (UTC+7) every day
+    - cron: "5 1 * * *"
   workflow_dispatch:
     inputs:
       environment:
