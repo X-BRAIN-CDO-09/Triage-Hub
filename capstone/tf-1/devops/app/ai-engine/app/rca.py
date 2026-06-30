@@ -185,8 +185,7 @@ def infer_topology(request: Any) -> dict[str, Any]:
         "root_service": root_service,
         "nodes": sorted(nodes),
         "edges": [
-            {"source": source, "target": target, "evidence": evidence}
-            for source, target, evidence in sorted(edges)
+            {"source": source, "target": target, "evidence": evidence} for source, target, evidence in sorted(edges)
         ],
     }
 
@@ -298,7 +297,11 @@ def build_investigation_summary(
 ) -> str:
     top = candidates[0]["service"] if candidates else request.alert.service
     evidence_count = len(evidence)
-    causal_state = "causal hints available" if causal_hints and causal_hints[0].get("type") != "insufficient_points" else "causal hints unavailable"
+    causal_state = (
+        "causal hints available"
+        if causal_hints and causal_hints[0].get("type") != "insufficient_points"
+        else "causal hints unavailable"
+    )
     return (
         f"Deterministic investigator summary: {request.alert.service} produced {evidence_count} anomaly evidence item(s). "
         f"Top RCA candidate is {top}. Recent deploy, topology, metric, and log signals were scored without external LLM calls; {causal_state}."
