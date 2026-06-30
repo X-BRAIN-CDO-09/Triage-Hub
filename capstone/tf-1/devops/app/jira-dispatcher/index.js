@@ -293,8 +293,8 @@ async function updateSlackMessage(responseUrl, updatedBlocks) {
       }),
     });
 
-    if (!response.ok) {
-      logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
+    if (!response || !response.ok) {
+      logStructured("ERROR", "Slack response_url error", { status: response ? response.status : "timeout/null", response_url: responseUrl });
     } else {
       logStructured("INFO", "Slack message updated via response_url", { response_url: responseUrl });
     }
