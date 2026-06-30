@@ -9,9 +9,7 @@ import requests
 
 def build_slack_message(response: dict[str, Any], report_url: str) -> dict[str, Any]:
     evidence = response.get("anomaly_evidence", [])
-    top_evidence = (
-        evidence[0]["reason"] if evidence else response.get("suspected_root_cause", {}).get("evidence", [""])[0]
-    )
+    top_evidence = evidence[0]["reason"] if evidence else response.get("suspected_root_cause", {}).get("evidence", [""])[0]
     actions = response.get("recommended_actions", [])
     top_action = actions[0].get("summary") if actions else "Review incident context."
     return {

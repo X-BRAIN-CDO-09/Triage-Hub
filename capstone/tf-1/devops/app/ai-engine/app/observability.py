@@ -7,13 +7,15 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST
+
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
-from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST
+
 
 SERVICE_NAME = "tf1-ai-triage-engine"
 OBSERVABILITY_ENABLED = os.getenv("AIOPS_OBSERVABILITY_ENABLED", "true").lower() in {"1", "true", "yes"}

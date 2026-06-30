@@ -156,8 +156,8 @@ jobs:
           git add "$OVERLAY"
           git commit -m "ci(ai-engine): bump engine image -> ${SHORT_SHA} [skip ci]"
           if [ -n "$GITOPS_PAT" ]; then
-            # Hủy cấu hình header mặc định của GitHub Actions để ép sử dụng GITOPS_PAT
-            git config --local --unset http.https://github.com/.extraheader
+            # Push qua identity có quyền bypass -> vượt branch protection trên develop.
+            # (GitHub Actions tự mask giá trị secret trong log.)
             git push "https://x-access-token:${GITOPS_PAT}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
           else
             echo "::warning::Chưa cấu hình secret GITOPS_PAT — thử push bằng GITHUB_TOKEN (sẽ bị chặn nếu develop protected)."
