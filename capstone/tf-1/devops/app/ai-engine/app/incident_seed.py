@@ -6,9 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry
-
-
-from app.main import MetricSeries, LogEntry, RecentDeploy, Ownership
+from app.main import LogEntry, MetricSeries, Ownership, RecentDeploy
 
 
 class IncidentSeed(BaseModel):
