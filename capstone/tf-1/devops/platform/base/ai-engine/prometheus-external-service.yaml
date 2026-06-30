@@ -4,22 +4,10 @@ metadata:
   name: prometheus-operated
   namespace: monitoring
 spec:
+  type: ExternalName
+  externalName: ec2-54-86-176-17.compute-1.amazonaws.com
   ports:
     - name: http
       port: 9090
       targetPort: 9000
       protocol: TCP
-
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: prometheus-operated
-  namespace: monitoring
-subsets:
-  - addresses:
-      - ip: 54.86.176.17
-    ports:
-      - name: http
-        port: 9000
-        protocol: TCP
