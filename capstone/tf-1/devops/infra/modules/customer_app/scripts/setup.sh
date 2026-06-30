@@ -105,7 +105,7 @@ promtail:
     - docker: {}
     - json:
         expressions:
-          took_ms: http.resp.took_ms
+          took_ms: '"http.resp.took_ms"'
           message: message
     - template:
         source: is_request_complete
@@ -158,6 +158,7 @@ spec:
       labels:
         severity: critical
         tenant_id: '${tenant_id}'
+        service: 'cartservice'
       annotations:
         summary: "Cart service is down"
         description: "The cartservice has 0 available replicas. Customers cannot access their shopping carts."
@@ -167,6 +168,7 @@ spec:
       labels:
         severity: warning
         tenant_id: '${tenant_id}'
+        service: 'frontend'
       annotations:
         summary: "High latency on frontend service"
         description: "The 95th percentile request latency is above 2s for 30s."
@@ -176,6 +178,7 @@ spec:
       labels:
         severity: warning
         tenant_id: '${tenant_id}'
+        service: 'customer-service'
       annotations:
         summary: "CPU spike noise"
         description: "Transient CPU spike detected on cpu-stress-noisy pod."
