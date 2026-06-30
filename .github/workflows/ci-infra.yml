@@ -78,6 +78,10 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      - name: Terraform format
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: terraform fmt -recursive capstone/tf-1/devops/infra
+
       - name: Terraform format check
         run: |
           set +e
