@@ -325,6 +325,22 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
   }
 }
 
+# 16b-2. Bedrock AgentCore VPC Endpoint (Interface) — data plane InvokeAgentRuntime.
+# Để pod tf1-api gọi AgentCore runtime (cross-account 589077667575) qua PrivateLink
+# thay vì đi NAT ra public API (private-first). Service data plane: bedrock-agentcore.
+resource "aws_vpc_endpoint" "bedrock_agentcore" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-agentcore"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-bedrock-agentcore-vpce-${var.environment}"
+  }
+}
+
 # 16c. SQS VPC Endpoint (Interface) — Cho phép Pod giao tiếp SQS ngầm nội bộ
 resource "aws_vpc_endpoint" "sqs" {
   vpc_id              = module.vpc_platform.vpc_id
@@ -392,6 +408,20 @@ module "alb" {
   vpc_id                = module.vpc_platform.vpc_id
   private_subnet_ids    = module.vpc_platform.private_subnet_ids
   alb_security_group_id = module.alb_sg.security_group_id
+}
+
+# Publish ALB target group ARN vào SSM để CI/CD pipeline tự patch TargetGroupBinding
+# (overlays/sandbox/kustomization.yaml). TG ARN đổi mỗi lần cluster/ALB tạo lại nên
+# KHÔNG hardcode lâu dài — CI đọc /triage-hub/sandbox/alb_target_group_arn rồi patch.
+resource "aws_ssm_parameter" "alb_target_group_arn" {
+  name        = "/${var.project_name}/${var.environment}/alb_target_group_arn"
+  description = "Internal ALB target group ARN cho TargetGroupBinding (KEDA/ArgoCD overlay)"
+  type        = "String"
+  value       = module.alb.target_group_arn
+
+  tags = {
+    Environment = var.environment
+  }
 }
 
 # 16e. Observability Module
