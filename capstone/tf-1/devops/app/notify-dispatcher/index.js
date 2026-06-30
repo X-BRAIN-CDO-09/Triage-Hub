@@ -245,9 +245,18 @@ async function updateJiraMapping(incidentId, tenantId, jiraResult) {
       status: { S: "UNASSIGNED" },
       created_at: { S: new Date().toISOString() },
     },
+    ConditionExpression: "attribute_not_exists(PK)",
   });
-  await dynamoClient.send(command);
-  console.log("Jira mapping updated in DynamoDB:", jiraResult.issueKey);
+  try {
+    await dynamoClient.send(command);
+    console.log("Jira mapping created in DynamoDB:", jiraResult.issueKey);
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") {
+      console.warn("Mapping already exists (concurrent invocation). Skipping duplicate Jira creation.");
+      return;
+    }
+    throw err;
+  }
 }
 
 // =============================================================================
@@ -408,14 +417,14 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*🔍 Root Cause Diagnosis:*\n${rootCause.summary}`,
+        text: `*🔍 Root Cause Diagnosis:*\n${escapeSlackMrkdwn(rootCause.summary)}`,
       },
     });
 
     // Evidence items
     if (rootCause.evidence && rootCause.evidence.length > 0) {
       const evidenceText = rootCause.evidence
-        .map((e, i) => `${i + 1}. ${e}`)
+        .map((e, i) => `${i + 1}. ${escapeSlackMrkdwn(e)}`)
         .join("\n");
       blocks.push({
         type: "section",
@@ -430,7 +439,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
   // Recommended actions
   if (triageResult.recommended_actions && triageResult.recommended_actions.length > 0) {
     const actionsText = triageResult.recommended_actions
-      .map((a, i) => `${i + 1}. *[${a.type}]* ${a.summary}`)
+      .map((a, i) => `${i + 1}. *[${escapeSlackMrkdwn(a.type)}]* ${escapeSlackMrkdwn(a.summary)}`)
       .join("\n");
     blocks.push({
       type: "section",
@@ -587,35 +596,25 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
 }
 
 // =============================================================================
-// Helper: Gọi Slack API chat.postMessage
+// Helper: Gọi Slack API chat.postMessage (có retry 429/5xx)
 // =============================================================================
 async function postToSlack(token, channel, blocks, fallbackText) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+  const response = await fetchWithRetry("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel, text: fallbackText, blocks }),
+  });
 
-  let response;
-  try {
-    response = await fetch("https://slack.com/api/chat.postMessage", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        channel: channel,
-        text: fallbackText,
-        blocks: blocks,
-      }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
+  if (!response) {
+    throw new Error("Slack API error: all retries exhausted");
   }
 
   const result = await response.json();
 
   if (!result.ok) {
-    console.error("Slack API error:", result.error);
     throw new Error(`Slack API error: ${result.error}`);
   }
 
