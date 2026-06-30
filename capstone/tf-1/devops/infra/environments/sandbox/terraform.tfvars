@@ -29,7 +29,7 @@ public_access_cidrs    = ["0.0.0.0/0"]
 cluster_admin_arns = [
   "arn:aws:iam::730335441285:role/triage-hub-github-terraform-role",
   "arn:aws:iam::730335441285:user/admin",
-  "arn:aws:iam::730335441285:user/GR9-Hien",
+  "arn:aws:iam::730335441285:user/G9-Hien",
   "arn:aws:iam::730335441285:user/GR9-Hoang",
   "arn:aws:iam::730335441285:user/GR9-Thi",
   "arn:aws:iam::730335441285:user/GR9-Phong",
