@@ -113,8 +113,9 @@ spec:
             # Runtime config
             - name: APP_ENV
               value: "sandbox"
-            - name: JIRA_HISTORY_PATH
-              value: "app/jira_history.json"
+            # Kiến trúc dùng DynamoDB cho jira_history (AIOPS_PERSISTENCE_BACKEND=dynamodb).
+            # KHÔNG set JIRA_HISTORY_PATH: engine đọc record JIRA_HISTORY#{tenant}#{env}#{service}
+            # trong DynamoDB; nếu không khớp -> trả "no mapping" sạch (không fallback đọc file JSON).
             - name: AIOPS_INVESTIGATION_MODE
               value: "auto"
             - name: AIOPS_TRIAGE_DEADLINE_SECONDS

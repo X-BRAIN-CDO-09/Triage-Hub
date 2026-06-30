@@ -9,6 +9,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+
 DEFAULT_IDEMPOTENCY_RETENTION_DAYS = 7
 
 
@@ -55,6 +56,10 @@ def audit_sk(record: dict[str, Any]) -> str:
 
 def idempotency_pk(audit_id: str) -> str:
     return f"IDEMPOTENCY#{audit_id}"
+
+
+def jira_history_pk(tenant_id: str, environment: str, service: str) -> str:
+    return f"JIRA_HISTORY#{tenant_id}#{environment}#{service}"
 
 
 def append_audit_record(record: dict[str, Any], retention_days: int) -> None:
@@ -105,14 +110,37 @@ def read_idempotency_record(audit_id: str) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def write_idempotency_record(
-    audit_id: str, record: dict[str, Any], retention_days: int = DEFAULT_IDEMPOTENCY_RETENTION_DAYS
-) -> None:
+def write_idempotency_record(audit_id: str, record: dict[str, Any], retention_days: int = DEFAULT_IDEMPOTENCY_RETENTION_DAYS) -> None:
     dynamodb_table().put_item(
         Item=_to_dynamodb_value(
             {
                 "PK": idempotency_pk(audit_id),
                 "SK": "STATE",
+                "record": record,
+                "expires_at": _expires_at(retention_days),
+            }
+        )
+    )
+
+
+def read_jira_history_record(service: str, environment: str, tenant_id: str) -> dict[str, Any] | None:
+    response = dynamodb_table().get_item(Key={"PK": jira_history_pk(tenant_id, environment, service), "SK": "SUGGESTION"})
+    record = _from_dynamodb_value(response.get("Item", {})).get("record")
+    return record if isinstance(record, dict) else None
+
+
+def write_jira_history_record(
+    service: str,
+    environment: str,
+    tenant_id: str,
+    record: dict[str, Any],
+    retention_days: int = DEFAULT_IDEMPOTENCY_RETENTION_DAYS,
+) -> None:
+    dynamodb_table().put_item(
+        Item=_to_dynamodb_value(
+            {
+                "PK": jira_history_pk(tenant_id, environment, service),
+                "SK": "SUGGESTION",
                 "record": record,
                 "expires_at": _expires_at(retention_days),
             }
@@ -127,10 +155,7 @@ def start_idempotency_record(audit_id: str, record: dict[str, Any], stale_before
         Attr("PK").not_exists()
         | Attr("record.status").eq("failed_retryable")
         | (Attr("record.status").eq("completed") & Attr("record.request_hash").ne(request_hash))
-        | (
-            Attr("record.status").eq("in_progress")
-            & (Attr("record.updated_at").lt(stale_before) | Attr("record.updated_at").not_exists())
-        )
+        | (Attr("record.status").eq("in_progress") & (Attr("record.updated_at").lt(stale_before) | Attr("record.updated_at").not_exists()))
     )
     try:
         table.put_item(
