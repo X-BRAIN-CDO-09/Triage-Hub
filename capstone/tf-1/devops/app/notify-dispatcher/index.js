@@ -343,10 +343,12 @@ function escapeSlackMrkdwn(text) {
 // Core: Build Slack Block Kit message từ AI triage result
 // =============================================================================
 function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
-  const severity = getSeverityDisplay(triageResult.severity);
+  const severityStr = triageResult.severity || "medium";
+  const severity = getSeverityDisplay(severityStr);
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
     || "unknown-service";
+  const title = triageResult.alert?.title || triageResult.ticket_payload?.summary || "Untitled incident";
   const incidentId = triageResult.incident_id;
   const classification = triageResult.classification || "unknown";
   const confidence = triageResult.confidence != null
@@ -491,6 +493,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             audit_id: triageResult.audit_id || null,
             assignee_name: assigneeDetails?.displayName || null,
             assignee_email: assigneeDetails?.emailAddress || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];
@@ -549,6 +555,10 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             tenant_id: triageResult.tenant_id || "unknown",
             jira_issue_key: jiraMapping.issueKey,
             audit_id: triageResult.audit_id || null,
+            title: title,
+            service: service,
+            severity: severityStr,
+            jira_url: jiraUrl
           }),
         },
       ];

@@ -462,6 +462,10 @@ async function processAsyncSlackCallback(event) {
               jira_issue_key: issueKey,
               assignee_name: assigneeName,
               slack_user_id: slackUserId,
+              title: actionValue.title || "Untitled incident",
+              service: actionValue.service || "unknown",
+              severity: actionValue.severity || "medium",
+              jira_url: actionValue.jira_url || jiraLink,
               target_channel: "#incident-updates"
             })
           }]
@@ -535,6 +539,34 @@ async function processAsyncSlackCallback(event) {
           text: `✅ *Assigned!*\n• *Ticket:* ${jiraLink}\n• *Assigned to:* ${assigneeLabel}\n• *Self-assigned by:* <@${slackUserId}>`
         }
       });
+      
+      // Broadcast notification via EventBridge
+      if (EVENT_BUS_NAME) {
+        try {
+          const command = new PutEventsCommand({
+            Entries: [{
+              EventBusName: EVENT_BUS_NAME,
+              Source: "triage-hub.jira",
+              DetailType: "IncidentAssigned",
+              Detail: JSON.stringify({
+                incident_id: incidentId,
+                jira_issue_key: issueKey,
+                assignee_name: assigneeLabel,
+                slack_user_id: slackUserId,
+                title: actionValue.title || "Untitled incident",
+                service: actionValue.service || "unknown",
+                severity: actionValue.severity || "medium",
+                jira_url: actionValue.jira_url || jiraLink,
+                target_channel: "#incident-updates"
+              })
+            }]
+          });
+          await eventBridgeClient.send(command);
+          logStructured("INFO", "Published broadcast event to EventBridge for self-assign");
+        } catch (err) {
+          logStructured("ERROR", "Failed to publish broadcast event for self-assign", { error: err.message });
+        }
+      }
     } else {
       // KHÔNG báo thành công giả — hiển thị lỗi rõ ràng + giữ nút để retry
       updatedBlocks.push({
