@@ -404,7 +404,7 @@ module "observability" {
   api_gateway_name    = "${var.project_name}-apigw-${var.environment}"
   dynamodb_table_name = module.dynamodb.table_name
   eks_cluster_name    = module.eks.cluster_name
-  
+
   lambda_functions = [
     "${var.project_name}-alert-ingest",
     "${var.project_name}-jira-dispatcher",

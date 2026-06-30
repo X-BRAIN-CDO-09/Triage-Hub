@@ -87,7 +87,7 @@ resource "aws_api_gateway_stage" "this" {
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.apigw.arn
-    format          = jsonencode({
+    format = jsonencode({
       requestId      = "$context.requestId"
       ip             = "$context.identity.sourceIp"
       caller         = "$context.identity.caller"
