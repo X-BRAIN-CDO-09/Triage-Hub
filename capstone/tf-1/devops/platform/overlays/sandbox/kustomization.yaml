@@ -37,25 +37,7 @@ patches:
       spec:
         targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:730335441285:targetgroup/triage-hub-ai-tg-sandbox/7421cf8ee2e843ec
   # queueURL thật lấy từ: terraform output (SQS module) — buffer/intake queue
-  - patch: |
-      apiVersion: keda.sh/v1alpha1
-      kind: ScaledObject
-      metadata:
-        name: tf1-worker-scaler
-        namespace: triage-hub
-      spec:
-        triggers:
-          - type: aws-sqs-queue
-            authenticationRef:
-              name: keda-aws-sqs-auth
-            metadata:
-              queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
-              queueLength: "5"
-              awsRegion: us-east-1
-              # identityOwner=pod: KEDA dùng IRSA của workload (tf1-worker-sa) đã có
-              # sẵn sqs:GetQueueAttributes trên buffer-queue + trust đúng SA. operator
-              # SA không gắn IRSA nên trước đó fallback node-role -> AccessDenied 403.
-              identityOwner: pod
+
 images:
   - name: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
     newTag: "4e2e5ee"
