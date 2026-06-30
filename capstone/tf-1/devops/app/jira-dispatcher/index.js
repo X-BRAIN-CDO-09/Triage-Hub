@@ -138,19 +138,25 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
     let response;
     try {
       response = await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      logStructured("WARN", `Fetch error on attempt ${attempt}`, { error: err.message });
     } finally {
       clearTimeout(timeout);
     }
 
-    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
-    if (!isRetryable || attempt === retries) {
-      return response;
+    if (response) {
+      const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+      if (!isRetryable || attempt === retries) {
+        return response;
+      }
+    } else if (attempt === retries) {
+      return null;
     }
 
     const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
     logStructured("WARN", "Retryable response, backing off", {
       attempt,
-      status: response.status,
+      status: response ? response.status : "error",
       delay_ms: Math.round(delay),
       url: url.split("/").pop(),
     });
@@ -423,8 +429,10 @@ async function processAsyncSlackCallback(event) {
 
     // Hiển thị tên từ payload (được truyền sẵn từ notify-dispatcher) để tiết kiệm thời gian lấy data
     let assigneeName = assigneeAccountId || "N/A";
+    let broadcastAssigneeName = assigneeName;
     if (actionValue.assignee_name) {
       assigneeName = `*${actionValue.assignee_name}*`;
+      broadcastAssigneeName = actionValue.assignee_name;
       if (actionValue.assignee_email) assigneeName += ` (${actionValue.assignee_email})`;
     }
     let jiraBaseUrl = jiraCreds?.base_url || "";
@@ -450,7 +458,7 @@ async function processAsyncSlackCallback(event) {
     }
     
     // Broadcast notification via EventBridge
-    if (EVENT_BUS_NAME) {
+    if (EVENT_BUS_NAME && status === "SUCCESS") {
       try {
         const command = new PutEventsCommand({
           Entries: [{
@@ -460,7 +468,7 @@ async function processAsyncSlackCallback(event) {
             Detail: JSON.stringify({
               incident_id: incidentId,
               jira_issue_key: issueKey,
-              assignee_name: assigneeName,
+              assignee_name: broadcastAssigneeName,
               slack_user_id: slackUserId,
               title: actionValue.title || "Untitled incident",
               service: actionValue.service || "unknown",
@@ -506,6 +514,7 @@ async function processAsyncSlackCallback(event) {
         assigneeLabel = jiraUser.displayName
           ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
           : `<@${slackUserId}>`;
+        let broadcastAssigneeName = jiraUser.displayName || `<@${slackUserId}>`;
         logStructured("INFO", "Self-assign succeeded", {
           issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
         });
@@ -551,7 +560,7 @@ async function processAsyncSlackCallback(event) {
               Detail: JSON.stringify({
                 incident_id: incidentId,
                 jira_issue_key: issueKey,
-                assignee_name: assigneeLabel,
+                assignee_name: broadcastAssigneeName,
                 slack_user_id: slackUserId,
                 title: actionValue.title || "Untitled incident",
                 service: actionValue.service || "unknown",
