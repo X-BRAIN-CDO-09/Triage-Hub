@@ -241,8 +241,50 @@ locals {
     }
   }] : []
 
+  alb_y_offset = local.eks_y_offset + 6
+  alb_arn_suffix = var.alb_arn != "" ? replace(var.alb_arn, "/^.*?:loadbalancer\\//", "") : ""
+  alb_tg_arn_suffix = var.alb_target_group_arn != "" ? replace(var.alb_target_group_arn, "/^.*?:targetgroup\\//", "targetgroup/") : ""
+  
+  alb_widget = var.alb_arn != "" ? [{
+    type = "metric", x = 0, y = local.alb_y_offset, width = 24, height = 6
+    properties = {
+      metrics = [
+        ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", local.alb_arn_suffix, { "stat" : "Sum" }],
+        [".", "HTTPCode_Target_5XX_Count", ".", ".", { "stat" : "Sum" }],
+        [".", "HTTPCode_ELB_5XX_Count", ".", ".", { "stat" : "Sum" }],
+        [".", "TargetResponseTime", ".", ".", { "stat" : "Average" }]
+      ]
+      view = "timeSeries", region = var.aws_region, title = "Internal ALB", period = 300
+    }
+  }] : []
+
+  ec2_y_offset = local.alb_y_offset + 6
+  ec2_widget = var.customer_app_instance_id != "" ? [{
+    type = "metric", x = 0, y = local.ec2_y_offset, width = 24, height = 6
+    properties = {
+      metrics = [
+        ["AWS/EC2", "CPUUtilization", "InstanceId", var.customer_app_instance_id, { "stat" : "Average" }],
+        [".", "NetworkIn", ".", ".", { "stat" : "Average" }],
+        [".", "NetworkOut", ".", ".", { "stat" : "Average" }]
+      ]
+      view = "timeSeries", region = var.aws_region, title = "Customer App EC2", period = 300
+    }
+  }] : []
+
+  s3_y_offset = local.ec2_y_offset + 6
+  s3_widget = var.s3_bucket_id != "" ? [{
+    type = "metric", x = 0, y = local.s3_y_offset, width = 24, height = 6
+    properties = {
+      metrics = [
+        ["AWS/S3", "BucketSizeBytes", "BucketName", var.s3_bucket_id, "StorageType", "StandardStorage", { "stat" : "Average" }],
+        [".", "NumberOfObjects", ".", ".", ".", ".", { "stat" : "Average" }]
+      ]
+      view = "timeSeries", region = var.aws_region, title = "S3 Bucket: ${var.s3_bucket_id}", period = 86400
+    }
+  }] : []
+
   # --- 4. CLOUDWATCH LOGS INSIGHTS ---
-  logs_y_offset = local.eks_y_offset + 6
+  logs_y_offset = local.s3_y_offset + 6
   logs_header = [{
     type       = "text", x = 0, y = local.logs_y_offset, width = 24, height = 1
     properties = { markdown = "## CloudWatch Logs Insights" }
@@ -329,6 +371,9 @@ locals {
     local.sqs_widgets,
     local.dynamodb_widget,
     local.eks_widget,
+    local.alb_widget,
+    local.ec2_widget,
+    local.s3_widget,
     local.logs_header,
     local.logs_widgets,
     local.alarms_header,

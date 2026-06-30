@@ -75,6 +75,46 @@ variable "alarm_thresholds" {
     sqs_oldest_message   = optional(number, 3600)
     dynamodb_throttle    = optional(number, 10)
     dynamodb_sys_error   = optional(number, 1)
+    alb_5xx_rate         = optional(number, 5)
+    alb_response_time    = optional(number, 2)
+    ec2_cpu_utilization  = optional(number, 80)
   })
   default = {}
 }
+
+variable "alb_arn" {
+  description = "ARN of the Application Load Balancer to monitor"
+  type        = string
+  default     = ""
+}
+
+variable "alb_target_group_arn" {
+  description = "ARN of the ALB Target Group to monitor"
+  type        = string
+  default     = ""
+}
+
+variable "customer_app_instance_id" {
+  description = "Instance ID of the Customer App EC2 to monitor"
+  type        = string
+  default     = ""
+}
+
+variable "s3_bucket_id" {
+  description = "ID (name) of the S3 Bucket to monitor"
+  type        = string
+  default     = ""
+}
+
+variable "monitor_alb" {
+  description = "Enable monitoring and alarms for ALB"
+  type        = bool
+  default     = false
+}
+
+variable "monitor_ec2" {
+  description = "Enable monitoring and alarms for EC2 Customer App"
+  type        = bool
+  default     = false
+}
+

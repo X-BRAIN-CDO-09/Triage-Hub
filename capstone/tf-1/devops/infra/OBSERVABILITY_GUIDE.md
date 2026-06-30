@@ -40,7 +40,24 @@ Hệ thống Observability bao gồm 4 thành phần chính:
 - **ThrottledRequests / ConsumedCapacity**: Số lượng yêu cầu đọc/ghi bị từ chối do vượt quá dung lượng quy định (Provisioned Capacity). Nếu tăng cao, cần cấu hình Auto Scaling cho DB.
 - **SystemErrors**: Lỗi phát sinh từ nội bộ hạ tầng AWS DynamoDB (rất hiếm gặp, nhưng nghiêm trọng nếu có).
 
-### E. CloudWatch Logs Insights (Phân tích Log)
+### E. Application Load Balancer (Internal ALB)
+*Cổng giao tiếp nội bộ định tuyến traffic cho AI Engine.*
+- **RequestCount**: Tổng số lượng request gửi đến ALB.
+- **HTTPCode_Target_5XX_Count**: Số lượng lỗi 5XX trả về từ các Pod (Target). Phản ánh việc AI Engine (FastAPI/Worker) bị lỗi.
+- **HTTPCode_ELB_5XX_Count**: Số lượng lỗi 5XX do chính ALB sinh ra (ví dụ không tìm thấy target khả dụng).
+- **TargetResponseTime**: Thời gian xử lý trung bình (độ trễ) của AI Engine.
+
+### F. Amazon EC2 (Customer App)
+*Máy chủ giả lập ứng dụng của khách hàng gửi luồng cảnh báo.*
+- **CPUUtilization**: Phần trăm sử dụng CPU. Nếu tăng cao trên mức quy định (ví dụ 80%) sẽ kích hoạt Alarm cảnh báo quá tải.
+- **NetworkIn / NetworkOut**: Lưu lượng mạng vào và ra khỏi máy chủ EC2.
+
+### G. Amazon S3 (Artifacts Storage)
+*Lưu trữ log và số liệu thô phục vụ audit.*
+- **BucketSizeBytes**: Tổng dung lượng lưu trữ (được AWS đo và cập nhật mỗi ngày một lần).
+- **NumberOfObjects**: Tổng số lượng file đang được lưu trong bucket.
+
+### H. CloudWatch Logs Insights (Phân tích Log)
 Các widget dạng log-insight trên Dashboard sử dụng các query có các trường:
 - `@timestamp`: Thời điểm sinh ra log.
 - `@message`: Nội dung gốc của log. Dùng hàm `filter @message like /Error/` để tìm các dòng log lỗi.
@@ -132,6 +149,10 @@ Nếu bạn muốn hệ thống tự động sinh dữ liệu thực sự (Real 
    - Tại đây, bạn sẽ thấy bản đồ dịch vụ (Service map) tự động vẽ ra kiến trúc dựa trên dữ liệu thực tế (các node như API Gateway, Lambda, SQS).
    - Truy cập **Traces** (trong mục X-Ray), lọc các request gần đây để xem timeline chi tiết (Trace segments). Bạn có thể click vào từng segment để xem chính xác hàm Lambda mất bao nhiêu mili-giây, hoặc việc gọi DynamoDB có bị chậm hay không.
 
+4. **Test EC2 CPU Alarm:**
+   - Đăng nhập (SSH) hoặc dùng Session Manager để vào máy chủ EC2 của `customer-app`.
+   - Chạy lệnh stress-test (ví dụ: `yes > /dev/null &` chạy nhiều lần) để ép CPU hoạt động hết công suất 100%.
+   - Chờ khoảng 2 phút, Alarm `<project_name>-ec2-cpu-high` sẽ đỏ (ALARM) và gửi cảnh báo qua Email/SMS. Nhớ tắt tiến trình (`killall yes`) sau khi test xong để Alarm tự động phục hồi về xanh (OK).
 ---
 
 ## 5. Các Kịch Bản Test (Test Cases) Thực Hành Đảm Bảo Có Dữ Liệu

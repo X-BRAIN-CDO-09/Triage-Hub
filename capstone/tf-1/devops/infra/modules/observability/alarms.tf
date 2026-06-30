@@ -235,3 +235,72 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_system_errors" {
     TableName = var.dynamodb_table_name
   }
 }
+
+# =============================================================================
+# ALB Alarms
+# =============================================================================
+
+locals {
+  alb_arn_suffix_alarm = var.alb_arn != "" ? replace(var.alb_arn, "/^.*?:loadbalancer\\//", "") : ""
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  count               = var.monitor_alb ? 1 : 0
+  alarm_name          = "${var.project_name}-alb-5xx-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.alb_5xx_rate
+  alarm_description   = "ALB 5XX error rate is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    LoadBalancer = local.alb_arn_suffix_alarm
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_response_time" {
+  count               = var.monitor_alb ? 1 : 0
+  alarm_name          = "${var.project_name}-alb-latency-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.alarm_thresholds.alb_response_time
+  alarm_description   = "ALB Target Response Time is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    LoadBalancer = local.alb_arn_suffix_alarm
+  }
+}
+
+# =============================================================================
+# EC2 Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "ec2_cpu" {
+  count               = var.monitor_ec2 ? 1 : 0
+  alarm_name          = "${var.project_name}-ec2-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.alarm_thresholds.ec2_cpu_utilization
+  alarm_description   = "EC2 CPU Utilization is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    InstanceId = var.customer_app_instance_id
+  }
+}
