@@ -22,7 +22,7 @@ spec:
           query: |
             histogram_quantile(0.99,
               sum(rate(http_request_duration_seconds_bucket{job="tf1-api"}[2m])) by (le)
-            )
+            ) or vector(0)
       # giây — 0.8 = 800ms
       successCondition: result[0] <= 0.8
       failureCondition: result[0] > 0.8
@@ -35,9 +35,9 @@ spec:
         prometheus:
           address: http://prometheus-operated.monitoring.svc.cluster.local:9090
           query: |
-            sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
+            (sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
             /
-            sum(rate(http_requests_total{job="tf1-api"}[2m]))
+            sum(rate(http_requests_total{job="tf1-api"}[2m]))) or vector(0)
       # 0.01 = 1%
       successCondition: result[0] <= 0.01
       failureCondition: result[0] > 0.01
