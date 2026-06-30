@@ -418,6 +418,7 @@ resource "aws_ssm_parameter" "alb_target_group_arn" {
   description = "Internal ALB target group ARN cho TargetGroupBinding (KEDA/ArgoCD overlay)"
   type        = "String"
   value       = module.alb.target_group_arn
+  overwrite   = true
 
   tags = {
     Environment = var.environment
