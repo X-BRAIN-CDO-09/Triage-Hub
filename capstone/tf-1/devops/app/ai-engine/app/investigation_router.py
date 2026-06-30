@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
+
 InvestigationMode = Literal["deterministic_only", "agent_assisted", "agent_platform"]
 ModeSource = Literal["auto", "env"]
 
@@ -30,9 +31,7 @@ class ModeSelection:
         }
 
 
-def select_investigation_mode(
-    request: Any, decision: dict[str, Any], rca: dict[str, Any], agentcore_enabled: bool
-) -> ModeSelection:
+def select_investigation_mode(request: Any, decision: dict[str, Any], rca: dict[str, Any], agentcore_enabled: bool) -> ModeSelection:
     score, reasons = complexity_score(request, decision, rca)
     planned_mode = mode_for_score(score)
     configured = os.getenv("AIOPS_INVESTIGATION_MODE", "auto").strip().lower()
@@ -93,20 +92,8 @@ def complexity_score(request: Any, decision: dict[str, Any], rca: dict[str, Any]
         "dependency_or_causal_hints_low_confidence",
     )
 
-    missing_context = not (
-        request.metrics
-        and request.logs
-        and request.traces
-        and request.recent_deploys
-        and has_ownership_context(request)
-    )
-    score = add_if(
-        score,
-        reasons,
-        request.alert.severity in {"critical", "high"} and missing_context,
-        1,
-        "high_severity_missing_context",
-    )
+    missing_context = not (request.metrics and request.logs and request.traces and request.recent_deploys and has_ownership_context(request))
+    score = add_if(score, reasons, request.alert.severity in {"critical", "high"} and missing_context, 1, "high_severity_missing_context")
     score = add_if(
         score,
         reasons,
@@ -137,6 +124,4 @@ def mode_for_score(score: int) -> InvestigationMode:
 
 def has_ownership_context(request: Any) -> bool:
     ownership = request.ownership
-    return bool(
-        ownership and (ownership.owner_team or ownership.slack_channel or ownership.jira_project or ownership.runbooks)
-    )
+    return bool(ownership and (ownership.owner_team or ownership.slack_channel or ownership.jira_project or ownership.runbooks))

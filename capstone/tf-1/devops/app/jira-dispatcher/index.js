@@ -22,6 +22,7 @@ const BASE_RETRY_DELAY_MS = 500;
 
 let cachedJiraSecret = null;
 let cachedSlackSigningSecret = null;
+let cachedSlackBotToken = null;
 
 const dynamoClient = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
@@ -31,6 +32,7 @@ const lambdaClient = new LambdaClient({});
 const DYNAMODB_TABLE = process.env.DYNAMODB_TABLE;
 const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 const SLACK_SIGNING_SECRET_ARN = process.env.SLACK_SIGNING_SECRET_ARN;
+const SLACK_BOT_TOKEN_ARN = process.env.SLACK_BOT_TOKEN_ARN;
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -58,6 +60,68 @@ async function getSlackSigningSecret() {
     cachedSlackSigningSecret = raw.trim();
   }
   return cachedSlackSigningSecret;
+}
+
+async function getSlackBotToken() {
+  if (cachedSlackBotToken) return cachedSlackBotToken;
+  const raw = await getSecret(SLACK_BOT_TOKEN_ARN);
+  try {
+    const parsed = JSON.parse(raw);
+    cachedSlackBotToken = parsed.token || parsed.bot_token || raw;
+  } catch (err) {
+    cachedSlackBotToken = raw.trim();
+  }
+  return cachedSlackBotToken;
+}
+
+// =============================================================================
+// GĐ 3: Map Slack user (người bấm "Assign Me") -> Jira accountId
+//   Slack users.info (cần scope users:read.email) -> email
+//   -> Jira /user/search?query=email -> accountId
+// =============================================================================
+async function getSlackUserEmail(botToken, slackUserId) {
+  const response = await fetchWithRetry(
+    `https://slack.com/api/users.info?user=${encodeURIComponent(slackUserId)}`,
+    { method: "GET", headers: { Authorization: `Bearer ${botToken}` } }
+  );
+  if (!response || !response.ok) {
+    throw new Error(`Slack users.info HTTP ${response ? response.status : "timeout"}`);
+  }
+  const data = await response.json();
+  if (!data.ok) {
+    throw new Error(`Slack users.info error: ${data.error}`);
+  }
+  const email = data.user?.profile?.email;
+  if (!email) {
+    throw new Error("Slack user profile has no email (thiếu scope users:read.email?)");
+  }
+  return email;
+}
+
+async function findJiraAccountIdByEmail(jiraCreds, email) {
+  const { email: jiraEmail, token, base_url } = jiraCreds;
+  const auth = Buffer.from(`${jiraEmail}:${token}`).toString("base64");
+
+  const response = await fetchWithRetry(
+    `${base_url}/rest/api/3/user/search?query=${encodeURIComponent(email)}`,
+    { method: "GET", headers: { Authorization: `Basic ${auth}`, Accept: "application/json" } }
+  );
+  if (!response || !response.ok) {
+    throw new Error(`Jira user search HTTP ${response ? response.status : "timeout"}`);
+  }
+  const users = await response.json();
+  if (!Array.isArray(users) || users.length === 0) {
+    throw new Error(`No Jira user matched email ${email}`);
+  }
+  // Ưu tiên khớp chính xác email + account atlassian (tránh app/bot account)
+  const exact = users.find(
+    (u) => (u.emailAddress || "").toLowerCase() === email.toLowerCase() && u.accountType === "atlassian"
+  );
+  const chosen = exact || users.find((u) => u.accountType === "atlassian") || users[0];
+  if (!chosen.accountId) {
+    throw new Error(`Jira user for ${email} has no accountId`);
+  }
+  return { accountId: chosen.accountId, displayName: chosen.displayName, emailAddress: chosen.emailAddress };
 }
 
 // =============================================================================
@@ -386,27 +450,81 @@ async function processAsyncSlackCallback(event) {
   }
 
   if (action.action_id === "self_assign_incident_action") {
-    // Self-assign — cần lấy Jira account ID từ Slack user mapping
-    // Hiện tại chỉ lưu audit, vì cần mapping Slack → Jira account
-    await saveCallbackAudit(incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, "pending_lookup", "PENDING");
+    // Self-assign: map Slack user (người bấm) -> email -> Jira accountId -> assign THẬT
+    let status = "SUCCESS";
+    let assigneeAccountId = null;
+    let assigneeLabel = `<@${slackUserId}>`;
+    let failureReason = null;
+
+    if (!issueKey) {
+      status = "MISSING_INFO";
+      failureReason = "Thiếu jira_issue_key";
+    } else if (!SLACK_BOT_TOKEN_ARN) {
+      status = "FAILED_CONFIG";
+      failureReason = "SLACK_BOT_TOKEN_ARN chưa được cấu hình cho jira-dispatcher";
+      logStructured("ERROR", "SLACK_BOT_TOKEN_ARN not configured — cannot resolve Slack→Jira for self-assign");
+    } else {
+      try {
+        const [jiraCreds, botToken] = await Promise.all([jiraCredsPromise, getSlackBotToken()]);
+        const email = await getSlackUserEmail(botToken, slackUserId);
+        const jiraUser = await findJiraAccountIdByEmail(jiraCreds, email);
+        assigneeAccountId = jiraUser.accountId;
+
+        await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId);
+
+        assigneeLabel = jiraUser.displayName
+          ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
+          : `<@${slackUserId}>`;
+        logStructured("INFO", "Self-assign succeeded", {
+          issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
+        });
+      } catch (err) {
+        status = "FAILED_API";
+        failureReason = err.message;
+        logStructured("ERROR", "Self-assign failed", {
+          issue_key: issueKey, slack_user: slackUserName, error: err.message,
+        });
+      }
+    }
+
+    await saveCallbackAudit(
+      incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, assigneeAccountId || "lookup_failed", status
+    ).catch((err) => logStructured("WARN", "Failed to save audit", { error: err.message }));
 
     // Cập nhật Slack message qua response_url (chạy nền)
     const originalBlocks = payload.message?.blocks || [];
     const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
-    updatedBlocks.push({
-      type: "context",
-      elements: [
-        {
+
+    if (status === "SUCCESS") {
+      const jiraCreds = await jiraCredsPromise.catch(() => null);
+      const jiraBaseUrl = jiraCreds?.base_url || "";
+      const jiraLink = issueKey && jiraBaseUrl
+        ? `<${jiraBaseUrl}/browse/${issueKey}|${issueKey}>`
+        : (issueKey || "N/A");
+      updatedBlocks.push({
+        type: "section",
+        text: {
           type: "mrkdwn",
-          text: `🙋 *Ticket ${issueKey || "N/A"}* was self-assigned by <@${slackUserId}>.`
+          text: `✅ *Assigned!*\n• *Ticket:* ${jiraLink}\n• *Assigned to:* ${assigneeLabel}\n• *Self-assigned by:* <@${slackUserId}>`
         }
-      ]
-    });
+      });
+    } else {
+      // KHÔNG báo thành công giả — hiển thị lỗi rõ ràng + giữ nút để retry
+      updatedBlocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `⚠️ *Chưa gán được ${issueKey || "ticket"} trên Jira*\nLý do: ${failureReason || status}. Hãy thử lại hoặc gán thủ công.`
+        }
+      });
+      const retryActions = originalBlocks.find(b => b.type === "actions");
+      if (retryActions) updatedBlocks.push(retryActions);
+    }
 
     if (responseUrl) {
       await updateSlackMessage(responseUrl, updatedBlocks);
     }
-    
+
     return { statusCode: 200, body: "" };
   }
 

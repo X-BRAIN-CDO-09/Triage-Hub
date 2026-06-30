@@ -1,0 +1,23 @@
+{
+  "_comment": "Service-ownership / on-call directory cho Assignee Resolver. Đây là nguồn cấu hình ownership (giống lịch on-call PagerDuty) — KHÔNG phải hardcode assignee theo từng incident. Resolver ưu tiên lịch sử Jira thật; chỉ khi service CHƯA có lịch sử thì mới fallback về 'oncall[0]' của owner_team bên dưới. Sửa danh sách này để phản ánh đúng người trực thật.",
+  "_members": {
+    "712020:9541b74b-5561-419a-afd8-6f42bd3c2e15": "Nguyen Dinh Thi (thihtktk@gmail.com)",
+    "712020:f7e24ba6-8e3a-4f7a-863f-dbd75324eb11": "Hien Phan",
+    "712020:b899d94c-3cde-48ac-841e-2a2ccd8ecfca": "Le Trung Kien",
+    "712020:ca94b40b-3763-4ba9-982e-ad659c23ed52": "Tan Huy Nguyen",
+    "712020:6bfed17e-0e2d-4d1e-ad5a-4877db1df9e6": "Phan Le Thanh Hoang"
+  },
+  "teams": {
+    "payments-platform": {
+      "oncall": [
+        "712020:9541b74b-5561-419a-afd8-6f42bd3c2e15",
+        "712020:f7e24ba6-8e3a-4f7a-863f-dbd75324eb11"
+      ]
+    },
+    "search-platform": {
+      "oncall": [
+        "712020:b899d94c-3cde-48ac-841e-2a2ccd8ecfca"
+      ]
+    }
+  }
+}

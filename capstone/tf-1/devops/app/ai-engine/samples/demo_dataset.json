@@ -1,0 +1,120 @@
+[
+  {
+    "name": "Incident 1: Critical Service Down (checkout-api)",
+    "tenant_id": "tenant-a",
+    "correlation_id": "corr-critical-001",
+    "payload": {
+      "correlation_id": "corr-critical-001",
+      "tenant_id": "tenant-a",
+      "incident_id": "inc-critical-001",
+      "environment": "sandbox",
+      "received_at": "2026-06-30T08:05:00Z",
+      "alert": {
+        "alert_id": "alert-critical-001",
+        "title": "[critical] checkout-api availability low",
+        "severity": "critical",
+        "started_at": "2026-06-30T08:04:00Z",
+        "source": "prometheus",
+        "service": "checkout-api",
+        "metric_name": "availability_success_rate",
+        "value": 42.0,
+        "threshold": 95.0,
+        "status": "firing"
+      },
+      "recent_deploys": [
+        {
+          "service": "checkout-api",
+          "deployed_at": "2026-06-30T07:52:00Z",
+          "commit_sha": "sha-critical-checkout-99",
+          "version": "v1.2.0"
+        }
+      ],
+      "logs": [
+        {
+          "ts": "2026-06-30T08:04:12Z",
+          "message": "health check failed: dependency database connection refused",
+          "level": "ERROR",
+          "service": "checkout-api"
+        },
+        {
+          "ts": "2026-06-30T08:04:55Z",
+          "message": "connection retry exhausted for db pool",
+          "level": "WARNING",
+          "service": "checkout-api"
+        }
+      ]
+    }
+  },
+  {
+    "name": "Incident 2: Latency Degradation (payment-gateway)",
+    "tenant_id": "tenant-a",
+    "correlation_id": "corr-latency-102",
+    "payload": {
+      "correlation_id": "corr-latency-102",
+      "tenant_id": "tenant-a",
+      "incident_id": "inc-latency-102",
+      "environment": "sandbox",
+      "received_at": "2026-06-30T08:10:00Z",
+      "alert": {
+        "alert_id": "alert-latency-102",
+        "title": "[warning] payment-gateway response latency high",
+        "severity": "high",
+        "started_at": "2026-06-30T08:09:00Z",
+        "source": "prometheus",
+        "service": "payment-gateway",
+        "metric_name": "http_request_duration_seconds",
+        "value": 1.85,
+        "threshold": 0.80,
+        "status": "firing"
+      },
+      "recent_deploys": [],
+      "logs": [
+        {
+          "ts": "2026-06-30T08:09:12Z",
+          "message": "connection timeout calling payment provider backend",
+          "level": "WARNING",
+          "service": "payment-gateway"
+        },
+        {
+          "ts": "2026-06-30T08:09:44Z",
+          "message": "response times degraded on external webhook endpoint",
+          "level": "INFO",
+          "service": "payment-gateway"
+        }
+      ]
+    }
+  },
+  {
+    "name": "Incident 3: Noisy Alert (notification-service)",
+    "tenant_id": "tenant-b",
+    "correlation_id": "corr-noisy-999",
+    "payload": {
+      "correlation_id": "corr-noisy-999",
+      "tenant_id": "tenant-b",
+      "incident_id": "inc-noisy-999",
+      "environment": "sandbox",
+      "received_at": "2026-06-30T08:15:00Z",
+      "alert": {
+        "alert_id": "alert-noisy-999",
+        "title": "[info] notification-service cpu high",
+        "severity": "low",
+        "started_at": "2026-06-30T08:14:00Z",
+        "source": "prometheus",
+        "service": "notification-service",
+        "metric_name": "cpu_utilization_ratio",
+        "value": 82.5,
+        "threshold": 80.0,
+        "status": "firing"
+      },
+      "recent_deploys": [],
+      "logs": [
+        {
+          "ts": "2026-06-30T08:14:12Z",
+          "message": "CPU utilization spike during bulk marketing campaign dispatch",
+          "level": "INFO",
+          "service": "notification-service"
+        }
+      ]
+    }
+  }
+]

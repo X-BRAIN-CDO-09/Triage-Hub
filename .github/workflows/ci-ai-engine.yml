@@ -133,3 +133,34 @@ jobs:
             --rekor-url https://rekor.sigstore.dev \
             --fulcio-url https://fulcio.sigstore.dev \
             "$ENGINE_IMAGE"
+
+      # Tự động bump newTag trong overlay sandbox -> ArgoCD (track develop) sync image mới.
+      # Chỉ chạy khi push lên develop/main (không chạy PR). Commit [skip ci] + đổi file
+      # ở platform/** nên KHÔNG kích hoạt lại workflow nào (tránh loop).
+      - name: Bump engine image tag in overlay
+        if: github.event_name == 'push'
+        env:
+          OVERLAY: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          # PAT/GitHub App token của identity ĐƯỢC PHÉP bypass branch protection trên develop.
+          # Quyền tối thiểu: contents:write. Chủ token PHẢI nằm trong bypass list của ruleset develop.
+          GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          sed -i -E "s|(newTag:[[:space:]]*).*|\1\"${SHORT_SHA}\"|" "$OVERLAY"
+          if git diff --quiet -- "$OVERLAY"; then
+            echo "newTag đã đúng ${SHORT_SHA}, không cần commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$OVERLAY"
+          git commit -m "ci(ai-engine): bump engine image -> ${SHORT_SHA} [skip ci]"
+          if [ -n "$GITOPS_PAT" ]; then
+            # Push qua identity có quyền bypass -> vượt branch protection trên develop.
+            # (GitHub Actions tự mask giá trị secret trong log.)
+            git push "https://x-access-token:${GITOPS_PAT}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo "::warning::Chưa cấu hình secret GITOPS_PAT — thử push bằng GITHUB_TOKEN (sẽ bị chặn nếu develop protected)."
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+          echo "Đã bump overlay newTag -> ${SHORT_SHA} và push lên ${GITHUB_REF_NAME}."
