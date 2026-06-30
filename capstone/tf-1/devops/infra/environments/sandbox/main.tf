@@ -209,8 +209,8 @@ module "lambda" {
       }
       iam_policy_statements = [
         {
-          effect  = "Allow"
-          actions = ["secretsmanager:GetSecretValue"]
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
           resources = [module.secrets_manager.secret_arns["slack_bot_token"]]
         }
       ]
@@ -786,7 +786,7 @@ resource "aws_cloudwatch_event_rule" "jira_assigned" {
   name           = "${var.project_name}-jira-assigned-rule-${var.environment}"
   event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
   description    = "Capture Jira assignment events from jira-dispatcher"
-  event_pattern  = jsonencode({
+  event_pattern = jsonencode({
     "source"      = ["triage-hub.jira"],
     "detail-type" = ["IncidentAssigned"]
   })
