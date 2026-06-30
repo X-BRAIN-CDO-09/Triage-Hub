@@ -12,8 +12,8 @@ on:
       - "capstone/tf-1/devops/infra/**"
       - ".github/workflows/ci-infra.yml"
   schedule:
-    # 08:05 ICT (UTC+7) every day
-    - cron: "5 1 * * *"
+    # 07:17 ICT (UTC+7) every day
+    - cron: "17 0 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -191,6 +191,9 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
+      - name: Prepare Lambda zip output directory
+        run: mkdir -p ../../modules/lambda/files
+
       - name: Clean deprecated K8s resources from state
         run: |
           set +e
@@ -231,6 +234,14 @@ jobs:
           path: |
             ${{ env.TF_ROOT }}/tfplan
             ${{ env.TF_ROOT }}/tfplan.txt
+          retention-days: 7
+
+      - name: Upload generated Lambda zips
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-lambda-zips
+          path: capstone/tf-1/devops/infra/modules/lambda/files/*_payload.zip
+          if-no-files-found: error
           retention-days: 7
 
       - name: Comment plan on PR
@@ -306,8 +317,17 @@ jobs:
           name: terraform-sandbox-plan
           path: ${{ env.TF_ROOT }}
 
+      - name: Download generated Lambda zips
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-lambda-zips
+          path: capstone/tf-1/devops/infra/modules/lambda/files
+
       - name: Terraform init
         run: terraform init -input=false
+
+      - name: Prepare Lambda zip output directory
+        run: mkdir -p ../../modules/lambda/files
 
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false -lock-timeout="$TF_LOCK_TIMEOUT" tfplan
