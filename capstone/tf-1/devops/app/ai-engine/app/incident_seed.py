@@ -9,6 +9,9 @@ from app.context_tools import ToolRegistry
 from app.main import LogEntry, MetricSeries, Ownership, RecentDeploy
 
 
+from app.main import MetricSeries, LogEntry, RecentDeploy, Ownership
+
+
 class IncidentSeed(BaseModel):
     schema_version: Literal["tf1.incident_seed.v1"]
     tenant_id: str = Field(min_length=1)
