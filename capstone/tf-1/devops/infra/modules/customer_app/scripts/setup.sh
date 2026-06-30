@@ -93,9 +93,51 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
   -f /tmp/alertmanager-config-values.yaml
 
 # 10. Cài đặt Loki + Promtail
+cat <<'INNER_EOF' > /tmp/loki-values.yaml
+loki:
+  persistence:
+    enabled: true
+    size: 10Gi
+  isDefault: false
+promtail:
+  enabled: true
+  pipelineStages:
+    - docker: {}
+    - json:
+        expressions:
+          took_ms: http.resp.took_ms
+          message: message
+    - template:
+        source: is_request_complete
+        template: '{{ if and (eq .message "request complete") .took_ms }}true{{ else }}false{{ end }}'
+    - template:
+        source: took_seconds
+        template: '{{ if eq .is_request_complete "true" }}{{ mul (atof .took_ms) 0.001 }}{{ end }}'
+    - metrics:
+        grpc_server_handling_seconds:
+          type: Histogram
+          description: "Frontend response duration in seconds"
+          source: took_seconds
+          buckets: [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+  config:
+    snippets:
+      extraRelabelConfigs:
+        - action: replace
+          source_labels: [__meta_kubernetes_pod_label_app]
+          target_label: service
+        - action: replace
+          source_labels: [__meta_kubernetes_pod_label_run]
+          target_label: service
+          regex: (.+)
+        - target_label: tenant_id
+          replacement: "${tenant_id}"
+        - target_label: environment
+          replacement: "sandbox"
+INNER_EOF
+
 helm install loki grafana/loki-stack \
   --namespace monitoring \
-  --set promtail.enabled=true,loki.isDefault=false,loki.persistence.enabled=true,loki.persistence.size=10Gi
+  -f /tmp/loki-values.yaml
 
 # 11. Tạo cấu hình Prometheus Rule tại EC2 và apply
 cat <<'INNER_EOF' > /tmp/prometheus-rules.yaml
@@ -120,7 +162,7 @@ spec:
         summary: "Cart service is down"
         description: "The cartservice has 0 available replicas. Customers cannot access their shopping carts."
     - alert: FrontendLatencyHigh
-      expr: histogram_quantile(0.95, sum(rate(grpc_server_handling_seconds_bucket[2m])) by (le)) > 2
+      expr: histogram_quantile(0.95, sum(rate(promtail_custom_grpc_server_handling_seconds_bucket[2m])) by (le)) > 2
       for: 30s
       labels:
         severity: warning
@@ -137,6 +179,27 @@ spec:
       annotations:
         summary: "CPU spike noise"
         description: "Transient CPU spike detected on cpu-stress-noisy pod."
+    - record: aiops_scenario_metric_value
+      expr: kube_deployment_status_replicas_available{deployment="cartservice"}
+      labels:
+        metric_name: availability
+        tenant_id: '${tenant_id}'
+        environment: 'sandbox'
+        service: 'cartservice'
+    - record: aiops_scenario_metric_value
+      expr: histogram_quantile(0.95, sum(rate(promtail_custom_grpc_server_handling_seconds_bucket[2m])) by (le)) * 1000
+      labels:
+        metric_name: latency
+        tenant_id: '${tenant_id}'
+        environment: 'sandbox'
+        service: 'frontend'
+    - record: aiops_scenario_metric_value
+      expr: sum(rate(container_cpu_usage_seconds_total{pod="cpu-stress-noisy"}[1m])) * 100
+      labels:
+        metric_name: cpu_usage
+        tenant_id: '${tenant_id}'
+        environment: 'sandbox'
+        service: 'customer-service'
 INNER_EOF
 
 
