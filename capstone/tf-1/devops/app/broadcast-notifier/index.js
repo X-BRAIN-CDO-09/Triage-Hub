@@ -43,6 +43,22 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
   return null;
 }
 
+function getSeverityDisplay(severity) {
+  const map = {
+    critical: { emoji: "🔴", label: "CRITICAL" },
+    high: { emoji: "🟠", label: "HIGH" },
+    medium: { emoji: "🟡", label: "MEDIUM" },
+    low: { emoji: "🟢", label: "LOW" },
+  };
+  const key = (severity || "medium").toLowerCase();
+  return map[key] || map.medium;
+}
+
+function escapeSlackMrkdwn(text) {
+  if (!text) return "";
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 exports.handler = async (event) => {
   console.log("Received EventBridge event:", JSON.stringify(event));
 
@@ -53,13 +69,70 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: "Invalid payload" };
   }
 
-  const { incident_id, jira_issue_key, assignee_name, slack_user_id } = detail;
+  const { incident_id, jira_issue_key, assignee_name, slack_user_id, title, service, severity, jira_url } = detail;
   
   // You can define target_channel dynamically or fixed
   const targetChannel = detail.target_channel || "#incident-updates"; 
   
   const assigneeText = assignee_name && assignee_name !== "unknown" ? assignee_name : `<@${slack_user_id}>`;
-  const messageText = `📣 *Incident Update*\nThe incident \`${incident_id}\` (Ticket: *${jira_issue_key || "N/A"}*) has been assigned to ${assigneeText} and is now being investigated.`;
+  const sevDisplay = getSeverityDisplay(severity);
+
+  const fallbackText = `🚨 [${sevDisplay.label}] ${title || "Incident Update"} has been assigned to ${assigneeText}`;
+
+  const blocks = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: `${sevDisplay.emoji} [${sevDisplay.label}] ${escapeSlackMrkdwn(title || "Incident Update")}`,
+        emoji: true
+      }
+    },
+    {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Service:*\n\`${escapeSlackMrkdwn(service || "unknown")}\``
+        },
+        {
+          type: "mrkdwn",
+          text: `*Incident ID:*\n\`${escapeSlackMrkdwn(incident_id)}\``
+        },
+        {
+          type: "mrkdwn",
+          text: `*Assigned To:*\n${assigneeText}`
+        },
+        {
+          type: "mrkdwn",
+          text: `*Time:*\n${new Date().toISOString()}`
+        }
+      ]
+    }
+  ];
+
+  if (jira_url || jira_issue_key) {
+    // If we only have issue key but no URL, we cannot reliably construct the url without base_url secret.
+    // However, if jira_url was passed, we use it. If not, omit the button or provide a placeholder.
+    if (jira_url && !jira_url.includes("undefined")) {
+      blocks.push({ type: "divider" });
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "🎫 View Details in Jira",
+              emoji: true
+            },
+            url: jira_url,
+            action_id: "open_jira_ticket_broadcast_action"
+          }
+        ]
+      });
+    }
+  }
 
   try {
     const token = await getSlackBotToken();
@@ -71,7 +144,8 @@ exports.handler = async (event) => {
       },
       body: JSON.stringify({
         channel: targetChannel,
-        text: messageText
+        text: fallbackText,
+        blocks: blocks
       })
     });
 
