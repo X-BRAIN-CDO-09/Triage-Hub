@@ -9,6 +9,14 @@ spec:
     repoURL: https://kedacore.github.io/charts
     targetRevision: 2.14.2
     chart: keda
+    helm:
+      # Gắn IRSA role cho SA keda-operator -> KEDA đọc được SQS GetQueueAttributes
+      # (operator-IRSA pattern; thay cho node-role fallback gây AccessDenied 403).
+      # Role tạo ở terraform: triage-hub-keda-operator-irsa-sandbox
+      values: |
+        serviceAccount:
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::730335441285:role/triage-hub-keda-operator-irsa-sandbox
   destination:
     server: https://kubernetes.default.svc
     namespace: keda
