@@ -1,5 +1,5 @@
 # =============================================================================
-# DynamoDB Shared Table for Tenant Configurations and Audit Trail
+# DynamoDB Shared Table for Tenant Configurations, State, Deduplication, Idempotency and Dispatch Mapping
 # =============================================================================
 
 resource "aws_dynamodb_table" "this" {
@@ -24,6 +24,11 @@ resource "aws_dynamodb_table" "this" {
 
   server_side_encryption {
     enabled = true
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
   }
 
   tags = {
