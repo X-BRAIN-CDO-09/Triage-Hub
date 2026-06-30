@@ -514,6 +514,7 @@ async function processAsyncSlackCallback(event) {
         assigneeLabel = jiraUser.displayName
           ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
           : `<@${slackUserId}>`;
+        let broadcastAssigneeName = jiraUser.displayName || `<@${slackUserId}>`;
         logStructured("INFO", "Self-assign succeeded", {
           issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
         });
@@ -559,7 +560,7 @@ async function processAsyncSlackCallback(event) {
               Detail: JSON.stringify({
                 incident_id: incidentId,
                 jira_issue_key: issueKey,
-                assignee_name: assigneeLabel,
+                assignee_name: broadcastAssigneeName,
                 slack_user_id: slackUserId,
                 title: actionValue.title || "Untitled incident",
                 service: actionValue.service || "unknown",
