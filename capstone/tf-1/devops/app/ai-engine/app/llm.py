@@ -289,24 +289,7 @@ def invoke_agentcore_payload(request: Any, purpose: str, payload: dict[str, Any]
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
     import boto3
 
-    # Tự động Assume Role sang Account B nếu được cấu hình
-    bedrock_role_arn = os.getenv("AWS_BEDROCK_ROLE_ARN")
-    if bedrock_role_arn:
-        sts_client = boto3.client("sts", region_name=region)
-        assumed_role_object = sts_client.assume_role(
-            RoleArn=bedrock_role_arn,
-            RoleSessionName="TriageHubCrossAccountBedrockSession"
-        )
-        credentials = assumed_role_object["Credentials"]
-        session = boto3.Session(
-            aws_access_key_id=credentials["AccessKeyId"],
-            aws_secret_access_key=credentials["SecretAccessKey"],
-            aws_session_token=credentials["SessionToken"]
-        )
-        client = session.client("bedrock-agentcore", region_name=region)
-    else:
-        client = boto3.client("bedrock-agentcore", region_name=region)
-
+    client = boto3.client("bedrock-agentcore", region_name=region)
     response = client.invoke_agent_runtime(
         agentRuntimeArn=runtime_arn,
         runtimeSessionId=session_id or agentcore_session_id(request, purpose),
