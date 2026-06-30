@@ -216,12 +216,12 @@ async function assignJiraTicket(jiraCreds, issueKey, accountId) {
     body: JSON.stringify({ accountId }),
   });
 
-  if (!response.ok) {
+  if (!response || !response.ok) {
     logStructured("ERROR", "Jira assign error", {
       issue_key: issueKey,
-      status: response.status,
+      status: response ? response.status : "timeout/null",
     });
-    throw new Error(`Jira assign error: status ${response.status}`);
+    throw new Error(`Jira assign error: status ${response ? response.status : "timeout"}`);
   }
 
   logStructured("INFO", "Jira ticket assigned", { issue_key: issueKey, account_id: accountId });
@@ -284,8 +284,8 @@ async function updateSlackMessage(responseUrl, updatedBlocks) {
       }),
     });
 
-    if (!response.ok) {
-      logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
+    if (!response || !response.ok) {
+      logStructured("ERROR", "Slack response_url error", { status: response ? response.status : "timeout/null", response_url: responseUrl });
     } else {
       logStructured("INFO", "Slack message updated via response_url", { response_url: responseUrl });
     }
