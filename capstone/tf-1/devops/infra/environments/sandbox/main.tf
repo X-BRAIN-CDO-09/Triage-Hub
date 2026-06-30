@@ -394,6 +394,29 @@ module "alb" {
   alb_security_group_id = module.alb_sg.security_group_id
 }
 
+# 16e. Observability Module
+module "observability" {
+  source = "../../modules/observability"
+
+  project_name        = var.project_name
+  environment         = var.environment
+  aws_region          = var.aws_region
+  api_gateway_name    = "${var.project_name}-apigw-${var.environment}"
+  dynamodb_table_name = module.dynamodb.table_name
+  eks_cluster_name    = module.eks.cluster_name
+
+  lambda_functions = [
+    "${var.project_name}-alert-ingest",
+    "${var.project_name}-jira-dispatcher",
+    "${var.project_name}-notify-dispatcher"
+  ]
+
+  sqs_queues = [
+    "${var.project_name}-buffer-queue",
+    "${var.project_name}-dispatch-queue"
+  ]
+}
+
 # 17. EKS IRSA Roles for Workloads
 
 data "aws_iam_policy_document" "tf1_api_assume_role" {
