@@ -68,12 +68,20 @@ class ToolRegistry:
     def names(self) -> set[str]:
         return set(self._tools)
 
-    def execute(self, name: str, args: dict[str, Any] | None, scope: ToolScope, request: Any | None = None) -> dict[str, Any]:
+    def execute(
+        self, name: str, args: dict[str, Any] | None, scope: ToolScope, request: Any | None = None
+    ) -> dict[str, Any]:
         if name not in self._tools:
             CONTEXT_TOOL_CALLS_TOTAL.labels(tool="unknown", status="blocked").inc()
             raise ToolScopeError(f"Unknown tool: {name}")
         args = args or {}
-        with span("context_tool_call", tool=name, tenant_id=scope.tenant_id, environment=scope.environment, service=scope.service):
+        with span(
+            "context_tool_call",
+            tool=name,
+            tenant_id=scope.tenant_id,
+            environment=scope.environment,
+            service=scope.service,
+        ):
             with timed() as timer:
                 try:
                     bounded_scope = validate_and_build_scope(args, scope)
@@ -120,13 +128,17 @@ class ToolRegistry:
     def _get_ownership(self, args: dict[str, Any], scope: ToolScope, request: Any | None) -> dict[str, Any]:
         return self.client.get_ownership(scope.service)
 
-    def _detect_metric_anomalies(self, args: dict[str, Any], scope: ToolScope, request: Any | None) -> list[dict[str, Any]]:
+    def _detect_metric_anomalies(
+        self, args: dict[str, Any], scope: ToolScope, request: Any | None
+    ) -> list[dict[str, Any]]:
         metrics = args.get("metrics")
         if metrics is None and request is not None:
             metrics = request.metrics
         return rca.detect_metric_anomalies(metrics or [])
 
-    def _detect_log_anomalies(self, args: dict[str, Any], scope: ToolScope, request: Any | None) -> list[dict[str, Any]]:
+    def _detect_log_anomalies(
+        self, args: dict[str, Any], scope: ToolScope, request: Any | None
+    ) -> list[dict[str, Any]]:
         logs = args.get("logs")
         if logs is None and request is not None:
             logs = request.logs
@@ -146,7 +158,11 @@ class ToolRegistry:
     def _rank_rca_candidates(self, args: dict[str, Any], scope: ToolScope, request: Any | None) -> list[dict[str, Any]]:
         if request is None:
             raise ToolScopeError("rank_rca_candidates requires a triage request")
-        evidence = args.get("evidence") or request.anomaly_evidence or rca.detect_metric_anomalies(request.metrics) + rca.detect_log_anomalies(request.logs)
+        evidence = (
+            args.get("evidence")
+            or request.anomaly_evidence
+            or rca.detect_metric_anomalies(request.metrics) + rca.detect_log_anomalies(request.logs)
+        )
         topology = args.get("topology") or request.service_topology or rca.infer_topology(request)
         causal_hints = args.get("causal_hints") or request.causal_hints or rca.infer_causal_hints(request.metrics)
         return rca.rank_rca_candidates(request, evidence, topology, causal_hints)
@@ -183,7 +199,9 @@ class ContextClient:
         self.evidence_bundle_base_path = evidence_bundle_base_path or os.getenv("EVIDENCE_BUNDLE_BASE_PATH")
         self.jira_history_path = jira_history_path or os.getenv("JIRA_HISTORY_PATH")
         self.known_errors_path = known_errors_path or os.getenv("KNOWN_ERRORS_PATH")
-        self.timeout_seconds = int(os.getenv("AIOPS_CONTEXT_TOOL_TIMEOUT_SECONDS", os.getenv("LLM_TOOL_TIMEOUT_SECONDS", "3")))
+        self.timeout_seconds = int(
+            os.getenv("AIOPS_CONTEXT_TOOL_TIMEOUT_SECONDS", os.getenv("LLM_TOOL_TIMEOUT_SECONDS", "3"))
+        )
 
     @property
     def metrics_access_configured(self) -> bool:
@@ -197,13 +215,13 @@ class ContextClient:
     def traces_access_configured(self) -> bool:
         return bool(self.jaeger_url)
 
-    def get_metrics(self, service: str, environment: str, tenant_id: str, window: tuple[str, str]) -> list[dict[str, Any]]:
+    def get_metrics(
+        self, service: str, environment: str, tenant_id: str, window: tuple[str, str]
+    ) -> list[dict[str, Any]]:
         if not self.prometheus_url:
             return []
         query = (
-            'aiops_scenario_metric_value{'
-            f'tenant_id="{tenant_id}",environment="{environment}",service="{service}"'
-            "}"
+            f'aiops_scenario_metric_value{{tenant_id="{tenant_id}",environment="{environment}",service="{service}"}}'
         )
         response = requests.get(
             f"{self.prometheus_url.rstrip('/')}/api/v1/query",
@@ -228,7 +246,9 @@ class ContextClient:
             )
         return metrics
 
-    def get_logs(self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int) -> list[dict[str, Any]]:
+    def get_logs(
+        self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int
+    ) -> list[dict[str, Any]]:
         if not self.loki_url:
             return []
         query = f'{{tenant_id="{tenant_id}",environment="{environment}",service="{service}"}} |~ "(?i)(error|timeout|failed|refused|exhausted|down)"'
@@ -258,7 +278,9 @@ class ContextClient:
                 )
         return logs[:limit]
 
-    def get_traces(self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int) -> list[dict[str, Any]]:
+    def get_traces(
+        self, service: str, environment: str, tenant_id: str, window: tuple[str, str], limit: int
+    ) -> list[dict[str, Any]]:
         if not self.jaeger_url:
             return []
         response = requests.get(
@@ -281,7 +303,11 @@ class ContextClient:
                 process = processes[root_span.get("processID")] or {}
             service_name = service_from_trace_process(process) or service
             start_time = root_span.get("startTime")
-            ts = format_iso(datetime.fromtimestamp(start_time / 1_000_000, timezone.utc)) if isinstance(start_time, (int, float)) else window[1]
+            ts = (
+                format_iso(datetime.fromtimestamp(start_time / 1_000_000, timezone.utc))
+                if isinstance(start_time, (int, float))
+                else window[1]
+            )
             if not iso_in_window(ts, window):
                 continue
             traces.append(
@@ -292,7 +318,9 @@ class ContextClient:
                     "service": service_name,
                     "operation": root_span.get("operationName"),
                     "ts": ts,
-                    "duration_ms": float(root_span.get("duration", 0)) / 1000 if root_span.get("duration") is not None else None,
+                    "duration_ms": float(root_span.get("duration", 0)) / 1000
+                    if root_span.get("duration") is not None
+                    else None,
                     "status": trace_status(root_span),
                     "labels": {"source": "jaeger", "environment": environment, "tenant_id": tenant_id},
                 }
@@ -380,11 +408,17 @@ class ContextClient:
             return []
         return filter_docs(runbooks, query, default_source="ownership_runbook")[:5]
 
-    def search_known_errors(self, service: str, environment: str, tenant_id: str, query: str = "") -> list[dict[str, Any]]:
+    def search_known_errors(
+        self, service: str, environment: str, tenant_id: str, query: str = ""
+    ) -> list[dict[str, Any]]:
         if not self.known_errors_path:
             return []
         records = load_json_file(self.known_errors_path)
-        candidates = records.get("known_errors") if isinstance(records, dict) and isinstance(records.get("known_errors"), list) else records
+        candidates = (
+            records.get("known_errors")
+            if isinstance(records, dict) and isinstance(records.get("known_errors"), list)
+            else records
+        )
         if not isinstance(candidates, list):
             return []
         scoped: list[dict[str, Any]] = []
@@ -544,7 +578,9 @@ def bundle_matches_scope(bundle: dict[str, Any], scope: ToolScope) -> bool:
 
 
 def find_jira_history_match(records: Any, service: str, environment: str, tenant_id: str) -> dict[str, Any] | None:
-    candidates = records.get("mappings") if isinstance(records, dict) and isinstance(records.get("mappings"), list) else records
+    candidates = (
+        records.get("mappings") if isinstance(records, dict) and isinstance(records.get("mappings"), list) else records
+    )
     if isinstance(records, dict) and records.get("service") == service:
         candidates = [records]
     if not isinstance(candidates, list):

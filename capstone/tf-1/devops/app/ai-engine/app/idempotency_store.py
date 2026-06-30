@@ -27,7 +27,9 @@ def request_hash(request: Any) -> str:
         "AIOPS_QA_MAX_ITERATIONS": os.getenv("AIOPS_QA_MAX_ITERATIONS"),
         "AIOPS_QA_REPAIR_MAX_ITERATIONS": os.getenv("AIOPS_QA_REPAIR_MAX_ITERATIONS"),
     }
-    payload = json.dumps({"request": body, "settings": settings}, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    payload = json.dumps(
+        {"request": body, "settings": settings}, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
