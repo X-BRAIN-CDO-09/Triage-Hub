@@ -7,6 +7,7 @@ resources:
   - ai-engine/service.yaml
   - ai-engine/rollout.yaml
   - ai-engine/analysis-template.yaml
+  - ai-engine/prometheus-external-service.yaml
   - ai-engine/targetgroupbinding.yaml
   - ai-engine/hpa.yaml
   - ai-engine/pdb.yaml
