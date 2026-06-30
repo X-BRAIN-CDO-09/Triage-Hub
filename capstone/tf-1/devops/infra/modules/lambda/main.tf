@@ -134,5 +134,14 @@ resource "aws_lambda_function" "this" {
     mode = "Active"
   }
 
+  lifecycle {
+    ignore_changes = [
+      filename,
+      source_code_hash,
+      s3_bucket,
+      s3_key
+    ]
+  }
+
   tags = { Name = "${var.project_name}-${each.key}" }
 }
