@@ -5,6 +5,10 @@
 
 data "aws_caller_identity" "current" {}
 
+locals {
+  lambda_bootstrap_source_dir = "../../modules/lambda/bootstrap/nodejs20"
+}
+
 # 1. Platform VPC Module
 module "vpc_platform" {
   source = "../../modules/vpc"
@@ -137,7 +141,7 @@ module "lambda" {
     "alert-ingest" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/alert-ingest"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         SQS_QUEUE_URL  = module.sqs.queue_urls["buffer-queue"]
         DYNAMODB_TABLE = module.dynamodb.table_name
@@ -168,7 +172,7 @@ module "lambda" {
     "jira-dispatcher" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/jira-dispatcher"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         DYNAMODB_TABLE           = module.dynamodb.table_name
         JIRA_SECRET_ARN          = module.secrets_manager.secret_arns["jira_api_token"]
@@ -208,7 +212,7 @@ module "lambda" {
     "broadcast-notifier" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/broadcast-notifier"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
       }
@@ -224,7 +228,7 @@ module "lambda" {
     "notify-dispatcher" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/notify-dispatcher"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         DYNAMODB_TABLE      = module.dynamodb.table_name
         JIRA_SECRET_ARN     = module.secrets_manager.secret_arns["jira_api_token"]
@@ -832,5 +836,4 @@ resource "aws_iam_role_policy" "eks_node_sqs_policy" {
     ]
   })
 }
-
 
