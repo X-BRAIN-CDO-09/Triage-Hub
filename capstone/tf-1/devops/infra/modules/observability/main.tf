@@ -289,6 +289,35 @@ locals {
     }
   ]
 
+  # --- 5. ALARMS WIDGET ---
+  alarms_header = [{
+    type       = "text", x = 0, y = local.logs_y_offset + 13, width = 24, height = 1
+    properties = { markdown = "## System Alarms Status" }
+  }]
+
+  alarms_widget = [{
+    type = "alarm", x = 0, y = local.logs_y_offset + 14, width = 24, height = 6
+    properties = {
+      title  = "All Configured Alarms"
+      alarms = compact(concat(
+        var.api_gateway_name != "" ? [
+          aws_cloudwatch_metric_alarm.api_gw_latency[0].arn,
+          aws_cloudwatch_metric_alarm.api_gw_4xx[0].arn,
+          aws_cloudwatch_metric_alarm.api_gw_5xx[0].arn
+        ] : [],
+        [for k, v in aws_cloudwatch_metric_alarm.lambda_errors : v.arn],
+        [for k, v in aws_cloudwatch_metric_alarm.lambda_duration : v.arn],
+        [for k, v in aws_cloudwatch_metric_alarm.lambda_throttles : v.arn],
+        [for k, v in aws_cloudwatch_metric_alarm.sqs_queue_depth : v.arn],
+        [for k, v in aws_cloudwatch_metric_alarm.sqs_oldest_message : v.arn],
+        var.dynamodb_table_name != "" ? [
+          aws_cloudwatch_metric_alarm.dynamodb_throttles[0].arn,
+          aws_cloudwatch_metric_alarm.dynamodb_system_errors[0].arn
+        ] : []
+      ))
+    }
+  }]
+
   all_widgets = concat(
     local.health_overview_header,
     local.health_overview_widgets,
@@ -301,7 +330,9 @@ locals {
     local.dynamodb_widget,
     local.eks_widget,
     local.logs_header,
-    local.logs_widgets
+    local.logs_widgets,
+    local.alarms_header,
+    local.alarms_widget
   )
 }
 

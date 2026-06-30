@@ -153,13 +153,13 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 
 ## 8. Observability stack (Owner: Nhật)
 
-| Component | Tool |
+| Component | Tool (Triển khai thực tế) |
 |---|---|
-| Metrics | CloudWatch + Prometheus |
-| Logs | CloudWatch Logs  |
-| Traces | OpenTelemetry → X-Ray |
-| Dashboards | CloudWatch / Grafana |
-| Alerts | CloudWatch Alarms + Alertmanager |
+| Metrics | CloudWatch (Standard Metrics & Container Insights) / Prometheus (EC2) |
+| Logs | CloudWatch Logs (API Gateway, Lambda, EKS) |
+| Traces | AWS X-Ray |
+| Dashboards | CloudWatch Dashboards / Grafana (EC2) |
+| Alerts | CloudWatch Alarms + AWS SNS (Email/SMS) |
 
 ## 9. Open questions (Owner: Kiên)
 

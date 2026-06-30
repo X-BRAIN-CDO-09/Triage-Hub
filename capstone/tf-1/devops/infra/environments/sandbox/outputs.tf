@@ -47,3 +47,8 @@ output "dynamodb_table_name" {
   value       = module.dynamodb.table_name
   description = "The name of the DynamoDB table"
 }
+
+output "alerts_sns_topic_arn" {
+  value       = module.observability.sns_topic_arn
+  description = "The ARN of the SNS topic for observability alerts"
+}

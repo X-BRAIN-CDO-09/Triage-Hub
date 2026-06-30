@@ -446,6 +446,11 @@ module "observability" {
     "${var.project_name}-buffer-queue",
     "${var.project_name}-dispatch-queue"
   ]
+
+  enable_notifications = var.enable_notifications
+  notification_email   = var.notification_email
+  notification_sms     = var.notification_sms
+  alarm_thresholds     = var.alarm_thresholds
 }
 
 # 17. EKS IRSA Roles for Workloads

@@ -103,3 +103,38 @@ variable "cluster_admin_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "notification_email" {
+  description = "Email address for SNS notifications"
+  type        = string
+  default     = "nhatphanhk102@gmail.com"
+}
+
+variable "notification_sms" {
+  description = "SMS number for SNS notifications (optional)"
+  type        = string
+  default     = ""
+}
+
+variable "enable_notifications" {
+  description = "Enable SNS notifications for alarms"
+  type        = bool
+  default     = true
+}
+
+variable "alarm_thresholds" {
+  description = "Thresholds for CloudWatch Alarms"
+  type = object({
+    api_gw_latency       = optional(number, 2000)
+    api_gw_4xx_rate      = optional(number, 5)
+    api_gw_5xx_rate      = optional(number, 1)
+    lambda_error_rate    = optional(number, 1)
+    lambda_duration      = optional(number, 5000)
+    lambda_throttle_rate = optional(number, 1)
+    sqs_queue_depth      = optional(number, 1000)
+    sqs_oldest_message   = optional(number, 3600)
+    dynamodb_throttle    = optional(number, 10)
+    dynamodb_sys_error   = optional(number, 1)
+  })
+  default = {}
+}
