@@ -628,6 +628,53 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
   })
 }
 
+# IRSA cho KEDA operator — KEDA dùng podIdentity.provider=aws nên LUÔN xài identity
+# của chính operator (không ủy quyền sang workload role). Operator cần quyền đọc độ sâu
+# SQS để tính scale. Least-privilege: chỉ GetQueueAttributes trên buffer-queue.
+data "aws_iam_policy_document" "keda_operator_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:keda:keda-operator"]
+    }
+  }
+}
+
+resource "aws_iam_role" "keda_operator_irsa" {
+  name = "${var.project_name}-keda-operator-irsa-${var.environment}"
+
+  assume_role_policy = data.aws_iam_policy_document.keda_operator_assume_role.json
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy" "keda_operator_policy" {
+  name = "${var.project_name}-keda-operator-policy-${var.environment}"
+  role = aws_iam_role.keda_operator_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:GetQueueAttributes"]
+        Resource = [module.sqs.queue_arns["buffer-queue"]]
+      }
+    ]
+  })
+}
+
 data "aws_iam_policy_document" "aws_lbc_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]

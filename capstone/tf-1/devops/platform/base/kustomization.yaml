@@ -9,9 +9,11 @@ resources:
   - ai-engine/analysis-template.yaml
   - ai-engine/targetgroupbinding.yaml
   - ai-engine/hpa.yaml
+  - ai-engine/pdb.yaml
   - ai-engine/servicemonitor.yaml
   - ai-worker/serviceaccount.yaml
   - ai-worker/deployment.yaml
+  - ai-worker/scaledobject.yaml
   - networking/netpol-api.yaml
   - networking/netpol-worker.yaml
   - networking/netpol-default.yaml
