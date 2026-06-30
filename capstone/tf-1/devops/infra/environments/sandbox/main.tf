@@ -78,11 +78,16 @@ module "sqs" {
   project_name = var.project_name
   queues = {
     "raw-alert-queue" = {
-      visibility_timeout_seconds = 60
-      message_retention_seconds  = 345600
-      max_receive_count          = 5
+      visibility_timeout_seconds  = 60
+      message_retention_seconds   = 345600
+      max_receive_count           = 5
+      fifo_queue                  = true
+      content_based_deduplication = true
     }
-    "buffer-queue"   = {}
+    "buffer-queue" = {
+      fifo_queue                  = true
+      content_based_deduplication = true
+    }
     "dispatch-queue" = {}
   }
 }
@@ -154,7 +159,7 @@ module "lambda" {
         },
         {
           effect    = "Allow"
-          actions   = ["dynamodb:Query", "dynamodb:GetItem"]
+          actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
           resources = [module.dynamodb.table_arn]
         }
       ]
@@ -248,7 +253,7 @@ module "api_gateway" {
 
       integration_type = "sqs_send_message"
       sqs_queue_arn    = module.sqs.queue_arns["raw-alert-queue"]
-      sqs_queue_name   = "${var.project_name}-raw-alert-queue"
+      sqs_queue_name   = "${var.project_name}-raw-alert-queue.fifo"
     }
     "slack" = {
       path_part           = "slack"
@@ -452,8 +457,8 @@ module "observability" {
   ]
 
   sqs_queues = [
-    "${var.project_name}-raw-alert-queue",
-    "${var.project_name}-buffer-queue",
+    "${var.project_name}-raw-alert-queue.fifo",
+    "${var.project_name}-buffer-queue.fifo",
     "${var.project_name}-dispatch-queue"
   ]
 }

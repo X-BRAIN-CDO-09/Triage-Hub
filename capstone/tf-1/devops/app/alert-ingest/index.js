@@ -361,6 +361,7 @@ async function sendSeedToSqs(seed) {
 	const command = new SendMessageCommand({
 		QueueUrl: QUEUE_URL,
 		MessageBody: messageBody,
+		MessageGroupId: seed.tenant_id || "default-group",
 		MessageAttributes: {
 			TenantId: { DataType: "String", StringValue: seed.tenant_id },
 			IncidentId: { DataType: "String", StringValue: seed.incident_id },
