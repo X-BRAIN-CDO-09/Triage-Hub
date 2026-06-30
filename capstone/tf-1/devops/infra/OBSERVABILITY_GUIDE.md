@@ -14,7 +14,37 @@ Hệ thống Observability bao gồm 4 thành phần chính:
 
 ---
 
-## 2. Giải Thích Các Chỉ Số (Metrics) Và Trường Dữ Liệu
+## 2. Bố Cục và Ý Nghĩa Hiển Thị Trên CloudWatch Dashboard
+
+Khi truy cập vào CloudWatch Dashboard (`triage-hub-dashboard-sandbox`), bạn sẽ thấy giao diện được chia thành các phân vùng (sections) theo thứ tự từ trên xuống dưới nhằm tối ưu hóa việc giám sát từ mức độ tổng quan đến chi tiết:
+
+### 1. System Health Overview (Tổng Quan Sức Khỏe Hệ Thống)
+- **Ý nghĩa**: Cung cấp góc nhìn toàn cảnh về tình trạng hoạt động của toàn bộ hệ thống ngay khi vừa mở Dashboard.
+- **Nội dung hiển thị**: Các chỉ số cốt lõi (như tỷ lệ lỗi API, tổng số request, độ trễ) được hiển thị bằng các biểu đồ số (Number) hoặc đồ thị đơn giản. Nếu vùng này xuất hiện số liệu bất thường (ví dụ: vọt lên cao), nghĩa là hệ thống đang có sự cố lớn.
+
+### 2. Alert Processing Pipeline (Luồng Xử Lý Cảnh Báo)
+- **Ý nghĩa**: Theo dõi dòng chảy dữ liệu (data flow) của hệ thống theo thời gian thực (từ lúc nhận request đến khi xử lý xong).
+- **Nội dung hiển thị**: Liệt kê số lượng request được tiếp nhận (Ingest), lượng tin nhắn đang chờ xử lý trong hàng đợi SQS (Buffer), và số lượng đã được phân phối đi (Dispatch). Giúp phát hiện nhanh hiện tượng "thắt cổ chai" (bottleneck) nếu Queue Depth tăng vọt.
+
+### 3. Detailed Component Metrics (Chỉ Số Chi Tiết Từng Thành Phần)
+- **Ý nghĩa**: Cung cấp dữ liệu kỹ thuật chuyên sâu (Deep-dive) phục vụ cho việc gỡ lỗi (Debugging) và phân tích nguyên nhân gốc rễ (Root Cause Analysis).
+- **Nội dung hiển thị**: Các biểu đồ dạng đường (Time Series) chia theo từng dịch vụ:
+  - **API Gateway / ALB**: Lưu lượng request, mã lỗi HTTP (4XX, 5XX), độ trễ.
+  - **Lambda / EC2**: Thời gian thực thi (Duration), lỗi (Errors), giới hạn đồng thời (Throttles), CPU/RAM.
+  - **DynamoDB / S3**: Lưu lượng đọc/ghi, dung lượng lưu trữ, lỗi hệ thống.
+  - **EKS**: Tiêu thụ tài nguyên của cụm Kubernetes (Container Insights).
+
+### 4. CloudWatch Logs Insights
+- **Ý nghĩa**: Phân tích tự động log lỗi từ ứng dụng mà không cần phải query thủ công.
+- **Nội dung hiển thị**: Các bảng thống kê (Table) các thông báo lỗi (Error Messages) phổ biến nhất, các hàm Lambda chạy chậm nhất (Slowest Invocations), và biểu đồ xu hướng lỗi theo thời gian (Error Trend).
+
+### 5. System Alarms Status
+- **Ý nghĩa**: Trung tâm kiểm soát tổng hợp trạng thái cảnh báo tự động.
+- **Nội dung hiển thị**: Danh sách tất cả các Alarm đang được thiết lập. Cho phép đội vận hành biết ngay lập tức Alarm nào đang `OK` (Bình thường), `ALARM` (Đang có lỗi), hoặc `INSUFFICIENT_DATA` (Thiếu dữ liệu).
+
+---
+
+## 3. Giải Thích Các Chỉ Số (Metrics) Chi Tiết Và Trường Dữ Liệu
 
 ### A. Amazon API Gateway
 *Điểm vào (Entry point) của toàn bộ request từ người dùng.*

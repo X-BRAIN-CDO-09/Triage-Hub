@@ -355,6 +355,13 @@ locals {
         var.dynamodb_table_name != "" ? [
           aws_cloudwatch_metric_alarm.dynamodb_throttles[0].arn,
           aws_cloudwatch_metric_alarm.dynamodb_system_errors[0].arn
+        ] : [],
+        var.monitor_alb ? [
+          aws_cloudwatch_metric_alarm.alb_5xx[0].arn,
+          aws_cloudwatch_metric_alarm.alb_response_time[0].arn
+        ] : [],
+        var.monitor_ec2 ? [
+          aws_cloudwatch_metric_alarm.ec2_cpu[0].arn
         ] : []
       ))
     }
