@@ -77,16 +77,14 @@ module "sqs" {
 
   project_name = var.project_name
   queues = {
+    "raw-alert-queue" = {
+      visibility_timeout_seconds = 60
+      message_retention_seconds  = 345600
+      max_receive_count          = 5
+    }
     "buffer-queue"   = {}
     "dispatch-queue" = {}
   }
-}
-
-# 7. S3 Module
-module "s3" {
-  source       = "../../modules/s3"
-  project_name = var.project_name
-  environment  = var.environment
 }
 
 # 8. DynamoDB Module
@@ -140,6 +138,15 @@ module "lambda" {
         DYNAMODB_TABLE = module.dynamodb.table_name
       }
       iam_policy_statements = [
+        {
+          effect = "Allow"
+          actions = [
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:GetQueueAttributes"
+          ]
+          resources = [module.sqs.queue_arns["raw-alert-queue"]]
+        },
         {
           effect    = "Allow"
           actions   = ["sqs:SendMessage"]
@@ -235,15 +242,18 @@ module "api_gateway" {
 
   integrations = {
     "alerts" = {
-      path_part           = "alerts"
-      http_method         = "POST"
-      lambda_function_arn = module.lambda.invoke_arns["alert-ingest"]
-      lambda_name         = module.lambda.function_names["alert-ingest"]
-      api_key_required    = true
+      path_part        = "alerts"
+      http_method      = "POST"
+      api_key_required = true
+
+      integration_type = "sqs_send_message"
+      sqs_queue_arn    = module.sqs.queue_arns["raw-alert-queue"]
+      sqs_queue_name   = "${var.project_name}-raw-alert-queue"
     }
     "slack" = {
       path_part           = "slack"
       http_method         = "POST"
+      integration_type    = "lambda_proxy"
       lambda_function_arn = module.lambda.invoke_arns["jira-dispatcher"]
       lambda_name         = module.lambda.function_names["jira-dispatcher"]
       api_key_required    = false
@@ -252,6 +262,13 @@ module "api_gateway" {
 }
 
 # 13. SQS Event Source Mappings (Triggers)
+resource "aws_lambda_event_source_mapping" "alert_ingest_raw_alert_queue" {
+  event_source_arn = module.sqs.queue_arns["raw-alert-queue"]
+  function_name    = module.lambda.function_names["alert-ingest"]
+  batch_size       = 1
+  enabled          = true
+}
+
 resource "aws_lambda_event_source_mapping" "notify_dispatcher" {
   event_source_arn = module.sqs.queue_arns["dispatch-queue"]
   function_name    = module.lambda.function_names["notify-dispatcher"]
@@ -259,18 +276,7 @@ resource "aws_lambda_event_source_mapping" "notify_dispatcher" {
   enabled          = true
 }
 
-# 14. VPC Endpoints (Gateway for S3 and DynamoDB)
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = module.vpc_platform.vpc_id
-  service_name      = "com.amazonaws.${var.aws_region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = module.vpc_platform.private_route_table_ids
-
-  tags = {
-    Name = "${var.project_name}-s3-vpce-${var.environment}"
-  }
-}
-
+# 14. VPC Endpoints (Gateway for DynamoDB)
 resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = module.vpc_platform.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
@@ -446,6 +452,7 @@ module "observability" {
   ]
 
   sqs_queues = [
+    "${var.project_name}-raw-alert-queue",
     "${var.project_name}-buffer-queue",
     "${var.project_name}-dispatch-queue"
   ]
@@ -526,14 +533,6 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
         Resource = ["arn:aws:bedrock-agentcore:${var.aws_region}:*:runtime/*"]
-      },
-      {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [
-          module.s3.bucket_arn,
-          "${module.s3.bucket_arn}/*"
-        ]
       }
     ]
   })
@@ -557,7 +556,7 @@ data "aws_iam_policy_document" "tf1_worker_assume_role" {
   }
 }
 
-# IAM Role for tf1-worker (Needs S3, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
+# IAM Role for tf1-worker (Needs SQS, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
 resource "aws_iam_role" "tf1_worker_irsa" {
   name = "${var.project_name}-tf1-worker-irsa-${var.environment}"
 
@@ -575,18 +574,6 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          module.s3.bucket_arn,
-          "${module.s3.bucket_arn}/*"
-        ]
-      },
       {
         Effect = "Allow"
         Action = [

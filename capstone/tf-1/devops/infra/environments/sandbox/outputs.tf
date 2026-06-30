@@ -38,11 +38,6 @@ output "alb_target_group_arn" {
   description = "Internal ALB target group ARN — paste vào TargetGroupBinding (overlays/sandbox)"
 }
 
-output "s3_bucket_id" {
-  value       = module.s3.bucket_id
-  description = "The ID of the S3 bucket"
-}
-
 output "dynamodb_table_name" {
   value       = module.dynamodb.table_name
   description = "The name of the DynamoDB table"
