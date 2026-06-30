@@ -123,7 +123,7 @@ spec:
               value: "60"
             # AgentCore (LLM Agent Runtime)
             - name: ENABLE_AGENTCORE_LLM
-              value: "false"
+              value: "true"
             - name: ENABLE_AGENTCORE_LLM_TOOLS
               value: "false"
             - name: AGENTCORE_RUNTIME_ARN
