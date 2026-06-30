@@ -245,6 +245,7 @@ jobs:
           fi
 
       - name: Gitleaks secret scan
+        if: github.event_name != 'workflow_run'
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

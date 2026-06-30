@@ -818,7 +818,7 @@ resource "aws_cloudwatch_event_target" "broadcast_notifier" {
   rule           = aws_cloudwatch_event_rule.jira_assigned.name
   event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
   target_id      = "BroadcastNotifier"
-  arn            = module.lambda.invoke_arns["broadcast-notifier"]
+  arn            = module.lambda.function_arns["broadcast-notifier"]
 }
 
 resource "aws_lambda_permission" "allow_eventbridge_invoke" {
@@ -849,4 +849,3 @@ resource "aws_iam_role_policy" "eks_node_sqs_policy" {
     ]
   })
 }
-
