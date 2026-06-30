@@ -489,38 +489,21 @@ async function processAsyncSlackCallback(event) {
   }
 
   if (action.action_id === "self_assign_incident_action") {
-    let status = "SUCCESS";
-    let jiraCreds;
-    try {
-      jiraCreds = await jiraCredsPromise;
-      if (issueKey) {
-        // Gán cho chính tài khoản API (accountId: "-1")
-        await assignJiraTicket(jiraCreds, issueKey, "-1");
-      }
-    } catch (err) {
-      logStructured("ERROR", "Self-assign ticket failed", { issue_key: issueKey, error: err.message });
-      status = "FAILED_API";
-    }
-
-    await saveCallbackAudit(incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, "self_api_user", status);
+    // Self-assign — cần lấy Jira account ID từ Slack user mapping
+    // Hiện tại chỉ lưu audit, vì cần mapping Slack → Jira account
+    await saveCallbackAudit(incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, "pending_lookup", "PENDING");
 
     // Cập nhật Slack message qua response_url (chạy nền)
     const originalBlocks = payload.message?.blocks || [];
     const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
-    
-    let assignMessage = `🙋 *Ticket ${issueKey || "N/A"}* was self-assigned by <@${slackUserId}>.`;
-    if (status === "SUCCESS") {
-      assignMessage = `✅ *Ticket ${issueKey || "N/A"}* has been successfully assigned to you in Jira! (Confirmed by <@${slackUserId}>)`;
-    } else {
-      assignMessage = `⚠️ Failed to assign *Ticket ${issueKey || "N/A"}* in Jira. Check logs.`;
-    }
-
     updatedBlocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: assignMessage
-      }
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `🙋 *Ticket ${issueKey || "N/A"}* was self-assigned by <@${slackUserId}>.`
+        }
+      ]
     });
 
     if (responseUrl) {
