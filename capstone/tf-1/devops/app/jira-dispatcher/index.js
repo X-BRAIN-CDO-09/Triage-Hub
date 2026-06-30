@@ -93,25 +93,6 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
 }
 
 // =============================================================================
-// Helper: Update Slack Message via response_url
-// =============================================================================
-async function updateSlackMessage(responseUrl, blocks) {
-  const response = await fetchWithRetry(responseUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      replace_original: true,
-      blocks: blocks,
-    }),
-  });
-  if (response && !response.ok) {
-    logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
-  } else if (response) {
-    logStructured("INFO", "Slack message updated successfully via response_url", { response_url: responseUrl });
-  }
-}
-
-// =============================================================================
 // Structured JSON logger
 // =============================================================================
 function logStructured(level, message, extra = {}) {
@@ -171,12 +152,12 @@ async function assignJiraTicket(jiraCreds, issueKey, accountId) {
     body: JSON.stringify({ accountId }),
   });
 
-  if (!response.ok) {
+  if (!response || !response.ok) {
     logStructured("ERROR", "Jira assign error", {
       issue_key: issueKey,
-      status: response.status,
+      status: response?.status,
     });
-    throw new Error(`Jira assign error: status ${response.status}`);
+    throw new Error(`Jira assign error: status ${response ? response.status : "timeout"}`);
   }
 
   logStructured("INFO", "Jira ticket assigned", { issue_key: issueKey, account_id: accountId });
