@@ -4,13 +4,8 @@ import json
 import os
 from typing import Any
 
-from app.observability import (
-    BUDGET_EXCEEDED_TOTAL,
-    DEGRADED_MODE_TOTAL,
-    LLM_CALLS_TOTAL,
-    QA_ITERATIONS_TOTAL,
-    estimate_tokens,
-)
+from app.observability import BUDGET_EXCEEDED_TOTAL, DEGRADED_MODE_TOTAL, LLM_CALLS_TOTAL, QA_ITERATIONS_TOTAL, estimate_tokens
+
 
 VALID_VERDICTS = {"pass", "fail", "uncertain"}
 DEFAULT_QA_MODEL_ID = "us.amazon.nova-micro-v1:0"
@@ -57,9 +52,7 @@ def run_qa(request: Any, decision: dict[str, Any], rca: dict[str, Any]) -> dict[
     return metadata
 
 
-def apply_llm_qa(
-    request: Any, decision: dict[str, Any], rca: dict[str, Any], metadata: dict[str, Any]
-) -> dict[str, Any]:
+def apply_llm_qa(request: Any, decision: dict[str, Any], rca: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     model_id = os.getenv("AIOPS_QA_MODEL_ID", DEFAULT_QA_MODEL_ID)
     provider = os.getenv("AIOPS_QA_PROVIDER", "bedrock")
     llm_metadata = dict(metadata)
@@ -104,9 +97,7 @@ def apply_llm_qa(
         )
         if env_enabled("AIOPS_QA_FAIL_CLOSED"):
             llm_metadata["required_human_review"] = True
-            llm_metadata["confidence_delta"] = min(
-                float(llm_metadata.get("confidence_delta", 0) or 0), configured_penalty()
-            )
+            llm_metadata["confidence_delta"] = min(float(llm_metadata.get("confidence_delta", 0) or 0), configured_penalty())
         return llm_metadata
 
     LLM_CALLS_TOTAL.labels(stage="qa", model=model_id, status="ok").inc()
@@ -118,9 +109,7 @@ def apply_llm_qa(
             "issues": merge_issues(llm_metadata.get("issues", []), verdict["issues"]),
             "rationale": verdict["rationale"],
             "required_human_review": verdict["required_human_review"],
-            "confidence_delta": min(
-                float(llm_metadata.get("confidence_delta", 0) or 0), float(verdict["confidence_delta"])
-            ),
+            "confidence_delta": min(float(llm_metadata.get("confidence_delta", 0) or 0), float(verdict["confidence_delta"])),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "estimated_cost_usd": estimated_cost,
@@ -136,26 +125,16 @@ def qa_findings(request: Any, decision: dict[str, Any], rca: dict[str, Any]) -> 
     findings: list[str] = []
     if decision["status"] == "DIAGNOSED" and not decision.get("evidence"):
         findings.append("diagnosis_missing_evidence")
-    if decision["status"] == "DIAGNOSED" and not (
-        request.metrics or request.logs or request.recent_deploys or rca.get("anomaly_evidence")
-    ):
+    if decision["status"] == "DIAGNOSED" and not (request.metrics or request.logs or request.recent_deploys or rca.get("anomaly_evidence")):
         findings.append("diagnosis_without_supporting_context")
-    if (
-        decision["classification"] == "latency_degradation"
-        and "latency" not in " ".join(decision.get("evidence", []) + [request.alert.title]).lower()
-    ):
+    if decision["classification"] == "latency_degradation" and "latency" not in " ".join(decision.get("evidence", []) + [request.alert.title]).lower():
         findings.append("latency_classification_without_latency_evidence")
     return findings
 
 
 def estimate_qa_tokens(request: Any, decision: dict[str, Any], rca: dict[str, Any]) -> int:
     evidence_items = len(request.metrics) + len(request.logs) + len(request.traces) + len(request.recent_deploys)
-    return (
-        64
-        + (evidence_items * 24)
-        + (len(decision.get("evidence", [])) * 16)
-        + (len(rca.get("anomaly_evidence", [])) * 24)
-    )
+    return 64 + (evidence_items * 24) + (len(decision.get("evidence", [])) * 16) + (len(rca.get("anomaly_evidence", [])) * 24)
 
 
 def build_qa_payload(request: Any, decision: dict[str, Any], rca: dict[str, Any]) -> dict[str, Any]:
@@ -193,9 +172,7 @@ def build_qa_payload(request: Any, decision: dict[str, Any], rca: dict[str, Any]
             "confidence": decision.get("confidence"),
             "summary": decision.get("summary"),
             "evidence": decision.get("evidence", [])[:6],
-            "recommended_action_ids": [
-                action[0] for action in decision.get("actions", []) if isinstance(action, (list, tuple)) and action
-            ],
+            "recommended_action_ids": [action[0] for action in decision.get("actions", []) if isinstance(action, (list, tuple)) and action],
         },
         "bounded_evidence": {
             "metrics": compact_metrics(request),
@@ -211,9 +188,7 @@ def build_qa_payload(request: Any, decision: dict[str, Any], rca: dict[str, Any]
 def invoke_bedrock_qa(model_id: str, payload: dict[str, Any]) -> str:
     import boto3
 
-    client = boto3.client(
-        "bedrock-runtime", region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
-    )
+    client = boto3.client("bedrock-runtime", region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1")
     response = client.converse(
         modelId=model_id,
         messages=[{"role": "user", "content": [{"text": json.dumps(payload, ensure_ascii=True)}]}],
@@ -269,10 +244,7 @@ def compact_metrics(request: Any) -> list[dict[str, Any]]:
 
 
 def compact_logs(request: Any) -> list[dict[str, Any]]:
-    return [
-        {"service": log.service, "level": log.level, "message": log.message[:240], "trace_id": log.trace_id}
-        for log in request.logs[:5]
-    ]
+    return [{"service": log.service, "level": log.level, "message": log.message[:240], "trace_id": log.trace_id} for log in request.logs[:5]]
 
 
 def compact_deploys(request: Any) -> list[dict[str, Any]]:

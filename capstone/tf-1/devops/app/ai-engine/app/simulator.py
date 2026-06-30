@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import Gauge, start_http_server
 
+
 METRIC_GAUGE = Gauge(
     "aiops_scenario_metric_value",
     "Sanitized replay metric value emitted by the TF1 telemetry simulator.",

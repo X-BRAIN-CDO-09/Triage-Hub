@@ -161,6 +161,8 @@ module "lambda" {
         DYNAMODB_TABLE           = module.dynamodb.table_name
         JIRA_SECRET_ARN          = module.secrets_manager.secret_arns["jira_api_token"]
         SLACK_SIGNING_SECRET_ARN = module.secrets_manager.secret_arns["slack_signing_secret"]
+        # Cần cho "Assign Me": map Slack user -> email (users.info) -> Jira accountId
+        SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
       }
       iam_policy_statements = [
         {
@@ -173,7 +175,8 @@ module "lambda" {
           actions = ["secretsmanager:GetSecretValue"]
           resources = [
             module.secrets_manager.secret_arns["jira_api_token"],
-            module.secrets_manager.secret_arns["slack_signing_secret"]
+            module.secrets_manager.secret_arns["slack_signing_secret"],
+            module.secrets_manager.secret_arns["slack_bot_token"]
           ]
         },
         {
