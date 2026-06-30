@@ -21,6 +21,12 @@ class IncidentSeed(BaseModel):
     started_at: str = Field(min_length=1)
     received_at: str = Field(min_length=1)
     labels: dict[str, Any] = Field(default_factory=dict)
+    # Bổ sung các trường context để nhận dữ liệu từ SQS
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
+    logs: list[dict[str, Any]] = Field(default_factory=list)
+    traces: list[dict[str, Any]] = Field(default_factory=list)
+    recent_deploys: list[dict[str, Any]] = Field(default_factory=list)
+    ownership: dict[str, Any] | None = None
 
 
 def build_triage_request_from_seed(seed: IncidentSeed, registry: ToolRegistry | None = None) -> dict[str, Any]:
@@ -40,10 +46,11 @@ def build_triage_request_from_seed(seed: IncidentSeed, registry: ToolRegistry | 
             "started_at": seed.started_at,
             "labels": seed.labels,
         },
-        "metrics": [],
-        "logs": [],
-        "traces": [],
-        "recent_deploys": [],
-        "ownership": None,
+        # Truyền tiếp context nhận được từ SQS thay vì ép về rỗng []
+        "metrics": seed.metrics,
+        "logs": seed.logs,
+        "traces": seed.traces,
+        "recent_deploys": seed.recent_deploys,
+        "ownership": seed.ownership,
     }
     return enrich_triage_context(body, registry)
