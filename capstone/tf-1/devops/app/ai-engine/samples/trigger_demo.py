@@ -39,22 +39,14 @@ def run_demo():
 
         # Format message attributes tương đương với headers từ API Gateway
         message_attributes = {
-            "TenantId": {
-                "DataType": "String",
-                "StringValue": case["tenant_id"]
-            },
-            "CorrelationId": {
-                "DataType": "String",
-                "StringValue": case["correlation_id"]
-            }
+            "TenantId": {"DataType": "String", "StringValue": case["tenant_id"]},
+            "CorrelationId": {"DataType": "String", "StringValue": case["correlation_id"]},
         }
 
         try:
             start_time = time.time()
             response = sqs_client.send_message(
-                QueueUrl=buffer_queue_url,
-                MessageBody=json.dumps(payload_data),
-                MessageAttributes=message_attributes
+                QueueUrl=buffer_queue_url, MessageBody=json.dumps(payload_data), MessageAttributes=message_attributes
             )
             duration = time.time() - start_time
             print(f"SUCCESS (MessageId: {response.get('MessageId')}, Time: {duration:.2f}s)")
@@ -69,6 +61,7 @@ def run_demo():
     print("COMPLETED SENDING DATASET TO SQS BUFFER!")
     print("WORKER WILL PROCESS IN A FEW SECONDS")
     print("=================================================================")
+
 
 if __name__ == "__main__":
     run_demo()

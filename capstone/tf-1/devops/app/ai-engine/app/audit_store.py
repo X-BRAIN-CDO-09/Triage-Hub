@@ -89,7 +89,9 @@ def build_success_audit_record(request: Any, response: Any, duration_ms: float) 
             "classification": response_body.get("classification"),
             "status": response_body.get("status"),
             "confidence": response_body.get("confidence"),
-            "recommended_action_ids": [action.get("id") for action in response_body.get("recommended_actions", []) if action.get("id")],
+            "recommended_action_ids": [
+                action.get("id") for action in response_body.get("recommended_actions", []) if action.get("id")
+            ],
             "evidence_count": len(response_body.get("suspected_root_cause", {}).get("evidence", [])),
             "summary_hash": _sha256_json(response_body.get("suspected_root_cause", {}).get("summary")),
             "root_cause_evidence_hash": _sha256_json(response_body.get("suspected_root_cause", {}).get("evidence", [])),
@@ -155,7 +157,9 @@ def _model_dump(value: Any) -> dict[str, Any]:
 
 def _audit_llm_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     agent = metadata.get("agent_platform") if isinstance(metadata.get("agent_platform"), dict) else {}
-    tool_investigation = metadata.get("tool_investigation") if isinstance(metadata.get("tool_investigation"), dict) else {}
+    tool_investigation = (
+        metadata.get("tool_investigation") if isinstance(metadata.get("tool_investigation"), dict) else {}
+    )
     return {
         "investigation_mode": metadata.get("investigation_mode"),
         "provider": metadata.get("provider"),
