@@ -4,8 +4,13 @@ import json
 import os
 from typing import Any
 
-from app.observability import BUDGET_EXCEEDED_TOTAL, DEGRADED_MODE_TOTAL, LLM_CALLS_TOTAL, QA_ITERATIONS_TOTAL, estimate_tokens
-
+from app.observability import (
+    BUDGET_EXCEEDED_TOTAL,
+    DEGRADED_MODE_TOTAL,
+    LLM_CALLS_TOTAL,
+    QA_ITERATIONS_TOTAL,
+    estimate_tokens,
+)
 
 VALID_VERDICTS = {"pass", "fail", "uncertain"}
 DEFAULT_QA_MODEL_ID = "us.amazon.nova-micro-v1:0"

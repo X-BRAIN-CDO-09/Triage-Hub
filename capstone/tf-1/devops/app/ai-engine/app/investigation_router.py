@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 InvestigationMode = Literal["deterministic_only", "agent_assisted", "agent_platform"]
 ModeSource = Literal["auto", "env"]
 
