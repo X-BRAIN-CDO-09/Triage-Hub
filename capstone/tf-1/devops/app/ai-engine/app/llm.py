@@ -56,14 +56,14 @@ def synthesize_investigation_summary(request: Any, decision: dict[str, Any], rca
     model = active_model_id()
     try:
         payload = {
-                "task": "investigation_summary",
-                "system_instructions": (
-                    "You are an AIOps incident investigator. Use only the provided bounded evidence. "
-                    "Do not invent services, metrics, logs, timestamps, owners, or remediation. "
-                    "Write a concise operational summary with root-cause hypothesis, evidence, confidence caveat, and next action."
-                ),
-                "input": build_prompt_payload(request, decision, rca),
-            }
+            "task": "investigation_summary",
+            "system_instructions": (
+                "You are an AIOps incident investigator. Use only the provided bounded evidence. "
+                "Do not invent services, metrics, logs, timestamps, owners, or remediation. "
+                "Write a concise operational summary with root-cause hypothesis, evidence, confidence caveat, and next action."
+            ),
+            "input": build_prompt_payload(request, decision, rca),
+        }
         raw_text = tracked_llm_call(request, "summary", payload, model)
         return {
             "enabled": True,
@@ -98,14 +98,14 @@ def reword_catalog_actions(
     model = active_model_id()
     try:
         payload = {
-                "task": "action_wording",
-                "system_instructions": (
-                    "You are an AIOps recommendation editor. Choose and reword only provided action IDs. "
-                    "Do not invent action IDs, tools, commands, remediation steps, services, evidence, or approvals. "
-                    "Return strict JSON with an actions array. Each item must include id, summary, and why only."
-                ),
-                "input": build_action_prompt_payload(request, decision, rca, actions),
-            }
+            "task": "action_wording",
+            "system_instructions": (
+                "You are an AIOps recommendation editor. Choose and reword only provided action IDs. "
+                "Do not invent action IDs, tools, commands, remediation steps, services, evidence, or approvals. "
+                "Return strict JSON with an actions array. Each item must include id, summary, and why only."
+            ),
+            "input": build_action_prompt_payload(request, decision, rca, actions),
+        }
         raw_text = tracked_llm_call(request, "actions", payload, model)
         reworded = apply_action_rewording(actions, raw_text)
         return {
@@ -241,7 +241,9 @@ def request_tool_calls_from_agentcore(
     return parse_tool_calls(raw_text, allowed_tools, max_calls)
 
 
-def tracked_llm_call(request: Any, stage: str, payload: dict[str, Any], model: str, session_id: str | None = None) -> str:
+def tracked_llm_call(
+    request: Any, stage: str, payload: dict[str, Any], model: str, session_id: str | None = None
+) -> str:
     prompt_tokens = estimate_tokens(payload)
     token_budget = int(os.getenv("AIOPS_LLM_MAX_TOKENS_PER_INCIDENT", "0") or 0)
     if token_budget and prompt_tokens > token_budget:
