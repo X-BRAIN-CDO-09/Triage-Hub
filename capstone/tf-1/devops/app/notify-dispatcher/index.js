@@ -173,7 +173,7 @@ async function createJiraTicket(jiraCreds, alertPayload) {
     const labels = [...new Set([...(tp.labels || []), "ai-triage", ...routing.extraLabels])];
 
     fields = {
-      project: { key: tp.project || "TRIAGE" },
+      project: { key: "TRIAGE" },
       summary: tp.summary || "Untitled incident",
       description: markdownToAdf(descParts.join("\n")),
       issuetype: { name: "Bug" },
