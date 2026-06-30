@@ -17,7 +17,6 @@ from app.incident_seed import IncidentSeed, build_triage_request_from_seed
 from app.integrations import publish_slack_webhook
 from app.report_store import write_report
 
-
 DEFAULT_PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 DEFAULT_LOKI_URL = os.getenv("LOKI_URL", "http://localhost:3100")
 DEFAULT_JAEGER_URL = os.getenv("JAEGER_URL", "http://localhost:16686")
