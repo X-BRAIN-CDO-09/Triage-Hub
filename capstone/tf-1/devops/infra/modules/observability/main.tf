@@ -241,10 +241,10 @@ locals {
     }
   }] : []
 
-  alb_y_offset = local.eks_y_offset + 6
-  alb_arn_suffix = var.alb_arn != "" ? replace(var.alb_arn, "/^.*?:loadbalancer\\//", "") : ""
+  alb_y_offset      = local.eks_y_offset + 6
+  alb_arn_suffix    = var.alb_arn != "" ? replace(var.alb_arn, "/^.*?:loadbalancer\\//", "") : ""
   alb_tg_arn_suffix = var.alb_target_group_arn != "" ? replace(var.alb_target_group_arn, "/^.*?:targetgroup\\//", "targetgroup/") : ""
-  
+
   alb_widget = var.alb_arn != "" ? [{
     type = "metric", x = 0, y = local.alb_y_offset, width = 24, height = 6
     properties = {
@@ -340,7 +340,7 @@ locals {
   alarms_widget = [{
     type = "alarm", x = 0, y = local.logs_y_offset + 14, width = 24, height = 6
     properties = {
-      title  = "All Configured Alarms"
+      title = "All Configured Alarms"
       alarms = compact(concat(
         var.api_gateway_name != "" ? [
           aws_cloudwatch_metric_alarm.api_gw_latency[0].arn,
@@ -378,7 +378,7 @@ locals {
     type = "metric", x = 0, y = local.improvements_y_offset + 1, width = 12, height = 6
     properties = {
       metrics = [
-        ["AWS/Billing", "EstimatedCharges", "Currency", "USD", { "stat": "Maximum" }]
+        ["AWS/Billing", "EstimatedCharges", "Currency", "USD", { "stat" : "Maximum" }]
       ]
       view   = "timeSeries"
       region = "us-east-1"
