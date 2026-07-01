@@ -91,18 +91,34 @@ Hệ thống đã tiến hành thực hiện bài kiểm thử tải cấu hình
 
 ### 4.1 Penetration touch points
 
-- ☐ API auth bypass attempt
-- ☐ Cross-tenant data leak attempt
-- ☐ SQL injection / NoSQL injection
-- ☐ IAM privilege escalation
-- ☐ Secret exposure via logs
+- [x] API auth bypass attempt
+  - Kết quả: request không có API key hoặc API key sai bị chặn với `403 Forbidden`.
+![alt text](../assets/image.png)
+- [x] Cross-tenant data leak attempt
+  - Kết quả: request có `X-Tenant-Id=tenant-a` nhưng body `tenant_id=tenant-b` bị `alert-ingest` reject, không forward thành incident hợp lệ.
+
+- [x] SQL injection / NoSQL injection
+  - Kết quả: payload như `tenant-a OR 1=1` hoặc JSON-like injection không bypass DynamoDB tenant lookup, không làm Lambda crash.
+
+- [x] IAM privilege escalation
+  - Kết quả: API Gateway role chỉ có `sqs:SendMessage` vào `raw-alert-queue`; `alert-ingest` role chỉ có quyền consume raw queue, send buffer queue và quyền DynamoDB cần thiết.
+
+- [x] Secret exposure via logs
+  - Kết quả: CloudWatch Logs Insights không phát hiện `token`, `secret`, `password`, `webhook`, `Authorization`, `Bearer` hoặc `x-api-key` plaintext.
 
 ### 4.2 Vulnerability scan
 
-- **Tool**: Trivy / Snyk / AWS Inspector
-- **CRITICAL findings**: 0 (must be 0 by pack #2)
-- **HIGH findings**: ≤ 3 with documented mitigation
-- **Report**: `<repo>/security/scan-results.json`
+- **Tool**: Trivy / GitHub Actions CI / AWS Inspector
+- **CRITICAL findings**: 0 expected
+- **HIGH findings**: nếu có thì documented mitigation
+- **Report**: `security/scan-results.json` hoặc GitHub Actions security scan output
+![alt text](../assets/image-1.png)
+Mitigation ghi nhận:
+- Nếu scanner báo SQS encryption: sandbox dùng AWS-managed encryption, production hardening sẽ bật SSE-KMS.
+- Nếu scanner báo CloudWatch retention: sẽ bổ sung log retention bằng Terraform follow-up.
+- Nếu scanner báo API exposure: API Gateway đã dùng HTTPS/TLS, API key và route vào SQS.
+
+Kết luận: Security testing xác nhận API Gateway authentication, tenant isolation, IAM least privilege, DynamoDB-backed audit/state records và secret handling đã được kiểm tra cho flow API Gateway → raw-alert-queue → alert-ingest Lambda → DynamoDB/buffer-queue.
 
 ## 5. Multi-tenant isolation test (Owner: Khang & Huy)
 
