@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # 1. Mock numpy + sklearn (rca.py dùng IsolationForest, np.array, np.corrcoef)
 # ---------------------------------------------------------------------------
 mock_np = MagicMock()
-mock_np.array = lambda x, **kw: x          # trả lại list thô — đủ để test chạy
+mock_np.array = lambda x, **kw: x  # trả lại list thô — đủ để test chạy
 mock_np.std = lambda x, **kw: 1.0
 mock_np.corrcoef = lambda *a, **kw: [[0.0, 0.0], [0.0, 0.0]]
 sys.modules["numpy"] = mock_np
@@ -92,14 +92,28 @@ sys.modules["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = mock_otlp
 # ---------------------------------------------------------------------------
 mock_prom = MagicMock()
 
+
 class _FakeMetric:
     """Stub đủ để Counter/Gauge/Histogram hoạt động mà không cần thư viện thật."""
-    def __init__(self, *a, **kw): pass
-    def labels(self, **kw): return self
-    def inc(self, *a): pass
-    def dec(self, *a): pass
-    def set(self, *a): pass
-    def observe(self, *a): pass
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def labels(self, **kw):
+        return self
+
+    def inc(self, *a):
+        pass
+
+    def dec(self, *a):
+        pass
+
+    def set(self, *a):
+        pass
+
+    def observe(self, *a):
+        pass
+
 
 mock_prom.Counter = _FakeMetric
 mock_prom.Gauge = _FakeMetric
@@ -134,15 +148,25 @@ sys.modules["requests"] = mock_requests
 # ---------------------------------------------------------------------------
 mock_boto3 = MagicMock()
 
+
 # Stub Attr / Key đủ để dynamodb_store.py import thành công
 class _FakeAttr:
-    def eq(self, v): return self
-    def begins_with(self, v): return self
-    def __and__(self, other): return self
-    def __or__(self, other): return self
+    def eq(self, v):
+        return self
+
+    def begins_with(self, v):
+        return self
+
+    def __and__(self, other):
+        return self
+
+    def __or__(self, other):
+        return self
+
 
 class _FakeKey(_FakeAttr):
     pass
+
 
 mock_dynamodb_conditions = MagicMock()
 mock_dynamodb_conditions.Attr = _FakeAttr

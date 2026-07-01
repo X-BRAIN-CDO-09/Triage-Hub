@@ -20,6 +20,7 @@ client = TestClient(app)
 # Fixture: payload hợp lệ đầy đủ để tái sử dụng
 # ---------------------------------------------------------------------------
 
+
 def _valid_payload(
     tenant_id: str = "tenant-A",
     correlation_id: str = "test-corr-123",
@@ -59,6 +60,7 @@ def _valid_headers(
 # Contract: "X-Tenant-Id required; missing → 400 or 422"
 # ---------------------------------------------------------------------------
 
+
 def test_triage_missing_tenant_header():
     """Thiếu X-Tenant-Id → FastAPI trả 422 (header required by signature)."""
     headers = {"X-Correlation-Id": "test-corr-123"}
@@ -79,13 +81,14 @@ def test_triage_missing_correlation_header():
 # Contract: "X-Tenant-Id must match body tenant_id → 400"
 # ---------------------------------------------------------------------------
 
+
 def test_triage_mismatch_tenant_returns_400():
     """
     X-Tenant-Id khác body.tenant_id → 400 (bắt buộc theo contract).
     Không được accept 422 — 422 là schema error, không phải isolation error.
     """
     headers = _valid_headers(tenant_id="tenant-A")
-    payload = _valid_payload(tenant_id="tenant-B")      # mismatch
+    payload = _valid_payload(tenant_id="tenant-B")  # mismatch
     response = client.post("/v1/triage", json=payload, headers=headers)
     assert response.status_code == 400
 
@@ -102,6 +105,7 @@ def test_triage_mismatch_correlation_returns_400():
 # Body validation — environment enum
 # Contract: environment must be one of prod | staging | sandbox → 422
 # ---------------------------------------------------------------------------
+
 
 def test_triage_invalid_environment_returns_422():
     """environment không nằm trong enum hợp lệ → Pydantic 422."""
@@ -127,6 +131,7 @@ def test_triage_valid_environments_accepted(env: str):
 #   recommended_actions, ticket_payload, audit_id
 # ---------------------------------------------------------------------------
 
+
 def test_triage_response_required_fields():
     """
     Response 200 phải chứa đầy đủ required fields theo contract.
@@ -134,7 +139,7 @@ def test_triage_response_required_fields():
     trả đủ fields (không được thiếu field).
     """
     headers = _valid_headers()
-    payload = _valid_payload()     # không có metrics/logs → INSUFFICIENT_CONTEXT
+    payload = _valid_payload()  # không có metrics/logs → INSUFFICIENT_CONTEXT
     response = client.post("/v1/triage", json=payload, headers=headers)
     assert response.status_code == 200
 
@@ -190,7 +195,7 @@ def test_triage_insufficient_context_when_no_telemetry():
     Payload không có metrics, logs, traces, deploys, ownership.
     """
     headers = _valid_headers()
-    payload = _valid_payload()   # chỉ có alert, không có telemetry context
+    payload = _valid_payload()  # chỉ có alert, không có telemetry context
     response = client.post("/v1/triage", json=payload, headers=headers)
     assert response.status_code == 200
     assert response.json()["status"] == "INSUFFICIENT_CONTEXT"
@@ -223,6 +228,7 @@ def test_triage_recommended_actions_type_valid():
 # ticket_payload shape
 # Contract: ticket_payload phải có project, summary, description, labels, fields
 # ---------------------------------------------------------------------------
+
 
 def test_triage_ticket_payload_shape():
     """ticket_payload phải có đủ fields để CDO tạo Jira ticket."""

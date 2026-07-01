@@ -18,6 +18,7 @@ client = TestClient(app)
 #           "service": "tf1-ai-triage-engine", "version": "v1"}
 # ---------------------------------------------------------------------------
 
+
 def test_healthz_returns_200():
     response = client.get("/healthz")
     assert response.status_code == 200
@@ -37,6 +38,7 @@ def test_healthz_response_shape():
 # Contract: "X-Tenant-Id must match body tenant_id → 400"
 # ---------------------------------------------------------------------------
 
+
 def test_tenant_isolation_header_body_mismatch_returns_400():
     """
     Contract: X-Tenant-Id header khác body.tenant_id → 400, không phải 422/403.
@@ -49,7 +51,7 @@ def test_tenant_isolation_header_body_mismatch_returns_400():
     }
     payload = {
         "correlation_id": "corr-iso-001",
-        "tenant_id": "tenant-B",          # mismatch với header
+        "tenant_id": "tenant-B",  # mismatch với header
         "incident_id": "inc-iso-001",
         "environment": "sandbox",
         "received_at": "2026-06-22T08:05:00Z",
@@ -76,7 +78,7 @@ def test_tenant_isolation_matching_tenant_accepted():
     }
     payload = {
         "correlation_id": "corr-iso-002",
-        "tenant_id": "tenant-A",          # khớp với header
+        "tenant_id": "tenant-A",  # khớp với header
         "incident_id": "inc-iso-002",
         "environment": "sandbox",
         "received_at": "2026-06-22T08:05:00Z",
@@ -99,15 +101,16 @@ def test_tenant_isolation_matching_tenant_accepted():
 # Contract: "X-Correlation-Id must match body correlation_id → 400"
 # ---------------------------------------------------------------------------
 
+
 def test_correlation_id_mismatch_returns_400():
     """Contract: X-Correlation-Id header khác body.correlation_id → 400."""
     headers = {
         "X-Tenant-Id": "tenant-A",
-        "X-Correlation-Id": "corr-HEADER",   # khác body
+        "X-Correlation-Id": "corr-HEADER",  # khác body
         "Authorization": "Bearer test-token",
     }
     payload = {
-        "correlation_id": "corr-BODY",        # mismatch
+        "correlation_id": "corr-BODY",  # mismatch
         "tenant_id": "tenant-A",
         "incident_id": "inc-corr-001",
         "environment": "sandbox",
