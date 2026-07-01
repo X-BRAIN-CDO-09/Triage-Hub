@@ -39,3 +39,16 @@ __pycache__/
 # Runtime audit data (not source)
 capstone/tf-1/devops/app/ai-engine/audit/
 capstone/tf-1/devops/app/ai-engine/audit/*.jsonl
+
+# Node dependencies (lambda tests)
+node_modules/
+
+# Python virtualenvs
+.venv/
+venv/
+
+# ⚠️ Secret backups / dumps — KHÔNG BAO GIỜ commit (chứa token live)
+secrets_backup.json
+secrets*.json
+*secret*.json
+*.secrets.json

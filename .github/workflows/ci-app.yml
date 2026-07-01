@@ -449,7 +449,7 @@ jobs:
 
       - name: Verify SQS buffers and DLQs
         env:
-          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-hub-buffer-queue,triage-hub-dispatch-queue,triage-hub-buffer-queue-dlq,triage-hub-dispatch-queue-dlq' }}
+          QUEUE_NAMES: ${{ vars.TRIAGE_QUEUE_NAMES || 'triage-hub-buffer-queue.fifo,triage-hub-dispatch-queue,triage-hub-buffer-queue-dlq.fifo,triage-hub-dispatch-queue-dlq' }}
         run: |
           IFS=',' read -ra QUEUES <<< "$QUEUE_NAMES"
           for queue in "${QUEUES[@]}"; do

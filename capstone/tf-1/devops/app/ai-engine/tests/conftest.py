@@ -20,9 +20,9 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # 2. Giả lập (Mock) hoàn toàn thư viện numpy để Python không báo lỗi thiếu module
-sys.modules["numpy"] = MagicMock()
-sys.modules["sklearn"] = MagicMock()
-sys.modules["sklearn.ensemble"] = MagicMock()
+# sys.modules["numpy"] = MagicMock()
+# sys.modules["sklearn"] = MagicMock()
+# sys.modules["sklearn.ensemble"] = MagicMock()
 mock_otlp = MagicMock()
 sys.modules["opentelemetry.exporter"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp"] = mock_otlp
@@ -30,12 +30,12 @@ sys.modules["opentelemetry.exporter.otlp.proto"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp.proto.http"] = mock_otlp
 sys.modules["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = mock_otlp
 # 3.  thêm mock cho sklearn.ensemble.IsolationForest để tránh lỗi AttributeError khi test
-mock_sklearn = MagicMock()
-mock_isolation_forest = MagicMock()
-mock_isolation_forest.__name__ = "IsolationForest"
-mock_sklearn.ensemble.IsolationForest = mock_isolation_forest
-sys.modules["sklearn"] = mock_sklearn
-sys.modules["sklearn.ensemble"] = mock_sklearn.ensemble
+# mock_sklearn = MagicMock()
+# mock_isolation_forest = MagicMock()
+# mock_isolation_forest.__name__ = "IsolationForest"
+# mock_sklearn.ensemble.IsolationForest = mock_isolation_forest
+# sys.modules["sklearn"] = mock_sklearn
+# sys.modules["sklearn.ensemble"] = mock_sklearn.ensemble
 
 
 @pytest.fixture(autouse=True)
