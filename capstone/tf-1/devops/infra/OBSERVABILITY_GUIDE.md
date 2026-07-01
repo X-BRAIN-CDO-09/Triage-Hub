@@ -1,160 +1,278 @@
-# Tổng Quan Hệ Thống Observability & Hướng Dẫn Kiểm Tra
+﻿# Tổng Quan Hệ Thống Observability & Hướng Dẫn Kiểm Tra
 
-Tài liệu này tổng hợp toàn bộ kiến trúc Observability đã được triển khai cho dự án Triage-Hub, giải thích ý nghĩa của từng chỉ số (metric) đang được giám sát, và cung cấp hướng dẫn chi tiết từng bước để kiểm tra việc luân chuyển dữ liệu từ hệ thống lên CloudWatch và SNS.
+Tài liệu này mô tả **chính xác** kiến trúc Observability đang được triển khai trong dự án Triage-Hub, dựa trên code Terraform và source code thực tế. Bao gồm giải thích ý nghĩa từng chỉ số (metric), tên tài nguyên thật trên AWS, và hướng dẫn kiểm tra từng bước.
 
 ---
 
 ## 1. Tổng Quan Kiến Trúc Observability
 
-Hệ thống Observability bao gồm 4 thành phần chính:
-1. **CloudWatch Dashboard**: Bảng điều khiển tập trung chứa các biểu đồ trực quan (Widgets) cho toàn bộ thành phần hệ thống (API Gateway, Lambda, SQS, DynamoDB, EKS).
-2. **CloudWatch Metric Alarms**: Hệ thống cảnh báo tự động khi các chỉ số vượt qua ngưỡng an toàn.
-3. **AWS SNS (Simple Notification Service)**: Kênh phát tín hiệu cảnh báo (Email, SMS) cho đội ngũ vận hành.
-4. **CloudWatch Logs Insights & Container Insights**: Thu thập và phân tích Logs nâng cao cho Lambda và các Metrics chuyên sâu cho EKS (Kubernetes).
+Hệ thống Observability gồm **5 lớp** giám sát được triển khai thực tế:
+
+| Lớp | Công nghệ | Trạng thái |
+|-----|-----------|-----------|
+| CloudWatch Dashboard | `triage-hub-dashboard-sandbox` | ✅ Deployed |
+| CloudWatch Metric Alarms | Per-component, SNS notify | ✅ Deployed |
+| SNS Topic | `triage-hub-alerts-sandbox` | ✅ Deployed (nếu `enable_notifications = true`) |
+| Application Metrics (Prometheus) | `prometheus_client` trong AI Engine | ✅ Deployed |
+| Distributed Tracing (OpenTelemetry) | OTLP → Jaeger (tùy cấu hình) | ✅ Deployed |
+
+### Luồng dữ liệu thực tế (Data Flow)
+
+```
+EC2 Customer App
+  ↓ HTTP POST /alerts (API Key required)
+API Gateway (triage-hub-apigw-sandbox)
+  ↓ SQS Direct Integration (VTL template)
+raw-alert-queue.fifo  ←── FIFO queue, dedup by content
+  ↓ ESM (batch_size=1)
+Lambda: alert-ingest
+  ↓ sqs:SendMessage
+buffer-queue.fifo     ←── KEDA scales Worker by ApproximateNumberOfMessagesVisible
+  ↓ EKS Worker Pod (tf1-worker)
+AI Engine (FastAPI) via Internal ALB
+  ↓ EventBridge (IncidentAssigned)
+broadcast-notifier Lambda → Slack
+  +
+  ↓ sqs:SendMessage
+dispatch-queue        ←── ESM (batch_size=10)
+Lambda: notify-dispatcher → Jira + Slack
+```
 
 ---
 
-## 2. Bố Cục và Ý Nghĩa Hiển Thị Trên CloudWatch Dashboard
+## 2. Tài Nguyên AWS Thực Tế (Sandbox)
 
-Khi truy cập vào CloudWatch Dashboard (`triage-hub-dashboard-sandbox`), bạn sẽ thấy giao diện được chia thành các phân vùng (sections) theo thứ tự từ trên xuống dưới nhằm tối ưu hóa việc giám sát từ mức độ tổng quan đến chi tiết:
+### SQS Queues (3 queues)
 
-### 1. System Health Overview (Tổng Quan Sức Khỏe Hệ Thống)
-- **Ý nghĩa**: Cung cấp góc nhìn toàn cảnh về tình trạng hoạt động của toàn bộ hệ thống ngay khi vừa mở Dashboard.
-- **Nội dung hiển thị**: Các chỉ số cốt lõi (như tỷ lệ lỗi API, tổng số request, độ trễ) được hiển thị bằng các biểu đồ số (Number) hoặc đồ thị đơn giản. Nếu vùng này xuất hiện số liệu bất thường (ví dụ: vọt lên cao), nghĩa là hệ thống đang có sự cố lớn.
+| Tên Queue | Loại | Mục đích | Cấu hình đặc biệt |
+|-----------|------|----------|-------------------|
+| `triage-hub-raw-alert-queue.fifo` | FIFO | Nhận alert từ API Gateway | `visibility_timeout=60s`, `retention=4 ngày`, `max_receive_count=5`, content-based dedup |
+| `triage-hub-buffer-queue.fifo` | FIFO | Buffer cho AI Engine Worker | FIFO + content-based dedup |
+| `triage-hub-dispatch-queue` | Standard | Gửi kết quả đến notify-dispatcher | Standard queue |
 
-### 2. Alert Processing Pipeline (Luồng Xử Lý Cảnh Báo)
-- **Ý nghĩa**: Theo dõi dòng chảy dữ liệu (data flow) của hệ thống theo thời gian thực (từ lúc nhận request đến khi xử lý xong).
-- **Nội dung hiển thị**: Liệt kê số lượng request được tiếp nhận (Ingest), lượng tin nhắn đang chờ xử lý trong hàng đợi SQS (Buffer), và số lượng đã được phân phối đi (Dispatch). Giúp phát hiện nhanh hiện tượng "thắt cổ chai" (bottleneck) nếu Queue Depth tăng vọt.
+### Lambda Functions (4 functions)
 
-### 3. Detailed Component Metrics (Chỉ Số Chi Tiết Từng Thành Phần)
-- **Ý nghĩa**: Cung cấp dữ liệu kỹ thuật chuyên sâu (Deep-dive) phục vụ cho việc gỡ lỗi (Debugging) và phân tích nguyên nhân gốc rễ (Root Cause Analysis).
-- **Nội dung hiển thị**: Các biểu đồ dạng đường (Time Series) chia theo từng dịch vụ:
-  - **API Gateway / ALB**: Lưu lượng request, mã lỗi HTTP (4XX, 5XX), độ trễ.
-  - **Lambda / EC2**: Thời gian thực thi (Duration), lỗi (Errors), giới hạn đồng thời (Throttles), CPU/RAM.
-  - **DynamoDB / S3**: Lưu lượng đọc/ghi, dung lượng lưu trữ, lỗi hệ thống.
-  - **EKS**: Tiêu thụ tài nguyên của cụm Kubernetes (Container Insights).
+| Function Name | Runtime | Trigger | Env Vars chính |
+|---------------|---------|---------|----------------|
+| `triage-hub-alert-ingest` | nodejs20.x | ESM từ `raw-alert-queue.fifo` (batch=1) | `SQS_QUEUE_URL`, `DYNAMODB_TABLE` |
+| `triage-hub-jira-dispatcher` | nodejs20.x | API Gateway POST /slack | `DYNAMODB_TABLE`, `JIRA_SECRET_ARN`, `SLACK_SIGNING_SECRET_ARN`, `SLACK_BOT_TOKEN_ARN`, `EVENT_BUS_NAME` |
+| `triage-hub-broadcast-notifier` | nodejs20.x | EventBridge (IncidentAssigned) | `SLACK_BOT_TOKEN_ARN` |
+| `triage-hub-notify-dispatcher` | nodejs20.x | ESM từ `dispatch-queue` (batch=10) | `DYNAMODB_TABLE`, `JIRA_SECRET_ARN`, `SLACK_BOT_TOKEN_ARN`, `JIRA_DISPATCHER_ARN` |
 
-### 4. CloudWatch Logs Insights
-- **Ý nghĩa**: Phân tích tự động log lỗi từ ứng dụng mà không cần phải query thủ công.
-- **Nội dung hiển thị**: Các bảng thống kê (Table) các thông báo lỗi (Error Messages) phổ biến nhất, các hàm Lambda chạy chậm nhất (Slowest Invocations), và biểu đồ xu hướng lỗi theo thời gian (Error Trend).
+### API Gateway
 
-### 5. System Alarms Status
-- **Ý nghĩa**: Trung tâm kiểm soát tổng hợp trạng thái cảnh báo tự động.
-- **Nội dung hiển thị**: Danh sách tất cả các Alarm đang được thiết lập. Cho phép đội vận hành biết ngay lập tức Alarm nào đang `OK` (Bình thường), `ALARM` (Đang có lỗi), hoặc `INSUFFICIENT_DATA` (Thiếu dữ liệu).
+- **Tên**: `triage-hub-apigw-sandbox`
+- **Endpoint 1**: `POST /alerts` — API Key bắt buộc → SQS Direct Integration → `raw-alert-queue.fifo`
+- **Endpoint 2**: `POST /slack` — Không cần API Key → Lambda Proxy → `jira-dispatcher`
 
-### 6. Cost Monitoring & ServiceLens
-- **Ý nghĩa**: Theo dõi ước tính chi phí AWS hiện tại và liên kết trực tiếp tới bản đồ dịch vụ ServiceLens.
-- **Nội dung hiển thị**: Biểu đồ Time Series hiển thị `EstimatedCharges` (USD) từ `AWS/Billing` và một đường link truy cập nhanh sang AWS X-Ray Service Map giúp phân tích tương quan giữa Log, Metric và Trace.
+### EventBridge
 
----
+- **Event Bus**: `triage-hub-event-bus-sandbox`
+- **Rule**: `triage-hub-jira-assigned-rule-sandbox`
+  - Source: `triage-hub.jira`, DetailType: `IncidentAssigned`
+  - Target: Lambda `broadcast-notifier`
 
-## 3. Giải Thích Các Chỉ Số (Metrics) Chi Tiết Và Trường Dữ Liệu
+### EKS Cluster
 
-### A. Amazon API Gateway
-*Điểm vào (Entry point) của toàn bộ request từ người dùng.*
-- **Count**: Tổng số lượng request gửi đến API. Giúp đánh giá lưu lượng truy cập.
-- **Latency**: Thời gian trung bình (mili-giây) từ lúc API Gateway nhận request cho đến khi trả về response.
-- **4XXError**: Số lượng lỗi do phía Client (ví dụ: Bad Request 400, Unauthorized 401). Thường do dữ liệu đầu vào sai.
-- **5XXError**: Số lượng lỗi do phía Server (ví dụ: Internal Server Error 500). Đây là chỉ số quan trọng cần được báo động ngay lập tức vì hệ thống backend đang gặp sự cố.
-
-### B. AWS Lambda (Functions)
-*Xử lý logic cốt lõi (Alert Ingest, Jira Dispatcher, Notify Dispatcher).*
-- **Invocations**: Số lần hàm Lambda được gọi.
-- **Duration**: Thời gian thực thi của hàm. Nếu Duration chạm ngưỡng timeout của Lambda, quá trình xử lý sẽ thất bại.
-- **Errors**: Số lần hàm Lambda ném ra Exception chưa được xử lý hoặc bị crash.
-- **Throttles**: Số lượng request bị từ chối do vượt quá giới hạn thực thi đồng thời (Concurrency Limit) của Lambda. 
-
-### C. Amazon SQS (Queues)
-*Hàng đợi đệm (Buffer) và điều phối.*
-- **ApproximateNumberOfMessagesVisible (Queue Depth)**: Số lượng tin nhắn đang chờ trong hàng đợi để được xử lý. Nếu số này tăng đột biến, chứng tỏ Consumer (Lambda) xử lý không kịp hoặc đang bị lỗi.
-- **ApproximateAgeOfOldestMessage**: Tuổi của tin nhắn cũ nhất (tính bằng giây). Chỉ số này rất quan trọng để đảm bảo SLA: nếu tin nhắn nằm trong queue quá lâu (ví dụ > 3600 giây), nghĩa là hệ thống đang ứ đọng nghiêm trọng.
-
-### D. Amazon DynamoDB
-*Cơ sở dữ liệu lưu trạng thái.*
-- **ThrottledRequests / ConsumedCapacity**: Số lượng yêu cầu đọc/ghi bị từ chối do vượt quá dung lượng quy định (Provisioned Capacity). Nếu tăng cao, cần cấu hình Auto Scaling cho DB.
-- **SystemErrors**: Lỗi phát sinh từ nội bộ hạ tầng AWS DynamoDB (rất hiếm gặp, nhưng nghiêm trọng nếu có).
-
-### E. Application Load Balancer (Internal ALB)
-*Cổng giao tiếp nội bộ định tuyến traffic cho AI Engine.*
-- **RequestCount**: Tổng số lượng request gửi đến ALB.
-- **HTTPCode_Target_5XX_Count**: Số lượng lỗi 5XX trả về từ các Pod (Target). Phản ánh việc AI Engine (FastAPI/Worker) bị lỗi.
-- **HTTPCode_ELB_5XX_Count**: Số lượng lỗi 5XX do chính ALB sinh ra (ví dụ không tìm thấy target khả dụng).
-- **TargetResponseTime**: Thời gian xử lý trung bình (độ trễ) của AI Engine.
-
-### F. Amazon EC2 (Customer App)
-*Máy chủ giả lập ứng dụng của khách hàng gửi luồng cảnh báo.*
-- **CPUUtilization**: Phần trăm sử dụng CPU. Nếu tăng cao trên mức quy định (ví dụ 80%) sẽ kích hoạt Alarm cảnh báo quá tải.
-- **NetworkIn / NetworkOut**: Lưu lượng mạng vào và ra khỏi máy chủ EC2.
-
-### G. Amazon S3 (Artifacts Storage)
-*Lưu trữ log và số liệu thô phục vụ audit.*
-- **BucketSizeBytes**: Tổng dung lượng lưu trữ (được AWS đo và cập nhật mỗi ngày một lần).
-- **NumberOfObjects**: Tổng số lượng file đang được lưu trong bucket.
-
-### H. CloudWatch Logs Insights (Phân tích Log)
-Các widget dạng log-insight trên Dashboard sử dụng các query có các trường:
-- `@timestamp`: Thời điểm sinh ra log.
-- `@message`: Nội dung gốc của log. Dùng hàm `filter @message like /Error/` để tìm các dòng log lỗi.
-- `@duration`, `@billedDuration`: Thời gian chạy thực tế và thời gian bị tính phí của Lambda.
+- **Cluster**: `triage-hub-eks-sandbox`
+- **Scaler**: KEDA `ScaledObject` → `tf1-worker-scaler` theo `buffer-queue.fifo` depth
+- **AI Engine**: FastAPI Pod `tf1-api` + Worker Pod `tf1-worker`
+- **ALB**: Internal ALB → TargetGroup binding cho `tf1-api`
 
 ---
 
-## 3. Chi Tiết Triển Khai: Logs, Metrics, và Traces (The 3 Pillars of Observability)
+## 3. CloudWatch Dashboard — Bố Cục Thực Tế
 
-Hệ thống được thiết kế bao phủ toàn diện 3 trụ cột (Pillars) của Observability:
+Dashboard tên: **`triage-hub-dashboard-sandbox`**
 
-### A. Logs (Nhật ký hệ thống)
-*Mục đích: Cung cấp bản ghi chi tiết các sự kiện (events) với context cụ thể để debug lỗi.*
-- **API Gateway**: Đã được cấp quyền IAM (`AmazonAPIGatewayPushToCloudWatchLogs`) thông qua Account Settings để tự động đẩy Execution Logs và Access Logs về CloudWatch Logs, giúp truy vết lỗi API.
-- **AWS Lambda**: Tất cả log từ stdout/stderr của code (ví dụ `console.log`, `logger.error()`) được tự động gom về Log Group `/aws/lambda/<tên-hàm>`. Các widget Logs Insights trên Dashboard sẽ tự động query các group này.
-- **Amazon EKS**: Sử dụng add-on `amazon-cloudwatch-observability` đi kèm với IRSA Role để thu thập log từ tất cả các Container/Pod trong cluster, giúp centralized log management (Quản lý log tập trung) về CloudWatch.
+Cấu trúc widget theo code `modules/observability/main.tf`:
 
-### B. Metrics (Chỉ số đo lường)
-*Mục đích: Biểu diễn trạng thái sức khỏe của hệ thống dạng chuỗi thời gian (time-series) giúp phát hiện xu hướng và cấu hình cảnh báo (Alarms).*
-- **Standard AWS Metrics**: Các dịch vụ Managed (API Gateway, Lambda, SQS, DynamoDB) tự động phát sinh các built-in metrics (như `5XXError`, `Duration`, `QueueDepth`) với độ phân giải 1 phút mà không cần cài đặt thêm agent.
-- **Container Insights (EKS)**: EKS Add-on thu thập Metrics chuyên sâu cho tầng hạ tầng và ứng dụng chạy trong Pods (CPU, Memory, Network I/O, Pod Restart Count) và hiển thị trực quan.
-- **Metric Alarms**: Sử dụng `aws_cloudwatch_metric_alarm` kết hợp với ngưỡng (Threshold) có thể cấu hình linh hoạt qua file Terraform variables để giám sát các Metric này liên tục.
+### Section 1 — Health Overview (Y: 0–8)
 
-### C. Traces (Truy vết phân tán - Distributed Tracing)
-*Mục đích: Theo dõi hành trình của một request đi xuyên qua nhiều Microservices/Components (API Gateway -> Lambda -> SQS) để tìm ra điểm thắt cổ chai (bottleneck) về hiệu năng.*
-- **AWS X-Ray Daemon**: Tích hợp sẵn trong EKS Add-on `amazon-cloudwatch-observability` thông qua policy `AWSXRayDaemonWriteAccess` ở tầng IRSA Role.
-- Các service trong EKS và Lambda có thể sinh ra Trace Segments. Trên AWS Console, tính năng X-Ray Service Map sẽ tự động vẽ ra bản đồ tương tác giữa các dịch vụ.
+8 widget dạng `singleValue` hiển thị tổng quan tức thì:
+
+| Widget | Metric | Ý nghĩa |
+|--------|--------|---------|
+| API Request Count | `AWS/ApiGateway > Count (Sum)` | Tổng số request đến API |
+| API Latency (p99) | `AWS/ApiGateway > Latency (p99)` | 99th percentile latency |
+| Lambda Errors | `SUM(Errors)` tất cả Lambda | Tổng lỗi Lambda |
+| Lambda Duration | `AVG(Duration)` tất cả Lambda | Thời gian thực thi trung bình |
+| Queue Depth | `MAX(ApproximateNumberOfMessagesVisible)` | Độ sâu hàng đợi lớn nhất |
+| Oldest Message Age | `MAX(ApproximateAgeOfOldestMessage)` | Tin nhắn cũ nhất đang chờ |
+| DynamoDB Throttled | `AWS/DynamoDB > ThrottledRequests (Sum)` | Số request DynamoDB bị giới hạn |
+| Overall Error Rate | `(Errors/Invocations) * 100` qua Math Expression | Tỷ lệ lỗi tổng thể (%) |
+
+### Section 2 — End-to-End Processing Pipeline (Y: 9–15)
+
+6 widget `timeSeries` theo dõi dòng chảy xử lý từng bước:
+
+```
+1. API Requests → 2. Alert Ingest (Lambda) → 3. Buffer Queue →
+4. Dispatcher (Lambda) → 5. Dispatch Queue → 6. Notify & DynamoDB
+```
+
+### Section 3 — Detailed Service Metrics (Y: 16+)
+
+Các widget chi tiết theo thứ tự:
+
+1. **API Gateway** (full): Count, 4XX, 5XX, Latency p99, IntegrationLatency, CacheHit/Miss
+2. **Lambda mỗi function**: Invocations, Errors, Throttles, ConcurrentExecutions, Duration (Avg/Max), IteratorAge, Success Rate %, Error Rate %
+3. **SQS mỗi queue**: Sent, Received, Visible, OldestAge, NotVisible, Deleted, EmptyReceives
+4. **DynamoDB**: ReadCapacity, WriteCapacity, SystemErrors, Latency, Throttled, UserErrors, ConditionalCheckFailed
+5. **EKS Container Insights**: `node_cpu_utilization`, `node_memory_utilization`, `pod_number_of_container_restarts`, `node_status_condition_ready`
+6. **Internal ALB**: RequestCount, HTTPCode_Target_5XX, HTTPCode_ELB_5XX, TargetResponseTime
+7. **Customer App EC2**: CPUUtilization, NetworkIn, NetworkOut
+
+### Section 4 — CloudWatch Logs Insights
+
+4 widget tự động query log từ tất cả Lambda (`/aws/lambda/triage-hub-*`):
+
+| Widget | View |
+|--------|------|
+| Top Error Messages (filter ERROR/Error/Exception, stats count by message, limit 10) | table |
+| Error Trend (cùng filter, stats count by bin(5m)) | timeSeries |
+| Slowest Lambda Invocations (filter @type=REPORT, sort @duration desc, limit 10) | table |
+| Top Exception Types (parse Exception, stats count by exc) | table |
+
+### Section 5 — System Alarms Status
+
+Widget `alarm` tổng hợp tất cả Alarms đang được cấu hình.
+
+### Section 6 — Cost Monitoring & ServiceLens
+
+- **Cost Widget**: `AWS/Billing > EstimatedCharges (USD)` — period 6 giờ (us-east-1)
+- **ServiceLens Link**: Deep-link trực tiếp vào CloudWatch ServiceLens Map
 
 ---
 
-## 4. Hướng Dẫn Từng Bước Kiểm Tra & Xác Thực Dữ Liệu
-Để đảm bảo hệ thống Observability hoạt động, hãy thực hiện lần lượt các bước sau:
+## 4. CloudWatch Alarms — Chi Tiết Triển Khai
 
-### Bước 1: Xác nhận đăng ký SNS (Subscription)
-1. Sau khi chạy lệnh `terraform apply`, AWS SNS sẽ gửi một email xác nhận đến địa chỉ email đã cấu hình (`nhatphanhk102@gmail.com`).
-2. Mở email có tiêu đề **AWS Notifications - Subscription Confirmation**.
-3. Nhấp vào đường link **Confirm subscription**.
-4. AWS sẽ mở một trang web hiển thị "Subscription confirmed!". Lúc này, kênh cảnh báo mới chính thức hoạt động.
+Tất cả Alarms: `evaluation_periods = 2`, `period = 60s`
 
-### Bước 2: Kiểm tra CloudWatch Dashboard có lên dữ liệu không
-1. Đăng nhập vào **AWS Management Console**.
-2. Tìm kiếm và mở dịch vụ **CloudWatch**.
-3. Ở thanh menu bên trái, chọn **Dashboards**.
-4. Chọn Dashboard có tên **triage-hub-dashboard-sandbox**.
-5. Nhìn vào các biểu đồ (Widgets):
-   - Nếu bạn thấy đường biểu diễn nằm ngang hoặc lấm tấm điểm, tức là Metrics đang được thu thập bình thường.
-   - Chú ý phần **Logs Insights** ở cuối Dashboard, nếu có log lỗi sẽ hiện ra dưới dạng bảng.
+### API Gateway Alarms
 
-### Bước 3: Kiểm tra thử nghiệm luồng Cảnh báo (Test Alarm via CLI)
-Đây là cách an toàn và nhanh nhất để chắc chắn rằng Email/SMS sẽ được gửi khi hệ thống xảy ra sự cố mà không cần phải chủ động làm hỏng hệ thống:
+| Alarm Name | Metric | Threshold mặc định |
+|------------|--------|---------------------|
+| `triage-hub-apigw-latency-high` | Latency p99 | 2000ms |
+| `triage-hub-apigw-4xx-high` | 4XXError Sum | 5 |
+| `triage-hub-apigw-5xx-high` | 5XXError Sum | 1 |
 
-Mở Terminal / CloudShell đã cài AWS CLI và chạy lệnh ép Alarm sang trạng thái `ALARM`:
+### Lambda Alarms (per function: alert-ingest, jira-dispatcher, notify-dispatcher)
+
+| Pattern | Metric | Threshold mặc định | Ghi chú |
+|---------|--------|---------------------|---------|
+| `{func}-error-rate-high` | `Errors/Invocations * 100` | 5% | Math Expression composite alarm |
+| `{func}-duration-high` | Duration Average | 5000ms | |
+| `{func}-throttles-high` | Throttles Sum | 1 | |
+
+### SQS Alarms (per queue: raw-alert-queue.fifo, buffer-queue.fifo, dispatch-queue)
+
+| Pattern | Metric | Threshold mặc định |
+|---------|--------|---------------------|
+| `{queue}-queue-depth-high` | ApproximateNumberOfMessagesVisible Max | 1000 tin nhắn |
+| `{queue}-oldest-message-high` | ApproximateAgeOfOldestMessage Max | 3600 giây |
+
+### DynamoDB Alarms
+
+| Alarm Name | Metric | Threshold mặc định |
+|------------|--------|---------------------|
+| `{table}-throttles-high` | ThrottledRequests Sum | 10 |
+| `{table}-system-errors-high` | SystemErrors Sum | 1 |
+
+### ALB Alarms (khi `monitor_alb = true`)
+
+| Alarm Name | Metric | Threshold mặc định |
+|------------|--------|---------------------|
+| `triage-hub-alb-5xx-high` | HTTPCode_Target_5XX_Count Sum | 5 |
+| `triage-hub-alb-latency-high` | TargetResponseTime Average | 2 giây |
+
+### EC2 Alarm (khi `monitor_ec2 = true`)
+
+| Alarm Name | Metric | Threshold mặc định |
+|------------|--------|---------------------|
+| `triage-hub-ec2-cpu-high` | CPUUtilization Average | 80% |
+
+> **Cấu hình thresholds**: Override qua variable `alarm_thresholds` trong `environments/sandbox/terraform.tfvars`.
+
+---
+
+## 5. Application-Level Observability (AI Engine)
+
+AI Engine (`tf1-ai-triage-engine`) tự phát sinh metrics qua `prometheus_client`, expose tại `/metrics`.
+
+### Custom Prometheus Metrics (19 metrics)
+
+| Metric | Loại | Labels | Ý nghĩa |
+|--------|------|--------|---------|
+| `aiops_triage_requests_total` | Counter | `status`, `classification` | Tổng triage requests theo trạng thái |
+| `aiops_triage_request_duration_seconds` | Histogram | — | Thời gian xử lý triage end-to-end |
+| `aiops_triage_inflight_requests` | Gauge | — | Số request đang xử lý đồng thời |
+| `aiops_context_tool_calls_total` | Counter | `tool`, `status` | Lần gọi từng context tool |
+| `aiops_context_tool_duration_seconds` | Histogram | `tool` | Thời gian gọi từng tool |
+| `aiops_llm_calls_total` | Counter | `stage`, `model`, `status` | Lần gọi LLM (Bedrock) |
+| `aiops_llm_tokens_total` | Counter | `stage`, `model`, `type` | Ước tính token tiêu thụ |
+| `aiops_llm_estimated_cost_usd_total` | Counter | `stage`, `model` | Ước tính chi phí LLM (USD) |
+| `aiops_circuit_breaker_open` | Gauge | `dependency` | Trạng thái circuit breaker (0=closed, 1=open) |
+| `aiops_budget_exceeded_total` | Counter | `budget_type` | Số lần vượt quá budget |
+| `aiops_degraded_mode_total` | Counter | `reason` | Số lần chạy ở degraded mode |
+| `aiops_investigation_mode_selected_total` | Counter | `mode`, `source` | Investigation mode được chọn |
+| `aiops_idempotency_events_total` | Counter | `result` | Kết quả idempotency check |
+| `aiops_triage_rejected_total` | Counter | `reason` | Requests bị từ chối |
+| `aiops_evidence_truncation_total` | Counter | `type`, `reason` | Evidence bị compact/truncate |
+| `aiops_qa_iterations_total` | Counter | `result` | QA judge iterations |
+| `aiops_agent_iterations_total` | Counter | `result` | Agent platform iterations |
+| `aiops_agent_tool_requests_total` | Counter | `tool`, `status` | Agent tool requests |
+| `aiops_agent_fallback_total` | Counter | `reason` | Agent deterministic fallbacks |
+
+### Distributed Tracing (OpenTelemetry)
+
+- **Tracer**: `aiops.engine`
+- **Spans**: `context_tool_call` (attributes: `tool`, `tenant_id`, `environment`, `service`)
+- **Exporter**: OTLPSpanExporter → env `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+- **Log format**: JSON structured, fields sanitize theo `AIOPS_LOG_POLICY=metadata_only`
+
+### Context Tools Backend
+
+| Tool | Backend | Env Var |
+|------|---------|---------|
+| `get_metrics` | Prometheus | `PROMETHEUS_URL` |
+| `get_logs` | Loki | `LOKI_URL` |
+| `get_traces` | Jaeger | `JAEGER_URL` |
+| `search_known_errors` | File JSON | `KNOWN_ERRORS_PATH` |
+| `get_jira_history` | DynamoDB | `DYNAMODB_TABLE` |
+
+---
+
+## 6. Hướng Dẫn Từng Bước Kiểm Tra & Xác Thực
+
+### Bước 1: Xác nhận SNS Subscription
+
+1. Sau `terraform apply`, AWS SNS gửi email đến địa chỉ `var.notification_email`.
+2. Mở email **AWS Notifications - Subscription Confirmation**.
+3. Nhấn **Confirm subscription** → Trang hiển thị "Subscription confirmed!".
+
 ```bash
+# Kiểm tra subscription hiện tại
+aws sns list-subscriptions-by-topic --topic-arn <arn> --region us-east-1
+```
+
+### Bước 2: Kiểm tra Dashboard
+
+1. AWS Console → **CloudWatch** → **Dashboards** → **`triage-hub-dashboard-sandbox`**
+2. Kiểm tra 8 widget Health Overview có data (không phải "No data")
+3. Cuối Dashboard: widget Logs Insights — log lỗi hiện theo bảng
+
+### Bước 3: Test Alarm bằng CLI (không gây lỗi thật)
+
+```bash
+# Ép trạng thái ALARM → nhận email trong 10-15 giây
 aws cloudwatch set-alarm-state \
     --alarm-name "triage-hub-apigw-5xx-high" \
     --state-value ALARM \
     --state-reason "Kiểm tra hệ thống gửi Email Alert" \
     --region us-east-1
-```
-*Bạn sẽ nhận được 1 email cảnh báo lập tức (trong vòng 10 giây). Nội dung email sẽ hiển thị thông báo rằng chỉ số 5XX của API Gateway đang bị vượt ngưỡng.*
 
-Sau khi nhận email, hãy đưa Alarm trở lại trạng thái `OK`:
-```bash
+# Đưa về OK sau khi test
 aws cloudwatch set-alarm-state \
     --alarm-name "triage-hub-apigw-5xx-high" \
     --state-value OK \
@@ -162,112 +280,217 @@ aws cloudwatch set-alarm-state \
     --region us-east-1
 ```
 
-### Bước 4: Kiểm tra bằng dữ liệu thực tế (End-to-End)
-Nếu bạn muốn hệ thống tự động sinh dữ liệu thực sự (Real Traffic):
+### Bước 4: End-to-End Test với dữ liệu thật
 
-1. **Test lỗi 5XX / Lambda Error:**
-   - Dùng công cụ `Postman` hoặc `curl` bắn các payload sai định dạng liên tục (spam) vào endpoint API Gateway của hệ thống.
-   - Nếu mã code Lambda không catch lỗi này, Lambda sẽ báo `Error` và API Gateway trả về HTTP 500 (5XXError).
-   - Đợi khoảng 2-3 phút, CloudWatch sẽ gom đủ số liệu và tự động kích hoạt Alarm, đồng thời gửi email.
-
-2. **Test SQS Queue Depth:**
-   - Dùng script Python/NodeJS tạo một vòng lặp gửi 2,000 tin nhắn (messages) liên tục vào `triage-hub-buffer-queue`.
-   - Cùng lúc đó, tạm thời `Disable` trigger của Lambda đang xử lý queue này trên AWS Console.
-   - Khoảng 1 phút sau, trên Dashboard sẽ thấy chỉ số `ApproximateNumberOfMessagesVisible` vọt lên 2,000.
-   - Alarm `triage-hub-buffer-queue-queue-depth-high` sẽ đỏ (In ALARM) vì vượt mức 1000. Gửi Email thông báo tắc nghẽn.
-   - Sau đó `Enable` lại Lambda trigger để nó dọn sạch Queue, hệ thống tự động xanh (OK) trở lại.
-
-3. **Test AWS X-Ray Traces:**
-   - Thực hiện một luồng (flow) hoàn chỉnh trên ứng dụng (ví dụ: gửi một HTTP request tới API Gateway, request này kích hoạt Lambda, Lambda đẩy dữ liệu vào SQS hoặc DynamoDB).
-   - Truy cập **AWS Console > CloudWatch > X-Ray traces > Service map**.
-   - Tại đây, bạn sẽ thấy bản đồ dịch vụ (Service map) tự động vẽ ra kiến trúc dựa trên dữ liệu thực tế (các node như API Gateway, Lambda, SQS).
-   - Truy cập **Traces** (trong mục X-Ray), lọc các request gần đây để xem timeline chi tiết (Trace segments). Bạn có thể click vào từng segment để xem chính xác hàm Lambda mất bao nhiêu mili-giây, hoặc việc gọi DynamoDB có bị chậm hay không.
-
-4. **Test EC2 CPU Alarm:**
-   - Đăng nhập (SSH) hoặc dùng Session Manager để vào máy chủ EC2 của `customer-app`.
-   - Chạy lệnh stress-test (ví dụ: `yes > /dev/null &` chạy nhiều lần) để ép CPU hoạt động hết công suất 100%.
-   - Chờ khoảng 2 phút, Alarm `<project_name>-ec2-cpu-high` sẽ đỏ (ALARM) và gửi cảnh báo qua Email/SMS. Nhớ tắt tiến trình (`killall yes`) sau khi test xong để Alarm tự động phục hồi về xanh (OK).
----
-
-## 5. Các Kịch Bản Test (Test Cases) Thực Hành Đảm Bảo Có Dữ Liệu
-
-Dưới đây là các bài test cụ thể bạn có thể chạy bằng dòng lệnh (Terminal/PowerShell) để sinh ra dữ liệu thật, từ đó xác minh Logs, Metrics và Traces đều đang hoạt động. 
-*Lưu ý: Thay thế `<API_URL>` bằng URL thực tế của API Gateway từ output `apigw_invoke_url`.*
-
-### Test Case 1: Đảm bảo Metrics có dữ liệu (API Gateway & Lambda)
-**Mục tiêu**: Tạo ra lượng truy cập cơ bản (Traffic) để kích hoạt Metrics.
-**Hành động**: Bắn 10 request hợp lệ liên tục tới API Gateway.
-**Lệnh (Bash/PowerShell)**:
+**Lấy URL và API Key:**
 ```bash
-for i in {1..10}; do curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" <API_URL>/alerts; done
+cd capstone/tf-1/devops/infra/environments/sandbox
+terraform output apigw_invoke_url
+terraform output api_key_value
 ```
-**Xác minh**:
-1. Truy cập **CloudWatch > Dashboards > triage-hub-dashboard-sandbox**.
-2. Tại Widget "API Requests" (Count), bạn sẽ thấy số lượng tăng thêm 10.
-3. Tại Widget "Lambda Invocations", hàm `alert-ingest` sẽ tăng thêm 10 lần gọi.
 
-### Test Case 2: Đảm bảo Logs có dữ liệu và ghi nhận lỗi (Logs Insights)
-**Mục tiêu**: Kích hoạt Log Execution và ép hệ thống ghi log lỗi (Error Log).
-**Hành động**: Gửi một request với payload hoàn toàn sai định dạng để Lambda/API Gateway bắt lỗi.
-**Lệnh**:
+**Test 1: Gửi alert hợp lệ**
 ```bash
-curl -X POST <API_URL>/alerts \
-     -H "Content-Type: application/json" \
-     -d '{"invalid_field": "test_log", "missing_required_data": true}'
-```
-**Xác minh**:
-1. Truy cập **CloudWatch > Logs Insights**.
-2. Chọn Log Group: `/aws/lambda/triage-hub-alert-ingest`.
-3. Chạy Query sau:
-   ```text
-   fields @timestamp, @message
-   | filter @message like /Error|Exception|invalid/
-   | sort @timestamp desc
-   | limit 20
-   ```
-4. Bạn phải thấy dòng log báo lỗi tương ứng với payload sai vừa gửi. Nếu có log, tức là luồng CloudWatch Logs đang hoạt động hoàn hảo.
+API_URL="https://<id>.execute-api.us-east-1.amazonaws.com/prod"
+API_KEY="<your_api_key>"
 
-### Test Case 3: Đảm bảo Traces có dữ liệu kết nối (X-Ray)
-**Mục tiêu**: Đảm bảo AWS X-Ray kết nối được các dịch vụ (API -> Lambda -> SQS) thành một chuỗi (Trace).
-**Hành động**: Gửi 1 request thành công để toàn bộ chuỗi được kích hoạt.
-**Lệnh**:
-```bash
-curl -X POST <API_URL>/alerts \
-     -H "Content-Type: application/json" \
-     -d '{"alert_id": "TEST-001", "severity": "high", "message": "Testing X-Ray traces"}'
+curl -X POST "$API_URL/alerts" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -H "X-Tenant-Id: tenant-a" \
+  -H "X-Correlation-Id: test-$(date +%s)" \
+  -d '{
+    "schema_version": "tf1.incident_seed.v1",
+    "tenant_id": "tenant-a",
+    "incident_id": "INC-TEST-001",
+    "correlation_id": "test-001",
+    "environment": "sandbox",
+    "service": "payment-service",
+    "severity": "high",
+    "title": "High latency detected",
+    "started_at": "2026-07-01T00:00:00Z",
+    "received_at": "2026-07-01T00:00:00Z"
+  }'
 ```
-**Xác minh**:
-1. Truy cập **CloudWatch > X-Ray traces > Service map**.
-2. Đợi 1-2 phút, màn hình sẽ vẽ ra sơ đồ luồng đi của dữ liệu: `Client` vạch đường nối tới `API Gateway`, nối tiếp tới `AWS::Lambda`, và nối tiếp tới `AWS::SQS` (buffer-queue).
-3. Chuyển sang tab **Traces**, click vào một Trace ID mới nhất. Bạn sẽ thấy biểu đồ Gantt (timeline) phân rã từng mili-giây:
-   - Bao nhiêu mili-giây tốn cho việc API Gateway routing?
-   - Bao nhiêu mili-giây tốn cho Lambda execution (cold start hay warm start)?
-   - Tốc độ Lambda đẩy data vào SQS là bao nhiêu?
-Nếu sơ đồ này hiển thị đầy đủ các Node, hệ thống Traces đã hoạt động chính xác.
 
-### Test Case 4: Đảm bảo Container Insights thu thập Metrics (EKS)
-**Mục tiêu**: Đảm bảo Add-on CloudWatch Observability trong EKS đang bơm dữ liệu về.
-**Hành động**: Cập nhật hoặc scale số lượng Pod trong EKS (nếu có ứng dụng đang chạy).
-**Lệnh**:
+**Xác minh**: Dashboard → Widget "2. Alert Ingest" tăng 1 Invocation.
+
+**Test 2: Kiểm tra SQS Queue Depth**
 ```bash
-kubectl scale deployment/customer-app --replicas=3 -n default
+aws sqs get-queue-attributes \
+  --queue-url "https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-raw-alert-queue.fifo" \
+  --attribute-names ApproximateNumberOfMessages ApproximateAgeOfOldestMessage \
+  --region us-east-1
 ```
-**Xác minh**:
-1. Truy cập **CloudWatch > Insights > Container Insights**.
-2. Chọn Cluster `triage-hub-eks-sandbox`.
-3. Nhìn vào biểu đồ **Pod Count**, bạn sẽ thấy số lượng Pod tăng lên. Các chỉ số CPU và Memory Utilization của EKS Node sẽ hiển thị dữ liệu dao động realtime.
+
+**Test 3: Test Log lỗi (payload sai)**
+```bash
+curl -X POST "$API_URL/alerts" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"invalid_field": "test_log"}'
+```
+
+Query log:
+```
+# CloudWatch Logs Insights → /aws/lambda/triage-hub-alert-ingest
+fields @timestamp, @message
+| filter @message like /Error|Exception|invalid/
+| sort @timestamp desc
+| limit 20
+```
+
+**Test 4: Kiểm tra EventBridge**
+```bash
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/Events \
+  --metric-name Invocations \
+  --dimensions Name=EventBusName,Value=triage-hub-event-bus-sandbox \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 300 --statistics Sum --region us-east-1
+```
+
+**Test 5: AI Engine metrics (Prometheus)**
+```bash
+kubectl port-forward -n triage-hub deploy/tf1-api 8080:8080
+curl http://localhost:8080/metrics | grep aiops_
+```
+
+**Test 6: EC2 CPU Alarm**
+```bash
+# SSH vào customer-app EC2, chạy stress test
+yes > /dev/null & yes > /dev/null & yes > /dev/null &
+# Sau 2-3 phút alarm kích hoạt. Cleanup:
+killall yes
+```
+
+**Test 7: Container Insights EKS**
+- CloudWatch → Insights → Container Insights → Cluster `triage-hub-eks-sandbox`
 
 ---
 
-## 6. Những Điểm Cần Cải Tiến (Observability Improvements)
+## 7. Kiểm Tra Prometheus Dynamic Discovery
 
-Hiện tại hệ thống Observability cơ bản đã được thiết lập tốt, nhưng vẫn có thể nâng cấp thêm để vận hành tối ưu hơn ở môi trường Production:
+Terraform tự động lấy IP của EC2 Prometheus và lưu vào SSM:
 
-**Các tính năng đã triển khai thành công:**
-- **✅ Application Signals & ServiceLens**: Đã bổ sung đường link truy cập nhanh sang bản đồ Service Map, liên kết trực tiếp giữa Metric, Log và Trace trên cùng một màn hình (correlation) để hỗ trợ tìm kiếm nguyên nhân gốc rễ (Root Cause Analysis).
-- **✅ Giám sát Chi phí (Cost Monitoring)**: Đã bổ sung Widget theo dõi chi phí (Estimated Charges) vào ngay Dashboard, phòng trường hợp bị DDOS hoặc Lambda gọi lặp vô hạn gây phát sinh hóa đơn lớn.
+```bash
+aws ssm get-parameter \
+  --name "/triage-hub/sandbox/prometheus_ip" \
+  --region us-east-1 \
+  --query "Parameter.Value" --output text
+```
 
-**Các cải tiến đề xuất cho tương lai:**
-1. **Anomaly Detection Alarms**: Thay vì sử dụng ngưỡng tĩnh (Static Thresholds) cho CPU hay số lượng Error, nên kết hợp Machine Learning của CloudWatch (Anomaly Detection) để cảnh báo linh hoạt dựa trên hành vi thông thường của hệ thống.
-2. **Tự động khắc phục sự cố (Auto-remediation)**: Hiện tại khi có Alarm, hệ thống mới chỉ báo qua SNS (Email/SMS). Cần tích hợp thêm AWS EventBridge và Systems Manager Automation để tự động khởi động lại (restart) các dịch vụ bị treo, hoặc flush Queue khi quá tải.
-3. **Tích hợp Chatbot (Slack/Microsoft Teams)**: Cảnh báo gửi qua Email rất dễ bị bỏ qua hoặc rơi vào mục Spam. Việc cấu hình AWS Chatbot gửi cảnh báo ngay vào group Slack của team sẽ hiệu quả hơn nhiều.
+AI Engine dùng `PROMETHEUS_URL=http://<ip>:9090` để query:
+```promql
+aiops_scenario_metric_value{tenant_id="tenant-a",environment="sandbox",service="payment-service"}
+```
+
+---
+
+## 8. Danh Sách Alarm Names Thực Tế (Sandbox)
+
+```bash
+aws cloudwatch describe-alarms \
+  --alarm-name-prefix "triage-hub" \
+  --region us-east-1 \
+  --query "MetricAlarms[].{Name:AlarmName,State:StateValue}" \
+  --output table
+```
+
+**Tổng cộng ~22 alarms:**
+
+```
+# API Gateway (3)
+triage-hub-apigw-latency-high
+triage-hub-apigw-4xx-high
+triage-hub-apigw-5xx-high
+
+# Lambda x3 functions x3 types = 9 alarms
+triage-hub-alert-ingest-error-rate-high
+triage-hub-alert-ingest-duration-high
+triage-hub-alert-ingest-throttles-high
+triage-hub-jira-dispatcher-error-rate-high
+triage-hub-jira-dispatcher-duration-high
+triage-hub-jira-dispatcher-throttles-high
+triage-hub-notify-dispatcher-error-rate-high
+triage-hub-notify-dispatcher-duration-high
+triage-hub-notify-dispatcher-throttles-high
+
+# SQS x3 queues x2 types = 6 alarms
+triage-hub-raw-alert-queue.fifo-queue-depth-high
+triage-hub-raw-alert-queue.fifo-oldest-message-high
+triage-hub-buffer-queue.fifo-queue-depth-high
+triage-hub-buffer-queue.fifo-oldest-message-high
+triage-hub-dispatch-queue-queue-depth-high
+triage-hub-dispatch-queue-oldest-message-high
+
+# DynamoDB (2)
+triage-hub-incidents-sandbox-throttles-high
+triage-hub-incidents-sandbox-system-errors-high
+
+# ALB (2)
+triage-hub-alb-5xx-high
+triage-hub-alb-latency-high
+
+# EC2 (1)
+triage-hub-ec2-cpu-high
+```
+
+---
+
+## 9. Troubleshooting Thường Gặp
+
+### Alarm ở `INSUFFICIENT_DATA`
+
+**Nguyên nhân**: Metric chưa có data points (resource mới tạo hoặc chưa có traffic).
+
+```bash
+aws cloudwatch describe-alarms --alarm-names "triage-hub-apigw-5xx-high" --region us-east-1
+```
+
+**Giải pháp**: Gửi vài request để kích hoạt metrics, chờ 2–3 phút.
+
+### Lambda Error Rate alarm nhạy quá
+
+Alarm dùng Math Expression `IF(m2 == 0, 0, m1/m2 * 100)` — chỉ báo khi có invocations. Điều chỉnh qua `alarm_thresholds.lambda_error_rate`.
+
+### SQS FIFO Queue Depth không giảm
+
+```bash
+# Kiểm tra Lambda trigger
+aws lambda list-event-source-mappings --function-name triage-hub-alert-ingest --region us-east-1
+```
+
+Nếu `State: Disabled` → Enable lại trigger.
+
+### AI Engine metrics không hiện
+
+```bash
+kubectl exec -n triage-hub <pod> -- curl -s localhost:8080/metrics | grep aiops_triage_requests_total
+```
+
+Kiểm tra env `AIOPS_OBSERVABILITY_ENABLED=true`.
+
+---
+
+## 10. Các Cải Tiến Đã Triển Khai & Kế Hoạch
+
+### ✅ Đã triển khai thực tế
+
+- **Overall Error Rate widget**: Math Expression tổng hợp tất cả services
+- **Success Rate per Lambda**: `100 - (err/inv * 100)%` per function
+- **EventBridge Broadcast**: Jira assignment → `broadcast-notifier` → Slack tự động
+- **19 Custom Prometheus Metrics**: LLM cost, circuit breaker, idempotency, budget...
+- **OTLP Distributed Tracing**: OpenTelemetry spans qua OTLP endpoint
+- **KEDA Auto-scaling**: Worker scale theo `buffer-queue.fifo` depth
+- **Cost Monitoring Widget**: `EstimatedCharges` USD trong Dashboard
+- **ServiceLens Deep-link**: Shortcut vào CloudWatch Service Map
+- **Prometheus EC2 Dynamic IP**: SSM Parameter Store cập nhật IP tự động
+
+### 🔜 Kế hoạch cải tiến
+
+1. **Anomaly Detection**: ML-based CloudWatch Anomaly Detection thay ngưỡng tĩnh
+2. **Auto-remediation**: EventBridge + SSM Automation tự restart khi Alarm
+3. **Slack Chatbot**: AWS Chatbot gửi Alarm trực tiếp vào Slack channel
+4. **Grafana Dashboard**: Visualize custom Prometheus metrics từ AI Engine
