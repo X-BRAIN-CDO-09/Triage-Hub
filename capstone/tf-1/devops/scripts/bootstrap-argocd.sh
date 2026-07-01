@@ -27,6 +27,9 @@ helm install argocd argo/argo-cd \
 echo "==> Waiting for ArgoCD Server to be ready..."
 kubectl rollout status deployment/argocd-server -n "$NAMESPACE" --timeout=300s
 
+echo "==> Automatically applying Prometheus ServiceMonitor CRD..."
+kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
+
 echo "==> Automatically applying triage-hub AppProject..."
 kubectl apply -f "$(dirname "$0")/../platform/argocd/projects/triage-hub-project.yaml" -n "$NAMESPACE"
 
