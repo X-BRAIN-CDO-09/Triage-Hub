@@ -52,11 +52,12 @@ patches:
               queueURL: https://sqs.us-east-1.amazonaws.com/730335441285/triage-hub-buffer-queue
               queueLength: "5"
               awsRegion: us-east-1
-              # identityOwner=pod: KEDA dùng IRSA của workload (tf1-worker-sa) đã có
-              # sẵn sqs:GetQueueAttributes trên buffer-queue + trust đúng SA. operator
-              # SA không gắn IRSA nên trước đó fallback node-role -> AccessDenied 403.
-              identityOwner: pod
+              # identityOwner=operator: KEDA (podIdentity.provider=aws) LUÔN dùng identity
+              # của keda-operator. Operator nay đã gắn IRSA role
+              # triage-hub-keda-operator-irsa-sandbox (có sqs:GetQueueAttributes).
+              # (Đã thử pod -> KHÔNG ăn vì AWS không ủy quyền sang workload role.)
+              identityOwner: operator
 images:
   - name: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
-    newTag: "4e2e5ee"
+    newTag: "89d434f"
 

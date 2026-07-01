@@ -24,6 +24,21 @@ const VALID_SEVERITIES = new Set([
 ]);
 
 exports.handler = async (event) => {
+	if (isSqsEvent(event)) {
+		const results = [];
+		for (const record of event.Records) {
+			results.push(await handleApiGatewayLikeEvent(buildEventFromSqsRecord(record)));
+		}
+		return jsonResponse(202, {
+			status: "Processed",
+			records: results.length,
+		});
+	}
+
+	return handleApiGatewayLikeEvent(event);
+};
+
+async function handleApiGatewayLikeEvent(event) {
 	console.log(
 		"Received alert ingestion request:",
 		JSON.stringify({
@@ -134,7 +149,39 @@ exports.handler = async (event) => {
 		accepted_alerts: accepted,
 		dropped_alerts: dropped,
 	});
-};
+}
+
+function isSqsEvent(event) {
+	return (
+		Array.isArray(event?.Records) &&
+		event.Records.some((record) => record.eventSource === "aws:sqs")
+	);
+}
+
+function buildEventFromSqsRecord(record) {
+	const headers = {};
+	const tenantId = sqsMessageAttributeValue(record, "TenantId");
+	const correlationId = sqsMessageAttributeValue(record, "CorrelationId");
+	const source = sqsMessageAttributeValue(record, "Source");
+
+	if (tenantId) headers["x-tenant-id"] = tenantId;
+	if (correlationId) headers["x-correlation-id"] = correlationId;
+	if (source) headers["x-source"] = source;
+
+	return {
+		body: record.body,
+		headers,
+		isBase64Encoded: false,
+		requestContext: {
+			source: "sqs",
+			messageId: record.messageId,
+		},
+	};
+}
+
+function sqsMessageAttributeValue(record, name) {
+	return record.messageAttributes?.[name]?.stringValue;
+}
 
 function parseBody(event) {
 	const text = event.isBase64Encoded
@@ -314,6 +361,7 @@ async function sendSeedToSqs(seed) {
 	const command = new SendMessageCommand({
 		QueueUrl: QUEUE_URL,
 		MessageBody: messageBody,
+		MessageGroupId: seed.tenant_id || "default-group",
 		MessageAttributes: {
 			TenantId: { DataType: "String", StringValue: seed.tenant_id },
 			IncidentId: { DataType: "String", StringValue: seed.incident_id },

@@ -108,3 +108,10 @@ spec:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: JAEGER_URL
+            - name: AIOPS_PERSISTENCE_BACKEND
+              value: "dynamodb"
+            - name: AIOPS_DYNAMODB_TABLE
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: AIOPS_DYNAMODB_TABLE

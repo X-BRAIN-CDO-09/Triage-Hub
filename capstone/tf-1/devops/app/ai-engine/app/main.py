@@ -23,10 +23,9 @@ from app.audit_store import (
 )
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
+from app.dynamodb_store import IdempotencyCompletedError, IdempotencyInProgressError
 from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
-    IdempotencyCompletedError,
-    IdempotencyInProgressError,
     complete_record,
     fail_record,
     is_stale,

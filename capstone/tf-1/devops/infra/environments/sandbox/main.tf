@@ -5,6 +5,10 @@
 
 data "aws_caller_identity" "current" {}
 
+locals {
+  lambda_bootstrap_source_dir = "../../modules/lambda/bootstrap/nodejs20"
+}
+
 # 1. Platform VPC Module
 module "vpc_platform" {
   source = "../../modules/vpc"
@@ -77,16 +81,19 @@ module "sqs" {
 
   project_name = var.project_name
   queues = {
-    "buffer-queue"   = {}
+    "raw-alert-queue" = {
+      visibility_timeout_seconds  = 60
+      message_retention_seconds   = 345600
+      max_receive_count           = 5
+      fifo_queue                  = true
+      content_based_deduplication = true
+    }
+    "buffer-queue" = {
+      fifo_queue                  = true
+      content_based_deduplication = true
+    }
     "dispatch-queue" = {}
   }
-}
-
-# 7. S3 Module
-module "s3" {
-  source       = "../../modules/s3"
-  project_name = var.project_name
-  environment  = var.environment
 }
 
 # 8. DynamoDB Module
@@ -134,12 +141,21 @@ module "lambda" {
     "alert-ingest" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/alert-ingest"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         SQS_QUEUE_URL  = module.sqs.queue_urls["buffer-queue"]
         DYNAMODB_TABLE = module.dynamodb.table_name
       }
       iam_policy_statements = [
+        {
+          effect = "Allow"
+          actions = [
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:GetQueueAttributes"
+          ]
+          resources = [module.sqs.queue_arns["raw-alert-queue"]]
+        },
         {
           effect    = "Allow"
           actions   = ["sqs:SendMessage"]
@@ -147,7 +163,7 @@ module "lambda" {
         },
         {
           effect    = "Allow"
-          actions   = ["dynamodb:Query", "dynamodb:GetItem"]
+          actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
           resources = [module.dynamodb.table_arn]
         }
       ]
@@ -156,11 +172,14 @@ module "lambda" {
     "jira-dispatcher" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/jira-dispatcher"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         DYNAMODB_TABLE           = module.dynamodb.table_name
         JIRA_SECRET_ARN          = module.secrets_manager.secret_arns["jira_api_token"]
         SLACK_SIGNING_SECRET_ARN = module.secrets_manager.secret_arns["slack_signing_secret"]
+        # Cần cho "Assign Me": map Slack user -> email (users.info) -> Jira accountId
+        SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
+        EVENT_BUS_NAME      = aws_cloudwatch_event_bus.triage_hub_bus.name
       }
       iam_policy_statements = [
         {
@@ -173,13 +192,35 @@ module "lambda" {
           actions = ["secretsmanager:GetSecretValue"]
           resources = [
             module.secrets_manager.secret_arns["jira_api_token"],
-            module.secrets_manager.secret_arns["slack_signing_secret"]
+            module.secrets_manager.secret_arns["slack_signing_secret"],
+            module.secrets_manager.secret_arns["slack_bot_token"]
           ]
         },
         {
           effect    = "Allow"
           actions   = ["lambda:InvokeFunction"]
           resources = ["arn:aws:lambda:us-east-1:*:function:triage-hub-jira-dispatcher"]
+        },
+        {
+          effect    = "Allow"
+          actions   = ["events:PutEvents"]
+          resources = [aws_cloudwatch_event_bus.triage_hub_bus.arn]
+        }
+      ]
+    }
+
+    "broadcast-notifier" = {
+      handler    = "index.handler"
+      runtime    = "nodejs20.x"
+      source_dir = local.lambda_bootstrap_source_dir
+      environment_variables = {
+        SLACK_BOT_TOKEN_ARN = module.secrets_manager.secret_arns["slack_bot_token"]
+      }
+      iam_policy_statements = [
+        {
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
+          resources = [module.secrets_manager.secret_arns["slack_bot_token"]]
         }
       ]
     }
@@ -187,7 +228,7 @@ module "lambda" {
     "notify-dispatcher" = {
       handler    = "index.handler"
       runtime    = "nodejs20.x"
-      source_dir = "../../../app/notify-dispatcher"
+      source_dir = local.lambda_bootstrap_source_dir
       environment_variables = {
         DYNAMODB_TABLE      = module.dynamodb.table_name
         JIRA_SECRET_ARN     = module.secrets_manager.secret_arns["jira_api_token"]
@@ -232,15 +273,18 @@ module "api_gateway" {
 
   integrations = {
     "alerts" = {
-      path_part           = "alerts"
-      http_method         = "POST"
-      lambda_function_arn = module.lambda.invoke_arns["alert-ingest"]
-      lambda_name         = module.lambda.function_names["alert-ingest"]
-      api_key_required    = true
+      path_part        = "alerts"
+      http_method      = "POST"
+      api_key_required = true
+
+      integration_type = "sqs_send_message"
+      sqs_queue_arn    = module.sqs.queue_arns["raw-alert-queue"]
+      sqs_queue_name   = "${var.project_name}-raw-alert-queue.fifo"
     }
     "slack" = {
       path_part           = "slack"
       http_method         = "POST"
+      integration_type    = "lambda_proxy"
       lambda_function_arn = module.lambda.invoke_arns["jira-dispatcher"]
       lambda_name         = module.lambda.function_names["jira-dispatcher"]
       api_key_required    = false
@@ -249,6 +293,13 @@ module "api_gateway" {
 }
 
 # 13. SQS Event Source Mappings (Triggers)
+resource "aws_lambda_event_source_mapping" "alert_ingest_raw_alert_queue" {
+  event_source_arn = module.sqs.queue_arns["raw-alert-queue"]
+  function_name    = module.lambda.function_names["alert-ingest"]
+  batch_size       = 1
+  enabled          = true
+}
+
 resource "aws_lambda_event_source_mapping" "notify_dispatcher" {
   event_source_arn = module.sqs.queue_arns["dispatch-queue"]
   function_name    = module.lambda.function_names["notify-dispatcher"]
@@ -256,18 +307,7 @@ resource "aws_lambda_event_source_mapping" "notify_dispatcher" {
   enabled          = true
 }
 
-# 14. VPC Endpoints (Gateway for S3 and DynamoDB)
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = module.vpc_platform.vpc_id
-  service_name      = "com.amazonaws.${var.aws_region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = module.vpc_platform.private_route_table_ids
-
-  tags = {
-    Name = "${var.project_name}-s3-vpce-${var.environment}"
-  }
-}
-
+# 14. VPC Endpoints (Gateway for DynamoDB)
 resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = module.vpc_platform.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
@@ -443,7 +483,8 @@ module "observability" {
   ]
 
   sqs_queues = [
-    "${var.project_name}-buffer-queue",
+    "${var.project_name}-raw-alert-queue.fifo",
+    "${var.project_name}-buffer-queue.fifo",
     "${var.project_name}-dispatch-queue"
   ]
 }
@@ -516,21 +557,13 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = ["arn:aws:iam::265808836805:role/CrossAccountBedrockRole"]
+        Action   = ["bedrock:InvokeAgent"]
+        Resource = ["arn:aws:bedrock-agentcore:us-east-1:589077667575:runtime/tf1_ai_investigator-D48STMEUHo"]
       },
       {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
         Resource = ["arn:aws:bedrock-agentcore:${var.aws_region}:*:runtime/*"]
-      },
-      {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [
-          module.s3.bucket_arn,
-          "${module.s3.bucket_arn}/*"
-        ]
       }
     ]
   })
@@ -554,7 +587,7 @@ data "aws_iam_policy_document" "tf1_worker_assume_role" {
   }
 }
 
-# IAM Role for tf1-worker (Needs S3, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
+# IAM Role for tf1-worker (Needs SQS, DynamoDB, Secrets Manager, and invoke notify-dispatcher Lambda)
 resource "aws_iam_role" "tf1_worker_irsa" {
   name = "${var.project_name}-tf1-worker-irsa-${var.environment}"
 
@@ -572,18 +605,6 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          module.s3.bucket_arn,
-          "${module.s3.bucket_arn}/*"
-        ]
-      },
       {
         Effect = "Allow"
         Action = [
@@ -623,6 +644,53 @@ resource "aws_iam_role_policy" "tf1_worker_policy" {
         Resource = [
           module.sqs.queue_arns["dispatch-queue"]
         ]
+      }
+    ]
+  })
+}
+
+# IRSA cho KEDA operator — KEDA dùng podIdentity.provider=aws nên LUÔN xài identity
+# của chính operator (không ủy quyền sang workload role). Operator cần quyền đọc độ sâu
+# SQS để tính scale. Least-privilege: chỉ GetQueueAttributes trên buffer-queue.
+data "aws_iam_policy_document" "keda_operator_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:keda:keda-operator"]
+    }
+  }
+}
+
+resource "aws_iam_role" "keda_operator_irsa" {
+  name = "${var.project_name}-keda-operator-irsa-${var.environment}"
+
+  assume_role_policy = data.aws_iam_policy_document.keda_operator_assume_role.json
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy" "keda_operator_policy" {
+  name = "${var.project_name}-keda-operator-policy-${var.environment}"
+  role = aws_iam_role.keda_operator_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:GetQueueAttributes"]
+        Resource = [module.sqs.queue_arns["buffer-queue"]]
       }
     ]
   })
@@ -698,16 +766,19 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
 # Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
 # Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
-# Tự động truy vấn IP của EC2 Prometheus
-data "aws_instance" "prometheus_ec2" {
-  instance_id = "i-09b8613caba420fc3"
+# Tự động truy vấn IP của EC2 Prometheus bằng filter động
+data "aws_instances" "prometheus_ec2" {
+  filter {
+    name   = "tag:Name"
+    values = ["*prometheus*"]
+  }
 }
 
-# Lưu IP động của EC2 Prometheus vào SSM Parameter để CI/CD pipeline đọc
+# Lưu IP động của EC2 Prometheus vào SSM Parameter để CI/CD pipeline đọc (fallback về 127.0.0.1 nếu không tìm thấy)
 resource "aws_ssm_parameter" "prometheus_ip" {
   name      = "/${var.project_name}/${var.environment}/prometheus_ip"
   type      = "String"
-  value     = data.aws_instance.prometheus_ec2.public_ip
+  value     = length(data.aws_instances.prometheus_ec2.public_ips) > 0 ? data.aws_instances.prometheus_ec2.public_ips[0] : "127.0.0.1"
   overwrite = true
 
   tags = {
@@ -715,4 +786,53 @@ resource "aws_ssm_parameter" "prometheus_ip" {
   }
 }
 
+# 20. EventBridge for Broadcast Notifications
+resource "aws_cloudwatch_event_bus" "triage_hub_bus" {
+  name = "${var.project_name}-event-bus-${var.environment}"
+}
 
+resource "aws_cloudwatch_event_rule" "jira_assigned" {
+  name           = "${var.project_name}-jira-assigned-rule-${var.environment}"
+  event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
+  description    = "Capture Jira assignment events from jira-dispatcher"
+  event_pattern = jsonencode({
+    "source"      = ["triage-hub.jira"],
+    "detail-type" = ["IncidentAssigned"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "broadcast_notifier" {
+  rule           = aws_cloudwatch_event_rule.jira_assigned.name
+  event_bus_name = aws_cloudwatch_event_bus.triage_hub_bus.name
+  target_id      = "BroadcastNotifier"
+  arn            = module.lambda.function_arns["broadcast-notifier"]
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_invoke" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda.function_names["broadcast-notifier"]
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.jira_assigned.arn
+}
+
+# Cấp quyền SQS cho EKS Node Group để KEDA Operator có thể quét độ dài hàng đợi
+resource "aws_iam_role_policy" "eks_node_sqs_policy" {
+  name = "${var.project_name}-eks-node-sqs-policy-${var.environment}"
+  role = "${var.project_name}-eks-node-role" # Tên role của Node Group
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage"
+        ]
+        Resource = module.sqs.queue_arns["buffer-queue"]
+      }
+    ]
+  })
+}

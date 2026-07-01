@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry
+from app.main import LogEntry, MetricSeries, Ownership, RecentDeploy
 
 
 class IncidentSeed(BaseModel):
@@ -21,6 +22,12 @@ class IncidentSeed(BaseModel):
     started_at: str = Field(min_length=1)
     received_at: str = Field(min_length=1)
     labels: dict[str, Any] = Field(default_factory=dict)
+    # Bổ sung các trường với kiểu class chuẩn
+    metrics: list[MetricSeries] = Field(default_factory=list)
+    logs: list[LogEntry] = Field(default_factory=list)
+    traces: list[dict[str, Any]] = Field(default_factory=list)
+    recent_deploys: list[RecentDeploy] = Field(default_factory=list)
+    ownership: Ownership | None = None
 
 
 def build_triage_request_from_seed(seed: IncidentSeed, registry: ToolRegistry | None = None) -> dict[str, Any]:
@@ -40,10 +47,11 @@ def build_triage_request_from_seed(seed: IncidentSeed, registry: ToolRegistry | 
             "started_at": seed.started_at,
             "labels": seed.labels,
         },
-        "metrics": [],
-        "logs": [],
-        "traces": [],
-        "recent_deploys": [],
-        "ownership": None,
+        # Truyền tiếp context nhận được từ SQS thay vì ép về rỗng []
+        "metrics": seed.metrics,
+        "logs": seed.logs,
+        "traces": seed.traces,
+        "recent_deploys": seed.recent_deploys,
+        "ownership": seed.ownership,
     }
     return enrich_triage_context(body, registry)
