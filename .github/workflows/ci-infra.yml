@@ -204,19 +204,6 @@ jobs:
       - name: Prepare Lambda zip output directory
         run: mkdir -p ../../modules/lambda/files
 
-      - name: Clean deprecated K8s resources from state
-        run: |
-          set +e
-          echo "🧹 Cleaning deprecated resources from state..."
-          terraform state rm terraform_data.argocd_root || true
-          terraform state rm helm_release.argocd || true
-          terraform state rm module.otel_collector.helm_release.opentelemetry_collector || true
-          terraform state rm module.prometheus.helm_release.kube_prometheus_stack || true
-          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_application_dashboard || true
-          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_business_dashboard || true
-          terraform state rm module.prometheus.kubernetes_config_map_v1.grafana_executive_dashboard || true
-          set -e
-
       - name: Terraform plan
         id: plan
         run: |

@@ -55,9 +55,9 @@ PR -> Validate -> Build/Package -> Scan -> Plan -> Review -> Merge -> Apply/Depl
 | `ci-infra.yml` | infra PR/push, schedule 07:17 ICT, manual apply | Terraform fmt/validate/scan, plan/apply sandbox, handoff ZIP sinh ra từ Terraform | Terraform plan/apply và Trivy/Checkov |
 | `ci-ai-engine.yml` | AI engine PR/push/manual | Build AI image, scan bằng Trivy, push ECR SHA tag, ký Cosign, bump sandbox overlay | Unit test, image scan và signature |
 | `platform-manifest-validate.yml` | platform PR/push/manual | Render Kustomize overlay và ArgoCD app, validate schema Kubernetes bằng kubeconform strict mode | Kustomize build và kubeconform validation |
-| `terraform-destroy.yml` | schedule 00:00 ICT, manual confirm | Destroy sandbox chỉ khi guardrail cho phép | `ENABLE_AUTO_DESTROY`, `SKIP_AUTO_DESTROY`, `LEASE_UNTIL`, manual `destroy-sandbox` |
+| `terraform-destroy.yml` | manual confirm | Destroy sandbox chỉ khi người vận hành xác nhận đúng | manual `destroy-sandbox` và state concurrency |
 
-Thiết kế tách hạ tầng khỏi app code. App code đi qua `ci-app.yml` khi merge/push vào `develop` hoặc `main`. Infra đi qua `ci-infra.yml`, nhưng infra push/merge không tự dispatch App CI. App CI chỉ chạy sau infra khi scheduled sandbox hydration hoặc manual apply có `deploy_app_after_apply=true`.
+Thiết kế tách hạ tầng khỏi app code. App code đi qua `ci-app.yml` khi merge/push vào `develop` hoặc `main`. Infra đi qua `ci-infra.yml`, nhưng infra push/merge không tự dispatch App CI. App CI chỉ chạy sau infra khi scheduled sandbox hydration hoặc manual apply có `deploy_app_after_apply=true`. Destroy sandbox là thao tác thủ công, không còn chạy theo lịch cố định.
 
 ### 2.2 Branch strategy
 
@@ -108,7 +108,7 @@ capstone/tf-1/devops/
 - **Lambda dispatchers**: App CI đóng gói và deploy bằng `aws lambda update-function-code`. Terraform sở hữu function, IAM, biến môi trường và trigger; App CI sở hữu update code.
 - **AI engine**: API và worker dùng chung một ECR image nhưng khác command. Image dùng immutable SHA tag, được scan bằng Trivy và ký bằng Cosign.
 - **Kubernetes runtime**: ArgoCD sync platform overlay. Argo Rollouts canary là chiến lược ưu tiên cho AI API: 10% -> 50% -> 100%, abort khi error rate, latency, health check hoặc restart count vượt ngưỡng.
-- **Sandbox hydration**: scheduled infra apply lúc 07:17 ICT có thể dựng lại hạ tầng thiếu và dispatch App CI để deploy lại Lambda code hiện tại. Scheduled destroy lúc 00:00 ICT chỉ chạy khi guard variables cho phép.
+- **Sandbox hydration**: scheduled infra apply lúc 07:17 ICT có thể dựng lại hạ tầng thiếu và dispatch App CI để deploy lại Lambda code hiện tại. Destroy sandbox chỉ được thực hiện thủ công qua `terraform-destroy.yml` sau khi nhập đúng `destroy-sandbox`.
 
 ### 4.2 Rollback method
 
@@ -160,7 +160,7 @@ Mục tiêu là onboard tenant demo dưới 30 phút. Self-service onboarding đ
 ## 9. Open questions (Owner: Kiên)
 
 - [ ] Có nên đưa `platform-manifest-validate.yml` vào required status check trong GitHub ruleset không?
-- [ ] Chính sách scheduled destroy cuối cùng là giữ `ENABLE_AUTO_DESTROY=false` mặc định hay bật nightly cleanup trong tuần demo?
+- [ ] Nếu cần dọn sandbox định kỳ trong tuần demo, nhóm sẽ dùng manual destroy hay mở lại một workflow cleanup riêng có approval?
 - [ ] Staging có cần triển khai thật hay chỉ giữ ở mức thiết kế?
 - [ ] Chốt tên Lambda và queue sau khi FIFO migration hoàn tất.
 

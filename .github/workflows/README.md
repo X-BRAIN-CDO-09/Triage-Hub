@@ -7,12 +7,11 @@ This directory contains the GitHub Actions workflows used for application and in
 The shared `sandbox` environment currently uses:
 
 - `ci-infra.yml`: scheduled Terraform apply at `07:17` ICT every day
-- `terraform-destroy.yml`: scheduled Terraform destroy at `00:00` ICT every day
+- `terraform-destroy.yml`: manual Terraform destroy only
 
 GitHub Actions cron expressions use UTC. The current schedules are:
 
 - `17 0 * * *` -> `07:17` ICT
-- `0 17 * * *` -> `00:00` ICT
 
 ## App deploy after infra apply
 
@@ -20,60 +19,18 @@ GitHub Actions cron expressions use UTC. The current schedules are:
 
 `ci-infra.yml` only dispatches App CI after Terraform apply in these cases:
 
-- scheduled infra apply, so the daily sandbox can be hydrated after a nightly destroy
+- scheduled infra apply, so the daily sandbox can be hydrated when resources are missing
 - manual infra apply with `deploy_app_after_apply=true`
 
 Infra PRs and infra push/merge runs do not dispatch App CI by default. If an infra change creates or changes Lambda runtime resources and the current branch app code should be redeployed, use manual infra apply with `deploy_app_after_apply=true`, or run App CI manually with `deploy=true`.
 
 ## Sandbox destroy guardrails
 
-The scheduled destroy workflow is protected by three GitHub Actions variables. These should be configured in the `sandbox` environment variables unless the team intentionally wants repo-wide behavior.
+`terraform-destroy.yml` no longer has a scheduled trigger. Destroy is manual-only and requires:
 
-### `ENABLE_AUTO_DESTROY`
-
-- `true`: allow the nightly scheduled destroy to proceed
-- `false` or unset: always skip scheduled destroy
-
-### `SKIP_AUTO_DESTROY`
-
-- `true`: temporary keepalive switch for the shared sandbox
-- `false` or unset: do not block scheduled destroy
-
-### `LEASE_UNTIL`
-
-Optional ISO-8601 UTC timestamp, for example:
-
-```text
-2026-06-30T02:00:00Z
-```
-
-If the current UTC time is earlier than `LEASE_UNTIL`, scheduled destroy is skipped.
-
-## Recommended values
-
-### Normal nightly auto-destroy
-
-```text
-ENABLE_AUTO_DESTROY=true
-SKIP_AUTO_DESTROY=false
-LEASE_UNTIL=
-```
-
-### Keep sandbox alive tonight
-
-```text
-ENABLE_AUTO_DESTROY=true
-SKIP_AUTO_DESTROY=true
-LEASE_UNTIL=
-```
-
-### Keep sandbox alive until a specific time
-
-```text
-ENABLE_AUTO_DESTROY=true
-SKIP_AUTO_DESTROY=false
-LEASE_UNTIL=2026-06-30T02:00:00Z
-```
+- selecting the `sandbox` environment
+- typing `destroy-sandbox` in the confirmation input
+- passing the shared Terraform state concurrency lock
 
 ## Terraform lock handling
 
@@ -91,4 +48,4 @@ The workflows also use a shared GitHub Actions concurrency group:
 terraform-sandbox-state
 ```
 
-This prevents scheduled apply and destroy runs from executing at the same time in Actions.
+This prevents Terraform apply and destroy runs from executing at the same time in Actions.

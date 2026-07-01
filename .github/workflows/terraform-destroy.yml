@@ -1,8 +1,6 @@
 name: Terraform Destroy
 
 on:
-  schedule:
-    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -34,21 +32,14 @@ jobs:
       should_destroy: ${{ steps.guard.outputs.should_destroy }}
       reason: ${{ steps.guard.outputs.reason }}
     steps:
-      - name: Evaluate schedule policy
+      - name: Validate manual confirmation
         id: guard
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
           INPUT_CONFIRM: ${{ github.event.inputs.confirm }}
-          ENABLE_AUTO_DESTROY: ${{ vars.ENABLE_AUTO_DESTROY || 'false' }}
-          SKIP_AUTO_DESTROY: ${{ vars.SKIP_AUTO_DESTROY || 'false' }}
-          LEASE_UNTIL: ${{ vars.LEASE_UNTIL || '' }}
         run: |
           set -euo pipefail
-
-          normalize_bool() {
-            printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
-          }
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$INPUT_ENVIRONMENT" = "sandbox" ] && [ "$INPUT_CONFIRM" = "destroy-sandbox" ]; then
@@ -61,35 +52,8 @@ jobs:
             exit 0
           fi
 
-          if [ "$(normalize_bool "$ENABLE_AUTO_DESTROY")" != "true" ]; then
-            echo "should_destroy=false" >> "$GITHUB_OUTPUT"
-            echo "reason=auto_destroy_disabled" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$(normalize_bool "$SKIP_AUTO_DESTROY")" = "true" ]; then
-            echo "should_destroy=false" >> "$GITHUB_OUTPUT"
-            echo "reason=skip_flag_enabled" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -n "$LEASE_UNTIL" ]; then
-            if ! lease_epoch=$(date -u -d "$LEASE_UNTIL" +%s 2>/dev/null); then
-              echo "should_destroy=false" >> "$GITHUB_OUTPUT"
-              echo "reason=invalid_lease_until" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            now_epoch=$(date -u +%s)
-            if [ "$now_epoch" -lt "$lease_epoch" ]; then
-              echo "should_destroy=false" >> "$GITHUB_OUTPUT"
-              echo "reason=lease_active" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          echo "should_destroy=true" >> "$GITHUB_OUTPUT"
-          echo "reason=schedule_allowed" >> "$GITHUB_OUTPUT"
+          echo "should_destroy=false" >> "$GITHUB_OUTPUT"
+          echo "reason=unsupported_event" >> "$GITHUB_OUTPUT"
 
       - name: Report destroy decision
         run: |
