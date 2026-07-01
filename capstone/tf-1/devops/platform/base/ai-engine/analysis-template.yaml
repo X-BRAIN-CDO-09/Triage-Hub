@@ -5,6 +5,14 @@
 # Prometheus endpoint: prometheus-operated.monitoring.svc.cluster.local:9090
 #   → Đây là địa chỉ chuẩn của kube-prometheus-stack (prometheus-operator).
 #   → Đã xác nhận khớp với prometheus-adapter ArgoCD app trong cluster này.
+#
+# Best practice notes:
+#   - timeout: 60  → Đủ cho Prometheus compute histogram_quantile; tránh false-positive
+#                    context deadline exceeded do argo-rollouts Go struct khởi tạo SigV4/OAuth2 rỗng.
+#   - initialDelay: 3m → Cho canary pod đủ thời gian emit metric trước khi analysis đo.
+#                        Tránh "no data" trong 2 phút đầu canary lên.
+#   - failureLimit: 2  → Cho phép 1 lần timeout transient, fail thật mới abort.
+#   - or vector(0)     → Graceful fallback khi metric chưa có data (job mới, series chưa hình thành).
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
@@ -13,12 +21,14 @@ metadata:
 spec:
   metrics:
     - name: p99-latency
+      initialDelay: 3m   # chờ canary warm-up trước khi đo
       interval: 1m
       count: 5
-      failureLimit: 1
+      failureLimit: 2    # tolerant với 1 lần timeout transient
       provider:
         prometheus:
           address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          timeout: 60    # tránh context deadline exceeded từ Go auth struct defaults
           query: |
             histogram_quantile(0.99,
               sum(rate(http_request_duration_seconds_bucket{job="tf1-api"}[2m])) by (le)
@@ -28,12 +38,14 @@ spec:
       failureCondition: result[0] > 0.8
 
     - name: error-rate
+      initialDelay: 3m   # chờ canary warm-up trước khi đo
       interval: 1m
       count: 5
-      failureLimit: 1
+      failureLimit: 2    # tolerant với 1 lần timeout transient
       provider:
         prometheus:
           address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          timeout: 60    # tránh context deadline exceeded từ Go auth struct defaults
           query: |
             (sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
             /

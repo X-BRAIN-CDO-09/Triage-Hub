@@ -407,13 +407,23 @@ jobs:
           kubectl get pods -n "$ARGOCD_NAMESPACE"
 
       - name: Apply ArgoCD Root App (App of Apps)
+        env:
+          PROJECTS_PATH: capstone/tf-1/devops/platform/argocd/projects
         run: |
           set -euo pipefail
 
-          # Chờ ArgoCD CRDs sẵn sàng
+          # Chờ ArgoCD CRDs sẵn sàng (Application + AppProject)
           kubectl wait --for=condition=established \
             crd/applications.argoproj.io \
+            crd/appprojects.argoproj.io \
             --timeout=60s
+
+          # PHẢI apply AppProject TRƯỚC root-app: triage-hub-app tham chiếu
+          # project "triage-hub"; nếu project chưa tồn tại -> InvalidSpecError,
+          # app không sync -> engine không deploy. root-app chỉ sync path apps/
+          # nên projects/ không bao giờ được tạo nếu không apply ở đây.
+          kubectl apply -f "$PROJECTS_PATH"
+          echo "✅ AppProject đã được apply"
 
           kubectl apply -f "$ROOT_APP_PATH"
           echo "✅ Root App đã được apply - ArgoCD sẽ tự sync các app còn lại"
@@ -457,7 +467,10 @@ jobs:
       - name: Checkout full repo (for git push)
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # GITOPS_PAT (owner nằm trong bypass list của ruleset develop) để git push
+          # ARN auto-patch vượt qua branch protection. Fallback GITHUB_TOKEN nếu chưa
+          # cấu hình secret — nhưng sẽ bị chặn nếu develop protected (GH013).
+          token: ${{ secrets.GITOPS_PAT || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Configure AWS credentials (re-auth for SSM)

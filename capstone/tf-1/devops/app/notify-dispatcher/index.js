@@ -524,6 +524,31 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
         type: "actions",
         elements: actionElements,
       });
+
+      const contextData = {
+        i: incidentId,
+        t: triageResult.tenant_id || "unknown",
+        k: jiraMapping.issueKey,
+        ti: (title || "Untitled").substring(0, 40),
+        se: (service || "unknown").substring(0, 20),
+        sv: severityStr
+      };
+
+      blocks.push({
+        type: "actions",
+        block_id: JSON.stringify(contextData),
+        elements: [
+          {
+            type: "users_select",
+            placeholder: {
+              type: "plain_text",
+              text: "Or assign someone else...",
+              emoji: true
+            },
+            action_id: "manual_assign_user_action"
+          }
+        ]
+      });
     } else {
       blocks.push({
         type: "context",
@@ -585,6 +610,31 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
       blocks.push({
         type: "actions",
         elements: actionElements,
+      });
+
+      const contextData = {
+        i: incidentId,
+        t: triageResult.tenant_id || "unknown",
+        k: jiraMapping.issueKey,
+        ti: (title || "Untitled").substring(0, 40),
+        se: (service || "unknown").substring(0, 20),
+        sv: severityStr
+      };
+
+      blocks.push({
+        type: "actions",
+        block_id: JSON.stringify(contextData),
+        elements: [
+          {
+            type: "users_select",
+            placeholder: {
+              type: "plain_text",
+              text: "Or assign someone else...",
+              emoji: true
+            },
+            action_id: "manual_assign_user_action"
+          }
+        ]
       });
     } else {
       blocks.push({
