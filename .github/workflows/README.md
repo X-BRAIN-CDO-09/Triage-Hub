@@ -6,13 +6,24 @@ This directory contains the GitHub Actions workflows used for application and in
 
 The shared `sandbox` environment currently uses:
 
-- `ci-infra.yml`: scheduled Terraform apply at `08:00` ICT every day
+- `ci-infra.yml`: scheduled Terraform apply at `07:17` ICT every day
 - `terraform-destroy.yml`: scheduled Terraform destroy at `00:00` ICT every day
 
 GitHub Actions cron expressions use UTC. The current schedules are:
 
-- `0 1 * * *` -> `08:00` ICT
+- `17 0 * * *` -> `07:17` ICT
 - `0 17 * * *` -> `00:00` ICT
+
+## App deploy after infra apply
+
+`ci-app.yml` deploys Lambda code automatically when app code is pushed to `develop` or `main`.
+
+`ci-infra.yml` only dispatches App CI after Terraform apply in these cases:
+
+- scheduled infra apply, so the daily sandbox can be hydrated after a nightly destroy
+- manual infra apply with `deploy_app_after_apply=true`
+
+Infra PRs and infra push/merge runs do not dispatch App CI by default. If an infra change creates or changes Lambda runtime resources and the current branch app code should be redeployed, use manual infra apply with `deploy_app_after_apply=true`, or run App CI manually with `deploy=true`.
 
 ## Sandbox destroy guardrails
 
