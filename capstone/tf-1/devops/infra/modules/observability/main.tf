@@ -119,7 +119,7 @@ locals {
     {
       type = "metric", x = 7, y = 10, width = 4, height = 6
       properties = {
-        metrics = [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${var.project_name}-buffer-queue", { "stat" : "Maximum" }]]
+        metrics = [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${var.project_name}-buffer-queue.fifo", { "stat" : "Maximum" }]]
         view    = "timeSeries", region = var.aws_region, title = "3. Buffer Queue", period = 300
       }
     },
