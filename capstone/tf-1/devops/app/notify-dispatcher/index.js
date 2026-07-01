@@ -354,6 +354,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
     || "unknown-service";
+  const environment = triageResult.environment || "sandbox";
   const title = triageResult.alert?.title || triageResult.ticket_payload?.summary || "Untitled incident";
   const incidentId = triageResult.incident_id;
   const classification = triageResult.classification || "unknown";
@@ -501,6 +502,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             assignee_email: assigneeDetails?.emailAddress || null,
             title: title,
             service: service,
+            environment: environment,
             severity: severityStr,
             jira_url: jiraUrl
           }),
@@ -531,6 +533,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
         k: jiraMapping.issueKey,
         ti: (title || "Untitled").substring(0, 40),
         se: (service || "unknown").substring(0, 20),
+        e: environment,
         sv: severityStr
       };
 
@@ -588,6 +591,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
             audit_id: triageResult.audit_id || null,
             title: title,
             service: service,
+            environment: environment,
             severity: severityStr,
             jira_url: jiraUrl
           }),
@@ -618,6 +622,7 @@ function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetail
         k: jiraMapping.issueKey,
         ti: (title || "Untitled").substring(0, 40),
         se: (service || "unknown").substring(0, 20),
+        e: environment,
         sv: severityStr
       };
 
