@@ -1,0 +1,136 @@
+name: Platform Manifest Validation
+
+on:
+  push:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/platform/**"
+      - ".github/workflows/platform-manifest-validate.yml"
+  pull_request:
+    branches: ["develop", "main"]
+    paths:
+      - "capstone/tf-1/devops/platform/**"
+      - ".github/workflows/platform-manifest-validate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLATFORM_ROOT: capstone/tf-1/devops/platform
+  KUBECONFORM_VERSION: "0.6.7"
+
+jobs:
+  validate-platform-manifests:
+    name: Kustomize build and kubeconform validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz
+          sudo mv kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Render Kustomize overlays and ArgoCD apps
+        run: |
+          set -euo pipefail
+
+          OUTPUT_DIR="$RUNNER_TEMP/platform-manifests"
+          mkdir -p "$OUTPUT_DIR"
+
+          rendered=0
+
+          for overlay in "$PLATFORM_ROOT"/overlays/*; do
+            [ -d "$overlay" ] || continue
+            if [ ! -f "$overlay/kustomization.yaml" ] && [ ! -f "$overlay/kustomization.yml" ]; then
+              echo "Skipping $overlay because no kustomization file was found."
+              continue
+            fi
+
+            name="$(basename "$overlay")"
+            echo "Rendering platform overlay: $name"
+            kustomize build "$overlay" > "$OUTPUT_DIR/platform-${name}.yaml"
+            rendered=$((rendered + 1))
+          done
+
+          if [ -f "$PLATFORM_ROOT/argocd/apps/kustomization.yaml" ] || [ -f "$PLATFORM_ROOT/argocd/apps/kustomization.yml" ]; then
+            echo "Rendering ArgoCD app-of-apps manifests"
+            kustomize build "$PLATFORM_ROOT/argocd/apps" > "$OUTPUT_DIR/argocd-apps.yaml"
+            rendered=$((rendered + 1))
+          fi
+
+          if [ -f "$PLATFORM_ROOT/argocd/root-app.yaml" ]; then
+            cp "$PLATFORM_ROOT/argocd/root-app.yaml" "$OUTPUT_DIR/argocd-root-app.yaml"
+            rendered=$((rendered + 1))
+          fi
+
+          if [ -d "$PLATFORM_ROOT/argocd/projects" ]; then
+            for project_manifest in "$PLATFORM_ROOT"/argocd/projects/*.yaml "$PLATFORM_ROOT"/argocd/projects/*.yml; do
+              [ -f "$project_manifest" ] || continue
+              cp "$project_manifest" "$OUTPUT_DIR/argocd-project-$(basename "$project_manifest")"
+              rendered=$((rendered + 1))
+            done
+          fi
+
+          if [ "$rendered" -eq 0 ]; then
+            echo "No platform manifests were rendered."
+            exit 1
+          fi
+
+          echo "Rendered manifest files:"
+          find "$OUTPUT_DIR" -type f -name '*.yaml' -print | sort
+          echo "RENDERED_MANIFEST_DIR=$OUTPUT_DIR" >> "$GITHUB_ENV"
+
+      - name: Validate rendered manifests with kubeconform
+        run: |
+          set -euo pipefail
+
+          find "$RENDERED_MANIFEST_DIR" -type f -name '*.yaml' -print0 \
+            | sort -z \
+            | xargs -0 kubeconform \
+                -strict \
+                -summary \
+                -ignore-missing-schemas \
+                -schema-location default
+
+      - name: Document intentionally ignored CRD schemas
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ## Platform manifest validation
+
+          `kubeconform` runs with `-strict` so built-in Kubernetes resources are schema-checked strictly.
+
+          `-ignore-missing-schemas` is enabled intentionally because this repository contains CRDs whose schemas are not available in kubeconform's default Kubernetes schema catalog:
+
+          - Argo CD: `Application`, `AppProject`
+          - Argo Rollouts: `Rollout`, `AnalysisTemplate`
+          - External Secrets Operator: `ExternalSecret`, `ClusterSecretStore`
+          - Prometheus Operator: `ServiceMonitor`, `PrometheusRule`
+          - KEDA: `ScaledObject`, `TriggerAuthentication`
+          - AWS Load Balancer Controller: `TargetGroupBinding`
+          - Sigstore policy-controller: `ClusterImagePolicy`
+
+          The Kustomize build step still catches broken references, invalid patches and malformed YAML before kubeconform runs.
+          MD
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-rendered-manifests
+          path: ${{ env.RENDERED_MANIFEST_DIR }}
+          retention-days: 7
