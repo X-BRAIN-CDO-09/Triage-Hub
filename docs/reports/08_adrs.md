@@ -110,11 +110,11 @@
   - Khi có sự cố và kết quả phân tích AI hoàn thành, hệ thống cần vừa tạo ticket Jira vừa gửi thông báo kèm nút bấm trên Slack.
   - Nếu gửi Slack trước rồi tạo ticket Jira bất đồng bộ, có thể xảy ra tình trạng lỗi tạo ticket Jira sau đó dẫn tới mất dấu vết sự cố, hoặc kỹ sư tương tác với Slack alert khi ticket chưa được khởi tạo thành công trên Jira.
 - **Decision**:
-  - Áp dụng quy trình **Jira-First**: Hàm `jira-dispatcher` sẽ chịu trách nhiệm tạo ticket Jira trước tiên. Sau khi tạo thành công, `issue_key` sẽ được dùng làm correlation ID để tiếp tục kích hoạt sự kiện gửi thông báo Slack.
+  - Áp dụng quy trình **Jira-First**: Hàm `notify-dispatcher` sẽ chịu trách nhiệm tạo ticket Jira trước tiên. Sau khi tạo thành công, `issue_key` được dùng làm correlation ID để post Slack Block Kit. `jira-dispatcher` chỉ handle bước assign sau khi người dùng bấm nút xác nhận trên Slack.
 - **Consequence**:
   - ✅ Jira ticket luôn là Single Source of Truth cho mỗi incident. Mọi log, event và Slack payload đều được gắn kèm `issue_key` này để dễ dàng audit.
   - ✅ Ngăn ngừa mất mát dữ liệu (zero silent drops): bất kỳ sự cố kết nối Slack nào xảy ra thì ticket Jira vẫn tồn tại làm bằng chứng gốc.
-  - ⚠️ Tăng thời gian trễ của việc hiển thị thông báo trên Slack thêm khoảng 2 giây do phải đợi API Jira phản hồi đồng bộ trước khi trigger Slack dispatcher.
+  - ⚠️ Tăng thời gian trễ của việc hiển thị thông báo trên Slack thêm khoảng 2 giây do `notify-dispatcher` phải đợi Jira API tạo ticket xong mới post Slack.
   - ⚠️ Nếu Jira API bị sập hoàn toàn, hệ thống phải kích hoạt luồng fallback gửi tin nhắn raw alert lên Slack mà không có link Jira ticket.
 - **Alternatives considered**:
   - **Slack-First Workflow**: Bị từ chối vì nếu Slack bị lỗi, sự cố sẽ bị bỏ qua và không có ticket nào được lưu vết. Đồng thời gây khó khăn cho việc quản lý trạng thái đồng bộ khi kỹ sư bấm nút phản hồi.
@@ -141,6 +141,29 @@
 - **Alternatives considered**:
   - **Auto-assign hoàn toàn**: Bị từ chối do tỉ lệ gán sai cao (~25%), gây mất thời gian reassign thủ công trên giao diện Jira.
   - **Gửi Slack thô không có nút bấm**: Bị từ chối vì bắt buộc kỹ sư phải mở tab Jira, search ticket và gán tay, làm chậm đáng kể MTTA.
+
+---
+
+## ADR-006 - Single-purpose Lambda thay vì Monolithic Dispatcher (Owner: Phong)
+
+- **Status**: Accepted
+- **Date**: 2026-06-25
+- **Context**:
+  - Hệ thống cần 4 chức năng rời rạc: ingest alert, tạo Jira + Slack, xử lý Slack callback & assign, broadcast kết quả.
+  - Các chức năng này có trigger khác nhau (API GW public, SQS private, EventBridge), security boundary khác nhau (public-facing vs private), scaling requirement khác nhau (request-rate vs queue-depth vs event-driven).
+  - Nếu gộp thành 1 Lambda monolithic, function phải mang đủ IAM permissions cho tất cả services (Jira, Slack, DynamoDB, EventBridge, SQS, Secrets Manager) — phá vỡ least-privilege.
+- **Decision**:
+  - Tách thành **4 single-purpose Lambda functions**: `alert-ingest`, `notify-dispatcher`, `jira-dispatcher`, `broadcast-notifier`.
+  - Mỗi function chỉ mang IAM scope đúng service nó cần. Trigger được chọn phù hợp (API GW / SQS / EventBridge).
+- **Consequence**:
+  - ✅ IAM least-privilege: compromise 1 Lambda không ảnh hưởng các Lambda khác.
+  - ✅ Mỗi function scale độc lập theo đúng pattern trigger của nó.
+  - ✅ Cold start chỉ ảnh hưởng 1 function, không blocking toàn bộ pipeline.
+  - ⚠️ 4 cold start thay vì 1 nếu tất cả bị invoke đồng thời (hiếm — pipeline là sequential).
+  - ⚠️ Nhiều function cần deploy + monitor hơn.
+- **Alternatives considered**:
+  - **Monolithic Lambda**: rejected — IAM scope quá rộng, một lỗi ở Slack callback có thể ảnh hưởng Jira creation.
+  - **Separate by security domain** (public vs private): rejected vì `jira-dispatcher` (public) và `notify-dispatcher` (private) vẫn cần tách riêng do trigger khác nhau (API GW vs SQS).
 
 ---
 
