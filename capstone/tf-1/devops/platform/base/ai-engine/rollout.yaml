@@ -70,6 +70,12 @@ spec:
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
+            # SERVICE_AUTH_TOKEN: token xác thực API triage
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: SERVICE_AUTH_TOKEN
 
 
             # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
