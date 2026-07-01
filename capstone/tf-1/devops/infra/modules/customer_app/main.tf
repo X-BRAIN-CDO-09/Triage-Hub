@@ -139,3 +139,18 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   name = "triage-customer-ec2-profile-${var.environment}"
   role = aws_iam_role.ec2_role.name
 }
+
+# Elastic IP for EC2
+resource "aws_eip" "customer_eip" {
+  domain = "vpc"
+  tags = {
+    Name = "customer-app-eip-${var.environment}"
+  }
+}
+
+# Associate EIP with EC2
+resource "aws_eip_association" "eip_assoc" {
+  instance_id   = aws_instance.spot_instance.id
+  allocation_id = aws_eip.customer_eip.id
+}
+

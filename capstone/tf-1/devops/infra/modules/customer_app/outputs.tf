@@ -4,7 +4,7 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  value       = aws_instance.spot_instance.public_ip
+  value       = aws_eip.customer_eip.public_ip
   description = "The public IP of the Customer App EC2 instance"
 }
 
