@@ -119,9 +119,14 @@ exports.handler = async (event) => {
   ];
 
   if (jira_url || jira_issue_key) {
-    // If we only have issue key but no URL, we cannot reliably construct the url without base_url secret.
-    // However, if jira_url was passed, we use it. If not, omit the button or provide a placeholder.
-    if (jira_url && !jira_url.includes("undefined")) {
+    let cleanUrl = jira_url || "";
+    if (cleanUrl.startsWith("<") && cleanUrl.includes("|")) {
+      cleanUrl = cleanUrl.substring(1, cleanUrl.indexOf("|"));
+    } else if (cleanUrl.startsWith("<") && cleanUrl.endsWith(">")) {
+      cleanUrl = cleanUrl.substring(1, cleanUrl.length - 1);
+    }
+
+    if (cleanUrl && !cleanUrl.includes("undefined")) {
       blocks.push({ type: "divider" });
       blocks.push({
         type: "actions",
@@ -133,7 +138,7 @@ exports.handler = async (event) => {
               text: "🎫 View Details in Jira",
               emoji: true
             },
-            url: jira_url,
+            url: cleanUrl,
             action_id: "open_jira_ticket_broadcast_action"
           }
         ]
