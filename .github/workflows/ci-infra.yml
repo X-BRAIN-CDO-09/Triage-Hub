@@ -467,7 +467,10 @@ jobs:
       - name: Checkout full repo (for git push)
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # GITOPS_PAT (owner nằm trong bypass list của ruleset develop) để git push
+          # ARN auto-patch vượt qua branch protection. Fallback GITHUB_TOKEN nếu chưa
+          # cấu hình secret — nhưng sẽ bị chặn nếu develop protected (GH013).
+          token: ${{ secrets.GITOPS_PAT || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Configure AWS credentials (re-auth for SSM)
