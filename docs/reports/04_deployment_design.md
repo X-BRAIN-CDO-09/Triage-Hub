@@ -1,155 +1,150 @@
 # Deployment & CI/CD Design - Task force 1 · CDO
 
 <!-- Doc owner: Nhóm CDO
-     Status: Draft (W11 T4) -> Final (W11 T6 Pack #1) -> Working (W12 T4 Pack #2)
+     Status: Draft (W11 T4) -> Final (W11 T6 Pack #1) -> Working (W12 T4 Pack #2) -> Updated (W12 CI/CD alignment)
      Word target: 1200-2000 từ -->
 
 ## 1. IaC strategy (Owner: Kiên)
 
 ### 1.1 Tool choice
 
-- **IaC tool**: Terraform. The repo already has reusable modules for VPC, security group, ECR, Lambda and the simulated customer app. Terraform is the safest choice for this capstone because it gives a reviewable plan before changing AWS resources, keeps infra changes in Git history, and lets each module map cleanly to the architecture diagram.
-- **State backend**: S3 remote state with DynamoDB locking. The pipeline bootstraps the state bucket/table idempotently, then `terraform init` uses the configured backend in the sandbox root module. This avoids local state drift and prevents two people from applying at the same time.
-- **Modular structure**: shared modules + environment-specific roots. The active root is `capstone/tf-1/devops/infra/environments/sandbox`; staging/prod folders remain placeholders until the demo platform is stable.
+- **Công cụ IaC**: Nhóm dùng Terraform vì mỗi thay đổi hạ tầng đều có plan để review, có state rõ ràng và có thể dựng lại sandbox. Terraform đang quản lý VPC, EKS, ECR, Lambda, API Gateway, SQS, DynamoDB, Secrets Manager, observability và customer app mô phỏng.
+- **State backend**: Terraform state lưu trên S3 và có lock. CI bootstrap state bucket khi cần, rồi chạy `terraform init` tại root sandbox. Các lệnh Terraform dùng `-lock-timeout=10m` để chờ lock thay vì fail ngay.
+- **Cấu trúc module**: Hạ tầng tách thành module dùng chung và environment root. Root triển khai thật là `capstone/tf-1/devops/infra/environments/sandbox`. Staging/production vẫn là hướng mở rộng thiết kế; delivery hiện tập trung vào shared sandbox.
 
 ### 1.2 Module structure
 
 ```
 infra/
 ├── modules/
-│   ├── vpc/              # Platform VPC + simulated customer VPC
-│   ├── security_group/   # Least-privilege network boundaries
-│   ├── ecr/              # Immutable image repositories
-│   ├── lambda/           # alert/context/jira/slack Lambda functions
-│   ├── customer_app/     # Synthetic customer alert source
-│   ├── api_gateway/      # Public alert ingress + Slack callback (planned)
-│   ├── sqs/              # Buffer queues + DLQs (planned)
-│   ├── s3/               # Audit artifacts (planned)
-│   ├── secrets_manager/  # Jira/Slack/Bedrock secrets (planned)
-│   └── observability/    # CloudWatch dashboards/alarms (planned)
-├── environments/
-│   ├── sandbox/
-│   ├── staging/          # placeholder
-│   └── prod/             # placeholder
-└── README.md
+│   ├── vpc/              # Platform and customer VPC networking
+│   ├── security_group/   # Lambda, ALB, endpoints and EC2 boundaries
+│   ├── ecr/              # Immutable AI engine image repository
+│   ├── eks/              # EKS cluster, OIDC and access entries
+│   ├── alb/              # Internal ALB / target group for AI engine
+│   ├── lambda/           # alert/context/jira/slack/broadcast functions
+│   ├── api_gateway/      # Public alert ingress and Lambda/SQS integrations
+│   ├── sqs/              # Raw, buffer and dispatch queues with DLQs
+│   ├── dynamodb/         # Triage state and audit records
+│   ├── secrets_manager/  # Jira, Slack and service credentials
+│   ├── eventbridge/      # Scheduled or broadcast notification hooks
+│   ├── observability/    # CloudWatch dashboards, alarms and SNS
+│   └── customer_app/     # Synthetic customer source for demo alerts
+└── environments/
+    └── sandbox/
 ```
 
 ### 1.3 State management
 
-- Remote state per environment. `sandbox` stores state in S3 using `sandbox/terraform.tfstate`.
-- State lock via DynamoDB table `triage-hub-tf-lock` or the `TF_LOCK_TABLE` repository variable.
-- Plan-on-PR + apply-on-merge gate. PRs can show impact; apply is allowed only after merge or manual dispatch with `apply=true`.
-- The state bucket must have versioning, encryption and public access block enabled before any app resources are deployed.
+- Remote state dùng chung cho sandbox, nên mọi job CI đi qua cùng backend và cùng cơ chế lock.
+- GitHub Actions dùng concurrency group `terraform-sandbox-state` cho apply/destroy để tránh hai thao tác Terraform chạy cùng lúc.
+- Terraform plan được lưu thành artifact trước khi apply. Lambda payload ZIP sinh ra lúc plan được upload rồi tải lại ở apply job, giúp saved plan chạy được trên runner khác.
+- Không chỉnh Terraform state thủ công, trừ cleanup có chủ ý với resource cũ và có log CI rõ ràng.
 
 ## 2. CI/CD pipeline (Owner: Kiên)
 
 ### 2.1 Pipeline stages
 
 ```
-PR opened -> Build -> Test -> Scan -> Plan -> Review -> Merge -> Apply -> Smoke test
+PR -> Validate -> Build/Package -> Scan -> Plan -> Review -> Merge -> Apply/Deploy -> Smoke
 ```
 
-| Stage | Tool | What it does | Quality gate |
+| Workflow | Trigger | Trách nhiệm chính | Gate |
 |---|---|---|---|
-| Build | GitHub Actions + Docker | Build AI engine image and Lambda zip artifacts | Build success; artifact produced only when source exists |
-| Test | Ruff + pytest | Lint, format check and unit tests for Python app code | No lint/test failure once implementation exists |
-| Scan | Gitleaks + Bandit + Trivy + Checkov | Secret scan, Python security, image CVE and Terraform config scan | No committed secrets; no unfixed HIGH/CRITICAL image CVE |
-| Plan | Terraform plan | Preview infra change for VPC, ECR, Lambda, queues and endpoints | Plan artifact generated and reviewable |
-| Apply | Terraform apply | Deploy sandbox infrastructure after merge/manual approval | Apply success; outputs exported |
-| Smoke | curl + AWS CLI | Health check API Gateway, SQS buffers/DLQs and runtime readiness | Required endpoints/resources are reachable |
+| `ci-app.yml` | app PR/push, manual `deploy=true` | Lint/test app code, đóng gói Lambda ZIP, cập nhật Lambda code, chạy smoke check | Ruff/pytest/Bandit/Gitleaks và smoke AWS |
+| `ci-infra.yml` | infra PR/push, schedule 07:17 ICT, manual apply | Terraform fmt/validate/scan, plan/apply sandbox, handoff ZIP sinh ra từ Terraform | Terraform plan/apply và Trivy/Checkov |
+| `ci-ai-engine.yml` | AI engine PR/push/manual | Build AI image, scan bằng Trivy, push ECR SHA tag, ký Cosign, bump sandbox overlay | Unit test, image scan và signature |
+| `platform-manifest-validate.yml` | platform PR/push/manual | Render Kustomize overlay và ArgoCD app, validate schema Kubernetes bằng kubeconform strict mode | Kustomize build và kubeconform validation |
+| `terraform-destroy.yml` | schedule 00:00 ICT, manual confirm | Destroy sandbox chỉ khi guardrail cho phép | `ENABLE_AUTO_DESTROY`, `SKIP_AUTO_DESTROY`, `LEASE_UNTIL`, manual `destroy-sandbox` |
 
-The app workflow currently separates validation from deployment. On PR, it validates code only. On push to `develop`, it can build/push integration images. On push to `main` or manual `deploy=true`, it updates runtime components and runs smoke tests. This prevents feature branches from mutating AWS resources.
+Thiết kế tách hạ tầng khỏi app code. App code đi qua `ci-app.yml` khi merge/push vào `develop` hoặc `main`. Infra đi qua `ci-infra.yml`, nhưng infra push/merge không tự dispatch App CI. App CI chỉ chạy sau infra khi scheduled sandbox hydration hoặc manual apply có `deploy_app_after_apply=true`.
 
 ### 2.2 Branch strategy
 
-- `main` = demo-ready branch. Runtime deploy is allowed from this branch only, except manual emergency runs.
-- `develop` = integration branch. Infra can apply to sandbox and app images can be built for integration.
-- `feature/*` = feature branches. Validation happens through PR checks before merge.
-- PR required for merge to `main` + approval. Every closed Jira task must include a commit SHA, PR URL, workflow URL or screenshot evidence.
+- `develop` = nhánh tích hợp hằng ngày. App và infra đều deploy sandbox từ nhánh này.
+- `main` = nhánh demo-ready. Trong capstone này, `main` vẫn target sandbox vì chưa có account production riêng.
+- `feature/*`, `fix/*`, `bugfix/*` = chỉ chạy PR validation, trừ khi workflow được approve thủ công.
+- Mỗi Jira task chuyển Done cần có ít nhất một bằng chứng: commit SHA, PR URL, workflow URL, artifact hoặc screenshot.
 
 ## 3. GitOps (Owner: Kiên)
 
 ### 3.1 Tool
 
-- **ArgoCD** is the target GitOps controller for the EKS part of the platform. The current `kubectl set image` step is a bridge while manifests are being created; the final design should move image promotion into Git so ArgoCD owns cluster state.
-- **Repo structure**: same repo, separated by folder. Application source remains under `app/`, Terraform under `infra/`, and desired Kubernetes/platform state should live under `platform/`.
+- **ArgoCD** quản lý desired Kubernetes state cho EKS platform. Terraform tạo AWS resource nền, lưu runtime value vào SSM khi cần và bootstrap ArgoCD/root app sau khi EKS sẵn sàng.
+- **Cấu trúc repo** tách app code, Terraform và platform manifest để CI chạy check theo đúng path thay đổi.
 
 ```
 capstone/tf-1/devops/
-├── app/
-├── infra/
+├── app/       # Lambda dispatcher và AI engine code
+├── infra/     # Terraform module và sandbox root
 └── platform/
     ├── argocd/
-    ├── k8s/
-    ├── policies/
-    └── evidence/
+    ├── base/
+    └── overlays/
+        ├── sandbox/
+        └── prod/
 ```
 
 ### 3.2 Sync waves
 
-| Wave | Components |
+| Wave | Thành phần |
 |---|---|
-| -2 | Namespaces, service accounts, RBAC |
-| -1 | External Secrets Operator, policy controllers, CRDs |
-| 0 | ConfigMaps, ExternalSecrets, NetworkPolicies |
-| 1 | AI engine Rollout, services, ServiceMonitor |
-| 2 | AnalysisTemplate, dashboards, alert rules |
+| -2 | Namespace, service account, RBAC |
+| -1 | Operator/controller: External Secrets, Rollouts, KEDA, Gatekeeper, Sigstore policy controller |
+| 0 | NetworkPolicy, ExternalSecret, ClusterSecretStore, ClusterImagePolicy |
+| 1 | AI engine API/worker workload, service và ServiceMonitor |
+| 2 | AnalysisTemplate, TargetGroupBinding, HPA và rollout analysis |
 
 ### 3.3 Drift detection
 
-- ArgoCD detects drift between Git and the EKS cluster. Auto-sync can be enabled for non-destructive app manifests after the base platform is stable.
-- Prune should stay disabled during capstone unless the change is reviewed, because accidental deletion of CRDs, secrets or network policy can break the demo.
-- Daily drift report should be posted to the team Slack channel or attached as Jira evidence.
-- Manual approval for destructive changes, policy changes and production-like namespace changes.
+- ArgoCD phát hiện drift giữa Git và EKS cluster. Auto-sync kèm prune/self-heal có thể dùng cho sandbox manifest đã review, nhưng thay đổi platform phá hủy vẫn cần PR review.
+- `platform-manifest-validate.yml` là guard trước ArgoCD. Workflow này render cùng Kustomize overlay mà ArgoCD sẽ consume và validate Kubernetes resource chuẩn bằng `kubeconform -strict`.
+- Các CRD như Argo Rollouts, ExternalSecret, ServiceMonitor, TargetGroupBinding và Sigstore ClusterImagePolicy được ignore schema có chủ ý khi kubeconform không có schema mặc định.
 
 ## 4. Deployment strategy (Owner: Kiên)
 
 ### 4.1 Strategy
 
-- **Canary** (preferred): 10% -> 50% -> 100% over 15min for the AI engine once Argo Rollouts manifests exist.
-- **Abort criteria**:
-  - Error rate > 1%
-  - P99 latency > AI API contract target
-  - AI endpoint health check fails
-  - Pod restart count increases during analysis
-  - Bedrock/Jira/Slack fallback rate crosses agreed threshold
-- **Auto-rollback** on abort
+- **Lambda dispatchers**: App CI đóng gói và deploy bằng `aws lambda update-function-code`. Terraform sở hữu function, IAM, biến môi trường và trigger; App CI sở hữu update code.
+- **AI engine**: API và worker dùng chung một ECR image nhưng khác command. Image dùng immutable SHA tag, được scan bằng Trivy và ký bằng Cosign.
+- **Kubernetes runtime**: ArgoCD sync platform overlay. Argo Rollouts canary là chiến lược ưu tiên cho AI API: 10% -> 50% -> 100%, abort khi error rate, latency, health check hoặc restart count vượt ngưỡng.
+- **Sandbox hydration**: scheduled infra apply lúc 07:17 ICT có thể dựng lại hạ tầng thiếu và dispatch App CI để deploy lại Lambda code hiện tại. Scheduled destroy lúc 00:00 ICT chỉ chạy khi guard variables cho phép.
 
 ### 4.2 Rollback method
 
-- **Primary**: Argo Rollouts abort returns traffic to the stable ReplicaSet. If GitOps is active, revert the manifest commit and let ArgoCD sync the previous image tag.
-- **Secondary**: redeploy previous immutable ECR SHA tag for the AI engine.
-- **Infra rollback**: revert the Terraform commit and apply the newly reviewed plan. We do not edit Terraform state manually.
-- **Target RTO**: < 5 minutes for app rollback in the demo environment; infra rollback depends on resource type and must be tested before claiming a lower number.
+- Lambda rollback: redeploy artifact cũ hoặc chạy lại App CI từ commit tốt đã biết.
+- AI engine rollback: revert overlay tag về signed SHA trước đó để ArgoCD sync, hoặc abort Argo Rollouts canary để trả traffic về stable ReplicaSet.
+- Infra rollback: revert Terraform commit và review plan mới. Chỉnh state chỉ là phương án bảo trì cuối cùng.
+- Mục tiêu RTO cho app rollback ở sandbox là dưới 5 phút; infra rollback phụ thuộc thời gian thay thế AWS resource.
 
 ## 5. Environment separation (Owner: Kiên)
 
-| Env | Purpose | Account | Auto-deploy |
+| Env | Mục đích | Account | Auto-deploy |
 |---|---|---|---|
-| Sandbox | Capstone build + integration | Shared capstone AWS account | Infra apply on `develop`/`main`; app deploy on `main` |
-| Staging | Optional pre-demo validation | Same account, isolated namespace/prefix if time permits | Manual promotion only |
-| Prod | Out of scope for capstone | Not used | Design-only |
+| Sandbox | Môi trường build, demo và integration dùng chung | Capstone AWS account | App deploy trên `develop/main`; infra apply qua push, schedule hoặc manual approval |
+| Staging | Đường pre-demo validation tùy chọn | Cùng account, tách namespace/prefix nếu cần | Chỉ manual promotion |
+| Prod | Ngoài phạm vi capstone | Chưa provision | Chỉ thiết kế |
 
-The capstone uses a single active environment to avoid spending time on production ceremony before the demo path works. Naming, tags and Terraform roots still keep the path open for staging/prod later.
+Nhóm dùng một sandbox active để giảm overhead vận hành. Branch name, Terraform root và Kustomize overlay vẫn giữ đường mở rộng cho staging/prod.
 
 ## 6. Secrets in pipeline (Owner: Kiên)
 
-- CI accesses AWS through OIDC + IAM assume-role. Required GitHub secrets are role ARNs, not AWS access keys.
-- Application secrets such as Jira API token, Slack webhook/signing secret, Bedrock config and webhook signing key must live in AWS Secrets Manager.
-- PR secret scanning uses Gitleaks. Any leaked credential blocks merge and must be rotated before retry.
-- Container images must not bake secrets. Runtime access should come from Lambda secret references or External Secrets Operator for EKS.
+- GitHub Actions dùng OIDC để assume AWS role. Workflow chỉ nên lưu role ARN trong secret/environment config, không lưu static AWS key.
+- Jira, Slack và service-to-service secret nằm trong AWS Secrets Manager. EKS workload consume qua External Secrets khi phù hợp.
+- Gitleaks kiểm tra secret bị commit trong app code. Bandit kiểm tra rủi ro Python. Trivy và Checkov kiểm tra image/IaC.
+- Container image không được chứa runtime secret. Lambda và EKS workload nhận credential qua environment variable, Secrets Manager hoặc ExternalSecret.
 
 ## 7. Tenant onboarding deployment (Owner: Kiên)
 
 ```
-1. Add tenant metadata (`tenant_id`, service owners, Slack channel, Jira component) to a versioned config file or DynamoDB table.
-2. Pipeline or onboarding script validates tenant config schema.
-3. Terraform creates tenant-specific IAM boundaries, S3 audit prefix and DynamoDB partition conventions if required.
-4. Smoke test sends a synthetic tenant-scoped alert and verifies no cross-tenant data appears in AI/Jira/Slack output.
-5. Evidence is attached to Jira: commit SHA, smoke output and audit record ID.
+1. Thêm tenant metadata: tenant_id, owner, Slack channel, Jira component và alert source.
+2. Validate tenant config schema trước khi apply.
+3. Provision hoặc map IAM, DynamoDB partition convention và notification routing theo tenant.
+4. Gửi synthetic tenant alert qua API Gateway/SQS/Lambda/AI/Jira/Slack.
+5. Gắn evidence vào Jira: commit SHA, workflow URL, smoke output và audit record ID.
 ```
 
-Total time target: < 30 min for the capstone design. Full self-service onboarding can be design-only if core triage flow is not complete.
+Mục tiêu là onboard tenant demo dưới 30 phút. Self-service onboarding đầy đủ là future work; hiện tại ưu tiên luồng an toàn, lặp lại được.
 
 ## 8. Observability stack (Owner: Nhật)
 
@@ -164,10 +159,10 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 
 ## 9. Open questions (Owner: Kiên)
 
-- [ ] Confirm final Lambda function names once Terraform Lambda composition is complete.
-- [ ] Confirm whether AI engine runtime will use plain Deployment first or Argo Rollouts from the first EKS deploy.
-- [ ] Confirm final queue names for `TRIAGE_QUEUE_NAMES` after SQS module is implemented.
-- [ ] Confirm whether staging is required for the demo or remains design-only.
+- [ ] Có nên đưa `platform-manifest-validate.yml` vào required status check trong GitHub ruleset không?
+- [ ] Chính sách scheduled destroy cuối cùng là giữ `ENABLE_AUTO_DESTROY=false` mặc định hay bật nightly cleanup trong tuần demo?
+- [ ] Staging có cần triển khai thật hay chỉ giữ ở mức thiết kế?
+- [ ] Chốt tên Lambda và queue sau khi FIFO migration hoàn tất.
 
 ---
 
@@ -179,42 +174,43 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 ### 10.1 GitOps delivery
 
 ```
-GitHub Actions CI ──► ECR (signed image) ──► ArgoCD (app-of-apps) ──► EKS
-                                                   │
-                                                   └─► Argo Rollouts (canary)
+GitHub Actions CI -> ECR signed image -> Kustomize overlay -> ArgoCD app-of-apps -> EKS
+                                                           |
+                                                           -> Argo Rollouts canary
 ```
 
-- **ArgoCD app-of-apps**: 1 root app sync các child app (manifests Kustomize/Helm).
-- **Sync waves** cho engine: Wave 0 namespace + ESO secrets → Wave 1 NetworkPolicy/RBAC/Gatekeeper → Wave 2 `tf1-api` + `tf1-worker` Deployment → Wave 3 Ingress (Internal ALB) + HPA.
-- **Argo Rollouts canary**: 10% → 50% → 100%, **auto-rollback on abort**. Abort gate: error rate > 1% hoặc **canary p99 > 800ms** (`deployment-contract.md:106`). Lưu ý phân biệt: 800ms là ngưỡng abort rollout, khác với SLA `/v1/triage` p99 < 500ms (`ai-api-contract.md:103`) — engine khoẻ thì 500ms < 800ms nên không tự rollback.
+- `ci-ai-engine.yml` build, scan, push và ký image. Khi push, workflow cập nhật `newTag` trong sandbox overlay để ArgoCD rollout SHA mới.
+- ArgoCD app-of-apps sync operator và app manifest từ `platform/argocd` và `platform/overlays`.
+- Platform manifest validation chạy trước merge để bắt lỗi Kustomize patch hoặc field Kubernetes chuẩn sai.
 
 ### 10.2 Hai Deployment (namespace-per-tenant)
 
 | Deployment | Vai trò | Probe | Image |
 |---|---|---|---|
-| `tf1-api` (FastAPI) | `/v1/triage` sync + report store + compute-first RCA | readiness/liveness `/healthz` | Cosign-signed |
-| `tf1-worker` (AIOps Worker) | consume seed từ SQS, detect, build bundle, gọi tf1-api nội bộ, emit payload | readiness/liveness `/healthz` | Cosign-signed |
+| `tf1-api` | `/v1/triage`, RCA, report store và synchronous API | `/healthz` | Cosign-signed SHA tag |
+| `tf1-worker` | Consume SQS alert, chuẩn bị bundle, gọi API, emit triage result | `/healthz` | Cùng signed image với worker command |
 
-Worker gọi tf1-api **đồng bộ qua Internal ALB** (private, TLS 1.2+, 443→8080).
+Worker gọi `tf1-api` qua internal ALB. Public customer ingress nằm ngoài cluster, đi qua API Gateway và Lambda/SQS buffer.
 
 ### 10.3 Auto scaling
 
 | Lớp | Cấu hình | Trigger |
 |---|---|---|
-| **HPA** | Policy 1: CPU 70% · Policy 2: ALB request/pod = 100 (Prometheus Adapter) | Min 2 / **Max 10 pods** (`deployment-contract.md:35`) |
-| **Cluster Autoscaler** | thêm/bớt node khi pod pending | Min 2 / Max 10 nodes |
-| **SQS Buffer** | đệm alert bursty trong lúc HPA kịp scale | queue depth |
+| HPA | Scale theo CPU và request | CPU 70% và ALB/Prometheus request metrics |
+| Cluster Autoscaler | Thêm/bớt EKS node | Pending pods |
+| SQS Buffer | Hấp thụ alert bursty | Queue depth và DLQ visibility |
 
 ### 10.4 Rollback
 
-- Primary: ArgoCD rollback về Git SHA trước (declarative).
-- Rollouts abort tự revert sang stable ReplicaSet, target RTO < 60s.
+- Primary: revert overlay tag hoặc abort Rollouts canary.
+- Secondary: redeploy signed ECR SHA trước đó.
+- Evidence: ArgoCD app history, workflow URL, image digest và smoke output.
 
 ### 10.5 IaC (Terraform module `eks/`)
 
-Module `capstone/tf-1/devops/infra/modules/eks/` provision: EKS cluster (managed node group, private), OIDC provider (IRSA), aws-load-balancer-controller add-on. ArgoCD/ESO/Gatekeeper cài qua GitOps bootstrap, không nằm trong Terraform state (declarative drift detection).
+Module `eks/` provision cluster, managed node group và OIDC provider cho IRSA. Kubernetes add-on và app resource được quản lý bằng GitOps khi có thể để giảm state drift.
 
 ## Related documents
 
-- [`02_infra_design.md`](02_infra_design.md) - Infra design này deploy theo strategy §1-§5 doc này
-- [`03_security_design.md`](03_security_design.md) - Secret scanning + OIDC + IAM (this doc covers CI/CD security)
+- [`02_infra_design.md`](02_infra_design.md) - Thiết kế hạ tầng và kiến trúc AWS
+- [`03_security_design.md`](03_security_design.md) - OIDC, IAM, secret scanning và runtime security
