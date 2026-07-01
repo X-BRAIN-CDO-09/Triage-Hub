@@ -87,7 +87,7 @@ loki:
 promtail:
   enabled: true
   pipelineStages:
-    - docker: {}
+    - cri: {}
     - json:
         expressions:
           took_ms: '"http.resp.took_ms"'
@@ -123,6 +123,25 @@ INNER_EOF
 helm install loki grafana/loki-stack \
   --namespace monitoring \
   -f /tmp/loki-values.yaml
+
+# 10.1 Tạo cấu hình PodMonitor cho Promtail
+cat <<'INNER_EOF' > /tmp/promtail-podmonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: promtail-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: promtail
+  podMetricsEndpoints:
+  - port: http-metrics
+    interval: 15s
+INNER_EOF
+
 
 # 11. Tạo cấu hình Prometheus Rule tại EC2 và apply
 cat <<'INNER_EOF' > /tmp/prometheus-rules.yaml
@@ -191,11 +210,12 @@ spec:
 INNER_EOF
 
 
-# Đợi Prometheus CRD sẵn sàng rồi mới apply Rule
-until kubectl get crd prometheusrules.monitoring.coreos.com; do
+# Đợi Prometheus CRD sẵn sàng rồi mới apply Rule & PodMonitor
+until kubectl get crd prometheusrules.monitoring.coreos.com && kubectl get crd podmonitors.monitoring.coreos.com; do
   sleep 5
 done
 kubectl apply -f /tmp/prometheus-rules.yaml
+kubectl apply -f /tmp/promtail-podmonitor.yaml
 
 # Expose Frontend trên cổng 80 của EC2
 kubectl patch svc frontend -n default -p '{"spec": {"type": "NodePort", "ports": [{"name": "http", "port": 80, "nodePort": 80}]}}'
