@@ -36,6 +36,7 @@ const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 const SLACK_SIGNING_SECRET_ARN = process.env.SLACK_SIGNING_SECRET_ARN;
 const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
 const SLACK_BOT_TOKEN_ARN = process.env.SLACK_BOT_TOKEN_ARN;
+const JIRA_HISTORY_RETENTION_DAYS = 90;
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -262,6 +263,45 @@ async function saveCallbackAudit(incidentId, tenantId, slackUser, actionType, is
 }
 
 // =============================================================================
+// GĐ 4: Lưu thông tin assign vào JIRA_HISTORY (Đóng vòng học AI)
+// =============================================================================
+async function saveJiraHistorySuggestion({ tenantId, environment, service, accountId, reason, actor }) {
+  if (!DYNAMODB_TABLE) {
+    logStructured("WARN", "DYNAMODB_TABLE not configured, skipping history update");
+    return;
+  }
+  if (!service || !environment || !accountId) {
+    logStructured("WARN", "Missing required fields for Jira history suggestion", { service, environment, account_id: accountId });
+    return;
+  }
+  
+  const expiresAt = Math.floor(Date.now() / 1000) + (JIRA_HISTORY_RETENTION_DAYS * 86400);
+  
+  const command = new PutItemCommand({
+    TableName: DYNAMODB_TABLE,
+    Item: {
+      PK: { S: `JIRA_HISTORY#${tenantId}#${environment}#${service}` },
+      SK: { S: "SUGGESTION" },
+      expires_at: { N: expiresAt.toString() },
+      record: {
+        M: {
+          suggested_assignee_account_id: { S: accountId },
+          suggestion_reason: { S: reason || `Assigned via Slack by ${actor}` },
+          service: { S: service },
+          environment: { S: environment },
+          tenant_id: { S: tenantId },
+          updated_at: { S: new Date().toISOString() },
+          last_actioned_by: { S: actor || "unknown" }
+        }
+      }
+    }
+  });
+
+  await dynamoClient.send(command);
+  logStructured("INFO", "Saved Jira history suggestion", { service, account_id: accountId });
+}
+
+// =============================================================================
 // Main Handler — Slack Callback Only
 // =============================================================================
 exports.handler = async (event) => {
@@ -421,7 +461,18 @@ async function processAsyncSlackCallback(event) {
         logStructured("WARN", "Failed to save audit", { error: err.message });
       });
 
-      await Promise.all([assignPromise, auditPromise]);
+      const historyPromise = saveJiraHistorySuggestion({
+        tenantId,
+        environment: actionValue.environment || "sandbox",
+        service: actionValue.service || "unknown",
+        accountId: assigneeAccountId,
+        reason: `Confirmed AI suggestion via Slack by ${slackUserName}`,
+        actor: slackUserName
+      }).catch(err => {
+        logStructured("WARN", "Failed to save Jira history (non-fatal)", { error: err.message });
+      });
+
+      await Promise.all([assignPromise, auditPromise, historyPromise]);
     } else {
       status = "MISSING_INFO";
       await saveCallbackAudit(incidentId, tenantId, slackUser, "CONFIRM_ASSIGN", issueKey, assigneeAccountId, status);
@@ -532,6 +583,17 @@ async function processAsyncSlackCallback(event) {
     await saveCallbackAudit(
       incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, assigneeAccountId || "lookup_failed", status
     ).catch((err) => logStructured("WARN", "Failed to save audit", { error: err.message }));
+
+    if (status === "SUCCESS" && assigneeAccountId) {
+      await saveJiraHistorySuggestion({
+        tenantId,
+        environment: actionValue.environment || "sandbox",
+        service: actionValue.service || "unknown",
+        accountId: assigneeAccountId,
+        reason: `Self-assigned via Slack by ${slackUserName}`,
+        actor: slackUserName
+      }).catch(err => logStructured("WARN", "Failed to save Jira history (non-fatal)", { error: err.message }));
+    }
 
     // Cập nhật Slack message qua response_url (chạy nền)
     const originalBlocks = payload.message?.blocks || [];
@@ -658,6 +720,17 @@ async function processAsyncSlackCallback(event) {
     await saveCallbackAudit(
       manualIncidentId, manualTenantId, slackUser, "MANUAL_ASSIGN", manualIssueKey, assigneeAccountId || "lookup_failed", status
     ).catch((err) => logStructured("WARN", "Failed to save audit", { error: err.message }));
+
+    if (status === "SUCCESS" && assigneeAccountId) {
+      await saveJiraHistorySuggestion({
+        tenantId: manualTenantId,
+        environment: contextData.e || "sandbox",
+        service: service,
+        accountId: assigneeAccountId,
+        reason: `Manually assigned via Slack by ${slackUserName}`,
+        actor: slackUserName
+      }).catch(err => logStructured("WARN", "Failed to save Jira history (non-fatal)", { error: err.message }));
+    }
 
     const originalBlocks = payload.message?.blocks || [];
     const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
