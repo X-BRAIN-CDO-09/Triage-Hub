@@ -487,6 +487,19 @@ module "observability" {
     "${var.project_name}-buffer-queue.fifo",
     "${var.project_name}-dispatch-queue"
   ]
+
+  enable_notifications = var.enable_notifications
+  notification_email   = var.notification_email
+  notification_sms     = var.notification_sms
+  alarm_thresholds     = var.alarm_thresholds
+
+  alb_arn                  = module.alb.alb_arn
+  alb_target_group_arn     = module.alb.target_group_arn
+  customer_app_instance_id = module.customer_app.instance_id
+
+
+  monitor_alb = true
+  monitor_ec2 = true
 }
 
 # 17. EKS IRSA Roles for Workloads

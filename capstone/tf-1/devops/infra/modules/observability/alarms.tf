@@ -1,0 +1,331 @@
+# =============================================================================
+# SNS Topic & Subscriptions for Alarms
+# =============================================================================
+
+resource "aws_sns_topic" "alerts" {
+  count = var.enable_notifications ? 1 : 0
+  name  = "${var.project_name}-alerts-${var.environment}"
+
+  tags = {
+    Name        = "${var.project_name}-alerts-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  count     = var.enable_notifications && var.notification_email != "" ? 1 : 0
+  topic_arn = aws_sns_topic.alerts[0].arn
+  protocol  = "email"
+  endpoint  = var.notification_email
+}
+
+resource "aws_sns_topic_subscription" "sms" {
+  count     = var.enable_notifications && var.notification_sms != "" ? 1 : 0
+  topic_arn = aws_sns_topic.alerts[0].arn
+  protocol  = "sms"
+  endpoint  = var.notification_sms
+}
+
+locals {
+  alarm_actions = var.enable_notifications ? [aws_sns_topic.alerts[0].arn] : []
+}
+
+# =============================================================================
+# API Gateway Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "api_gw_latency" {
+  count               = var.api_gateway_name != "" ? 1 : 0
+  alarm_name          = "${var.project_name}-apigw-latency-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "Latency"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  extended_statistic  = "p99"
+  threshold           = var.alarm_thresholds.api_gw_latency
+  alarm_description   = "API Gateway latency is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    ApiName = var.api_gateway_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "api_gw_4xx" {
+  count               = var.api_gateway_name != "" ? 1 : 0
+  alarm_name          = "${var.project_name}-apigw-4xx-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "4XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.api_gw_4xx_rate
+  alarm_description   = "API Gateway 4XX error rate is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    ApiName = var.api_gateway_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "api_gw_5xx" {
+  count               = var.api_gateway_name != "" ? 1 : 0
+  alarm_name          = "${var.project_name}-apigw-5xx-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.api_gw_5xx_rate
+  alarm_description   = "API Gateway 5XX error rate is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    ApiName = var.api_gateway_name
+  }
+}
+
+# =============================================================================
+# Lambda Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  for_each            = toset(var.lambda_functions)
+  alarm_name          = "${each.value}-error-rate-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = var.alarm_thresholds.lambda_error_rate
+  alarm_description   = "Lambda ${each.value} error rate is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  metric_query {
+    id          = "e1"
+    expression  = "IF(m2 == 0, 0, m1 / m2 * 100)"
+    label       = "Error Rate"
+    return_data = true
+  }
+
+  metric_query {
+    id = "m1"
+    metric {
+      metric_name = "Errors"
+      namespace   = "AWS/Lambda"
+      period      = 60
+      stat        = "Sum"
+      dimensions = {
+        FunctionName = each.value
+      }
+    }
+  }
+
+  metric_query {
+    id = "m2"
+    metric {
+      metric_name = "Invocations"
+      namespace   = "AWS/Lambda"
+      period      = 60
+      stat        = "Sum"
+      dimensions = {
+        FunctionName = each.value
+      }
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
+  for_each            = toset(var.lambda_functions)
+  alarm_name          = "${each.value}-duration-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "Duration"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.alarm_thresholds.lambda_duration
+  alarm_description   = "Lambda ${each.value} duration is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    FunctionName = each.value
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
+  for_each            = toset(var.lambda_functions)
+  alarm_name          = "${each.value}-throttles-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "Throttles"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.lambda_throttle_rate
+  alarm_description   = "Lambda ${each.value} throttles is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    FunctionName = each.value
+  }
+}
+
+# =============================================================================
+# SQS Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "sqs_queue_depth" {
+  for_each            = toset(var.sqs_queues)
+  alarm_name          = "${each.value}-queue-depth-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.alarm_thresholds.sqs_queue_depth
+  alarm_description   = "SQS Queue ${each.value} depth is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    QueueName = each.value
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "sqs_oldest_message" {
+  for_each            = toset(var.sqs_queues)
+  alarm_name          = "${each.value}-oldest-message-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.alarm_thresholds.sqs_oldest_message
+  alarm_description   = "SQS Queue ${each.value} oldest message age is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    QueueName = each.value
+  }
+}
+
+# =============================================================================
+# DynamoDB Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "dynamodb_throttles" {
+  count               = var.dynamodb_table_name != "" ? 1 : 0
+  alarm_name          = "${var.dynamodb_table_name}-throttles-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "ThrottledRequests"
+  namespace           = "AWS/DynamoDB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.dynamodb_throttle
+  alarm_description   = "DynamoDB Table ${var.dynamodb_table_name} throttled requests is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    TableName = var.dynamodb_table_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dynamodb_system_errors" {
+  count               = var.dynamodb_table_name != "" ? 1 : 0
+  alarm_name          = "${var.dynamodb_table_name}-system-errors-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "SystemErrors"
+  namespace           = "AWS/DynamoDB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.dynamodb_sys_error
+  alarm_description   = "DynamoDB Table ${var.dynamodb_table_name} system errors is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    TableName = var.dynamodb_table_name
+  }
+}
+
+# =============================================================================
+# ALB Alarms
+# =============================================================================
+
+locals {
+  alb_arn_suffix_alarm = var.alb_arn != "" ? replace(var.alb_arn, "/^.*?:loadbalancer\\//", "") : ""
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  count               = var.monitor_alb ? 1 : 0
+  alarm_name          = "${var.project_name}-alb-5xx-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = var.alarm_thresholds.alb_5xx_rate
+  alarm_description   = "ALB 5XX error rate is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    LoadBalancer = local.alb_arn_suffix_alarm
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_response_time" {
+  count               = var.monitor_alb ? 1 : 0
+  alarm_name          = "${var.project_name}-alb-latency-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.alarm_thresholds.alb_response_time
+  alarm_description   = "ALB Target Response Time is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    LoadBalancer = local.alb_arn_suffix_alarm
+  }
+}
+
+# =============================================================================
+# EC2 Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "ec2_cpu" {
+  count               = var.monitor_ec2 ? 1 : 0
+  alarm_name          = "${var.project_name}-ec2-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.alarm_thresholds.ec2_cpu_utilization
+  alarm_description   = "EC2 CPU Utilization is too high"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    InstanceId = var.customer_app_instance_id
+  }
+}
