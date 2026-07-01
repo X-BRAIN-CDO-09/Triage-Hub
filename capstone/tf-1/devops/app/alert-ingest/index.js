@@ -58,7 +58,7 @@ async function handleApiGatewayLikeEvent(event) {
 	}
 
 	if (!event.body) {
-		return jsonResponse(400, { error: "Missing request body" });
+		throw new Error("Missing request body");
 	}
 
 	let payload;
@@ -66,7 +66,7 @@ async function handleApiGatewayLikeEvent(event) {
 		payload = parseBody(event);
 	} catch (err) {
 		console.warn("Invalid JSON body", { error: err.message });
-		return jsonResponse(400, { error: "Invalid JSON body" });
+		throw new Error(`Invalid JSON body: ${err.message}`);
 	}
 
 	const alerts = extractAlerts(payload);
@@ -98,31 +98,25 @@ async function handleApiGatewayLikeEvent(event) {
 		const tenantId = extractTenantId(context);
 
 		if (!tenantId) {
-			dropped.push(dropRecord(context, "missing_tenant_id"));
-			continue;
+			dropRecord(context, "missing_tenant_id");
+			throw new Error("Missing tenant_id");
 		}
 
 		if (context.headerTenantId && context.headerTenantId !== tenantId) {
-			dropped.push(
-				dropRecord(context, "tenant_header_label_mismatch", {
-					tenant_id: tenantId,
-				}),
-			);
-			continue;
+			dropRecord(context, "tenant_header_label_mismatch", {
+				tenant_id: tenantId,
+			});
+			throw new Error(`Tenant header label mismatch: header ${context.headerTenantId} !== label ${tenantId}`);
 		}
 
 		const tenant = await getTenantConfig(tenantId, tenantCache);
 		if (!tenant.exists) {
-			dropped.push(
-				dropRecord(context, "invalid_tenant", { tenant_id: tenantId }),
-			);
-			continue;
+			dropRecord(context, "invalid_tenant", { tenant_id: tenantId });
+			throw new Error(`Invalid tenant: ${tenantId}`);
 		}
 		if (!tenant.active) {
-			dropped.push(
-				dropRecord(context, "inactive_tenant", { tenant_id: tenantId }),
-			);
-			continue;
+			dropRecord(context, "inactive_tenant", { tenant_id: tenantId });
+			throw new Error(`Inactive tenant: ${tenantId}`);
 		}
 
 		const seed = buildIncidentSeed(context, tenantId, tenant.item);
