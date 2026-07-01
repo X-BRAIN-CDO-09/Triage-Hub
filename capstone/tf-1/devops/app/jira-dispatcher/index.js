@@ -469,6 +469,7 @@ async function processAsyncSlackCallback(event) {
               incident_id: incidentId,
               jira_issue_key: issueKey,
               assignee_name: broadcastAssigneeName,
+              assignee_email: actionValue.assignee_email || null,
               slack_user_id: slackUserId,
               title: actionValue.title || "Untitled incident",
               service: actionValue.service || "unknown",
@@ -493,6 +494,7 @@ async function processAsyncSlackCallback(event) {
     let status = "SUCCESS";
     let assigneeAccountId = null;
     let assigneeLabel = `<@${slackUserId}>`;
+    let broadcastAssigneeName = `<@${slackUserId}>`;
     let failureReason = null;
 
     if (!issueKey) {
@@ -514,7 +516,7 @@ async function processAsyncSlackCallback(event) {
         assigneeLabel = jiraUser.displayName
           ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
           : `<@${slackUserId}>`;
-        let broadcastAssigneeName = jiraUser.displayName || `<@${slackUserId}>`;
+        broadcastAssigneeName = `<@${slackUserId}>`;
         logStructured("INFO", "Self-assign succeeded", {
           issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
         });
@@ -561,6 +563,7 @@ async function processAsyncSlackCallback(event) {
                 incident_id: incidentId,
                 jira_issue_key: issueKey,
                 assignee_name: broadcastAssigneeName,
+                assignee_email: actionValue.assignee_email || null,
                 slack_user_id: slackUserId,
                 title: actionValue.title || "Untitled incident",
                 service: actionValue.service || "unknown",
@@ -583,6 +586,130 @@ async function processAsyncSlackCallback(event) {
         text: {
           type: "mrkdwn",
           text: `⚠️ *Chưa gán được ${issueKey || "ticket"} trên Jira*\nLý do: ${failureReason || status}. Hãy thử lại hoặc gán thủ công.`
+        }
+      });
+      const retryActions = originalBlocks.find(b => b.type === "actions");
+      if (retryActions) updatedBlocks.push(retryActions);
+    }
+
+    if (responseUrl) {
+      await updateSlackMessage(responseUrl, updatedBlocks);
+    }
+
+    return { statusCode: 200, body: "" };
+  }
+
+  if (action.action_id === "manual_assign_user_action") {
+    let status = "SUCCESS";
+    let failureReason = null;
+    const selectedSlackUserId = action.selected_user;
+    
+    let contextData = {};
+    try {
+      contextData = JSON.parse(action.block_id || "{}");
+    } catch (e) {
+      logStructured("WARN", "Could not parse block_id", { block_id: action.block_id });
+    }
+
+    const manualIncidentId = contextData.i || incidentId;
+    const manualTenantId = contextData.t || tenantId;
+    const manualIssueKey = contextData.k || issueKey;
+    const title = contextData.ti || "Untitled incident";
+    const service = contextData.se || "unknown";
+    const severityStr = contextData.sv || "medium";
+
+    let assigneeAccountId = null;
+    let assigneeLabel = `<@${selectedSlackUserId}>`;
+    let broadcastAssigneeName = `<@${selectedSlackUserId}>`;
+
+    if (!manualIssueKey) {
+      status = "MISSING_INFO";
+      failureReason = "Thiếu jira_issue_key";
+    } else if (!selectedSlackUserId) {
+      status = "MISSING_INFO";
+      failureReason = "Không tìm thấy user được chọn";
+    } else if (!SLACK_BOT_TOKEN_ARN) {
+      status = "FAILED_CONFIG";
+      failureReason = "SLACK_BOT_TOKEN_ARN chưa được cấu hình";
+    } else {
+      try {
+        const [jiraCreds, botToken] = await Promise.all([jiraCredsPromise, getSlackBotToken()]);
+        const email = await getSlackUserEmail(botToken, selectedSlackUserId);
+        const jiraUser = await findJiraAccountIdByEmail(jiraCreds, email);
+        assigneeAccountId = jiraUser.accountId;
+
+        await assignJiraTicket(jiraCreds, manualIssueKey, assigneeAccountId);
+
+        assigneeLabel = jiraUser.displayName
+          ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
+          : `<@${selectedSlackUserId}>`;
+        logStructured("INFO", "Manual assign succeeded", {
+          issue_key: manualIssueKey, account_id: assigneeAccountId, target_slack_user: selectedSlackUserId,
+        });
+      } catch (err) {
+        status = "FAILED_API";
+        failureReason = err.message;
+        logStructured("ERROR", "Manual assign failed", {
+          issue_key: manualIssueKey, target_slack_user: selectedSlackUserId, error: err.message,
+        });
+      }
+    }
+
+    await saveCallbackAudit(
+      manualIncidentId, manualTenantId, slackUser, "MANUAL_ASSIGN", manualIssueKey, assigneeAccountId || "lookup_failed", status
+    ).catch((err) => logStructured("WARN", "Failed to save audit", { error: err.message }));
+
+    const originalBlocks = payload.message?.blocks || [];
+    const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
+
+    if (status === "SUCCESS") {
+      const jiraCreds = await jiraCredsPromise.catch(() => null);
+      const jiraBaseUrl = jiraCreds?.base_url || "";
+      const jiraLink = manualIssueKey && jiraBaseUrl
+        ? `<${jiraBaseUrl}/browse/${manualIssueKey}|${manualIssueKey}>`
+        : (manualIssueKey || "N/A");
+
+      updatedBlocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `✅ *Assigned!*\n• *Ticket:* ${jiraLink}\n• *Assigned to:* ${assigneeLabel}\n• *Assigned by:* <@${slackUserId}>`
+        }
+      });
+      
+      if (EVENT_BUS_NAME) {
+        try {
+          const command = new PutEventsCommand({
+            Entries: [{
+              EventBusName: EVENT_BUS_NAME,
+              Source: "triage-hub.jira",
+              DetailType: "IncidentAssigned",
+              Detail: JSON.stringify({
+                incident_id: manualIncidentId,
+                jira_issue_key: manualIssueKey,
+                assignee_name: broadcastAssigneeName,
+                assignee_email: null,
+                slack_user_id: selectedSlackUserId,
+                title: title,
+                service: service,
+                severity: severityStr,
+                jira_url: jiraLink,
+                target_channel: "#incident-updates"
+              })
+            }]
+          });
+          await eventBridgeClient.send(command);
+          logStructured("INFO", "Published broadcast event to EventBridge for manual assign");
+        } catch (err) {
+          logStructured("ERROR", "Failed to publish broadcast event for manual assign", { error: err.message });
+        }
+      }
+    } else {
+      updatedBlocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `⚠️ *Chưa gán được ${manualIssueKey || "ticket"} trên Jira*\nLý do: ${failureReason || status}. Hãy thử lại hoặc gán thủ công.`
         }
       });
       const retryActions = originalBlocks.find(b => b.type === "actions");
