@@ -2,23 +2,24 @@
 
 <!--
 Doc owner: CDO-09 - Security & Compliance - Nguyễn Tấn Huy
-Status: Draft W11 → Final W11/W12
+Status: Updated W12 - aligned with current API Gateway → SQS → Lambda → DynamoDB architecture
 Scope: DevOps-level security for TF1 Triage Hub platform.
-Focus: Network security, IAM, secrets, encryption, audit trail, compliance touchpoints.
+Focus: Network security, IAM, secrets, encryption, DynamoDB audit trail, queue-based alert ingestion, compliance touchpoints.
 -->
 
 > File này là bản report Security Design cho phần được giao của Huy trong TF1 - Triage Hub.  
-> Report tập trung chứng minh 3 task chính: **KAN-218 Tenant Isolation**, **KAN-219 Encryption**, **KAN-220 End-to-End Audit Trail**.
+> Report tập trung chứng minh 4 task chính: **KAN-218 Tenant Isolation**, **KAN-219 Encryption**, **KAN-220 End-to-End Audit Trail**, và **Secure Raw Alert Ingestion - API Gateway to SQS**.
 
 ---
 
 ## 0. Security Scope for Assigned Jira Tasks
 
-| Jira Task | Security Area                              | Design Coverage                                                                               |
-| --------- | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| KAN-218   | Multi-Tenant Isolation                     | Validate `tenant_id`, reject invalid tenant, tenant-scoped data model, no cross-tenant access |
-| KAN-219   | Encryption for Data at Rest and In Transit | HTTPS/TLS, KMS encryption, Secrets Manager, no hardcoded secrets                              |
-| KAN-220   | End-to-End Audit Trail                     | Audit AI decisions, Jira activities, Slack activities, incident history                       |
+| Jira Task        | Security Area                              | Design Coverage                                                                                                    |
+| ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| KAN-218          | Multi-Tenant Isolation                     | Validate `tenant_id`, reject invalid tenant, tenant-scoped DynamoDB records, no cross-tenant access                |
+| KAN-219          | Encryption for Data at Rest and In Transit | API Gateway HTTPS/TLS, DynamoDB/SQS/Secrets Manager encryption, no hardcoded secrets, private AWS service access   |
+| KAN-220          | End-to-End Audit Trail                     | DynamoDB-backed audit/state/idempotency/mapping for AI decisions, Jira activities, Slack activities, incident flow |
+| New assigned task | Secure Raw Alert Ingestion                 | API Gateway `/alerts` → SQS `raw-alert-queue` → `alert-ingest` Lambda, DLQ, IAM least privilege, message attributes |
 
 ### Mục tiêu bảo mật
 
@@ -26,9 +27,10 @@ Khi một alert đi vào Triage Hub, hệ thống phải đảm bảo:
 
 1. Alert bắt buộc có `tenant_id`.
 2. Dữ liệu của tenant này không được lẫn với tenant khác.
-3. Secret như Jira token, Slack webhook, AI credential không được hardcode.
+3. Secret như Jira token, Slack webhook, service token, AI credential không được hardcode.
 4. Dữ liệu nhạy cảm được mã hóa khi lưu trữ và khi truyền qua mạng.
-5. Mọi bước quan trọng từ alert đến Jira/Slack đều có audit trail để truy vết.
+5. Mọi bước quan trọng từ alert đến AI diagnosis, Jira/Slack đều có audit trail để truy vết.
+6. API Gateway không gọi Lambda trực tiếp cho `/alerts`; alert raw được đưa vào SQS trước để có retry, DLQ và tách tầng xử lý.
 
 ---
 
@@ -38,111 +40,141 @@ Khi một alert đi vào Triage Hub, hệ thống phải đảm bảo:
 
 ```mermaid
 graph LR
-    ALERT[Alert Source / Synthetic Alert] -->|HTTPS/TLS| APIGW[Amazon API Gateway]
+    ALERT[Customer App / Alert Source] -->|HTTPS/TLS + X-Tenant-Id| APIGW[Amazon API Gateway /alerts]
 
     subgraph AWS["AWS Cloud - Region us-east-1"]
-        APIGW --> L1[Lambda 1: tenant-validator-lambda]
+        APIGW -->|AWS Service Integration: SQS SendMessage| RAWQ[SQS raw-alert-queue]
+        RAWQ --> RAWDLQ[SQS raw-alert-queue-dlq]
 
         subgraph VPC["VPC - Triage Hub Platform"]
             subgraph PUBLIC["Public Subnet"]
-                NAT[NAT Gateway / Approved Egress]
+                NAT[NAT Gateway / Approved SaaS Egress]
             end
 
-            subgraph PRIVATE["Private Subnet - App Security Layer"]
-                L1 --> L2[Lambda 2: ai-context-processor-lambda]
-                L2 --> L3[Lambda 3: audit-dispatcher-lambda]
+            subgraph PRIVATE["Private Subnet - Application Layer"]
+                RAWQ --> INGEST[Lambda: alert-ingest]
+                INGEST --> BUFFERQ[SQS buffer-queue]
+                BUFFERQ --> WORKER[EKS tf1-worker]
+                WORKER --> API[EKS tf1-api / AI Engine]
+                API --> DISPATCHQ[SQS dispatch-queue]
+                DISPATCHQ --> NOTIFY[Lambda: notify-dispatcher]
+                DISPATCHQ --> JIRA_DISP[Lambda: jira-dispatcher]
             end
 
-            L3 --> DDBEP[DynamoDB Gateway Endpoint]
-            L3 --> S3EP[S3 Gateway Endpoint]
+            INGEST --> DDBEP[DynamoDB Gateway Endpoint]
+            API --> DDBEP
+            NOTIFY --> DDBEP
+            JIRA_DISP --> DDBEP
+
+            INGEST --> SQSEP[SQS VPC Endpoint]
+            API --> SQSEP
+            WORKER --> SQSEP
+            NOTIFY --> SQSEP
+            JIRA_DISP --> SQSEP
+
+            API --> BEDROCKEP[Bedrock VPC Endpoint]
+            API --> SMEP[Secrets Manager VPC Endpoint]
+            WORKER --> SMEP
         end
 
-        DDBEP --> DDB[(DynamoDB State Table)]
-        S3EP --> S3[(S3 Audit Archive)]
+        DDBEP --> DDB[(DynamoDB triage-hub-state-sandbox)]
+        SQSEP --> SQS[(SQS Queues)]
+        SMEP --> SM[Secrets Manager]
+        BEDROCKEP --> BEDROCK[Amazon Bedrock]
 
-        SM[Secrets Manager] -. read Jira token / Slack webhook .-> L3
-        KMS[AWS KMS] -. encrypt at rest .-> SM
-        KMS -. encrypt at rest .-> DDB
-        KMS -. encrypt at rest .-> S3
+        KMS[AWS KMS / AWS-managed encryption] -. encrypt at rest .-> DDB
+        KMS -. encrypt at rest .-> SM
+        KMS -. encrypt at rest .-> SQS
 
-        CW[CloudWatch Logs] -. logs / metrics .-> L1
-        CW -. logs / metrics .-> L2
-        CW -. logs / metrics .-> L3
+        CW[CloudWatch Logs / Metrics] -. logs .-> INGEST
+        CW -. logs .-> API
+        CW -. logs .-> WORKER
+        CW -. logs .-> NOTIFY
+        CW -. logs .-> JIRA_DISP
     end
 
-    L3 -->|HTTPS/TLS via NAT| JIRA[Jira Cloud]
-    L3 -->|HTTPS/TLS via NAT| SLACK[Slack]
+    NOTIFY -->|HTTPS/TLS via NAT| SLACK[Slack]
+    JIRA_DISP -->|HTTPS/TLS via NAT| JIRA[Jira Cloud]
 ```
 
 ### 1.2 Network Flow
 
-Luồng chính:
+Luồng alert ingestion chính:
 
 ```text
-Alert Source
-→ API Gateway
-→ tenant-validator-lambda
-→ ai-context-processor-lambda
-→ audit-dispatcher-lambda
+Customer App / Alert Source
+→ API Gateway /alerts
+→ SQS raw-alert-queue
+→ alert-ingest Lambda
+→ SQS buffer-queue
+→ EKS tf1-worker
+→ EKS tf1-api /v1/triage
+→ SQS dispatch-queue
+→ notify-dispatcher / jira-dispatcher
 → Jira / Slack
 ```
 
-Luồng audit:
+Luồng audit/state hiện tại:
 
 ```text
-audit-dispatcher-lambda
+alert-ingest / tf1-api / tf1-worker / dispatchers
 → DynamoDB Gateway Endpoint
-→ DynamoDB State Table
-→ S3 Gateway Endpoint
-→ S3 Audit Archive
+→ DynamoDB triage-hub-state-sandbox
 ```
+
+> **Important:** Current runtime audit/state/idempotency/mapping is stored in **DynamoDB**. S3 is no longer used as the primary runtime audit store in the current sandbox architecture.
 
 Luồng secret:
 
 ```text
 Secrets Manager
-→ audit-dispatcher-lambda
+→ Lambda dispatchers / EKS AI Engine runtime
 ```
 
 Luồng encryption:
 
 ```text
-KMS
-→ Secrets Manager
-KMS
-→ DynamoDB
-KMS
-→ S3
+API Gateway HTTPS/TLS
+DynamoDB server-side encryption
+SQS AWS-managed/SSE encryption if enabled
+Secrets Manager KMS/AWS-managed encryption
+CloudWatch Logs AWS-managed/KMS encryption
 ```
 
 ### 1.3 Network Security Controls
 
-| Control                         | Design                                                          |
-| ------------------------------- | --------------------------------------------------------------- |
-| Public entrypoint               | API Gateway nhận alert qua HTTPS/TLS                            |
-| Private compute                 | Lambda xử lý logic nằm trong private subnet                     |
-| Private AWS service access      | DynamoDB và S3 được truy cập qua Gateway VPC Endpoint           |
-| External SaaS egress            | Jira/Slack được gọi qua NAT Gateway hoặc approved outbound path |
-| No direct public Lambda inbound | Lambda không expose public endpoint trực tiếp                   |
-| Observability                   | CloudWatch Logs ghi log cho từng Lambda                         |
+| Control                         | Design                                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| Public entrypoint               | API Gateway nhận alert qua AWS-managed HTTPS/TLS execute-api endpoint                   |
+| Queue-based ingestion           | `/alerts` route gửi message vào SQS `raw-alert-queue` thay vì invoke Lambda trực tiếp   |
+| DLQ                             | `raw-alert-queue-dlq` giữ message lỗi sau retry để debug và audit evidence              |
+| Private compute                 | Lambda/EKS workload xử lý logic trong private network boundary khi cấu hình             |
+| Private AWS service access      | DynamoDB, SQS, Secrets Manager, Bedrock được ưu tiên qua VPC Endpoint                   |
+| External SaaS egress            | Jira/Slack được gọi qua NAT Gateway hoặc approved outbound path                         |
+| No direct public Lambda inbound | `alert-ingest` nhận event từ SQS trigger, không expose public endpoint trực tiếp         |
+| Observability                   | CloudWatch Logs ghi log cho Lambda, EKS workload, queue depth, errors, execution traces |
 
 ### 1.4 Security Groups / Network Boundary
 
-| Component             | Inbound             | Outbound                                                                 | Note                                         |
-| --------------------- | ------------------- | ------------------------------------------------------------------------ | -------------------------------------------- |
-| API Gateway           | Public HTTPS        | Invoke Lambda                                                            | AWS managed entrypoint                       |
-| Lambda Security Group | None public inbound | HTTPS to VPC Endpoints, NAT Gateway, Secrets Manager/Bedrock if required | Không public trực tiếp                       |
-| VPC Endpoints         | 443 từ Lambda SG    | AWS managed services                                                     | Dùng cho DynamoDB/S3/Secrets/Bedrock nếu cần |
-| NAT Gateway           | N/A                 | HTTPS đến Jira/Slack                                                     | Chỉ dùng cho external SaaS egress            |
+| Component             | Inbound                  | Outbound                                                             | Note                                                 |
+| --------------------- | ------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------- |
+| API Gateway           | Public HTTPS             | SQS SendMessage integration                                          | AWS managed entrypoint, HTTPS/TLS mặc định           |
+| SQS raw-alert-queue   | API Gateway integration  | Lambda event source mapping                                          | Buffer layer + DLQ                                   |
+| Lambda Security Group | None public inbound      | HTTPS to VPC Endpoints, SQS, DynamoDB, Secrets Manager, NAT if needed | Không public trực tiếp                               |
+| EKS workload          | Internal service traffic | SQS, DynamoDB, Secrets Manager, Bedrock via endpoints                | AI Engine private runtime                            |
+| VPC Endpoints         | 443 từ workload SG       | AWS managed services                                                 | Dùng cho DynamoDB/SQS/Secrets/Bedrock/ECR nếu cấu hình |
+| NAT Gateway           | N/A                      | HTTPS đến Jira/Slack                                                 | Chỉ dùng cho external SaaS egress                    |
 
 ### 1.5 VPC Endpoints
 
-| Endpoint                  | Type               | Purpose                                                              |
-| ------------------------- | ------------------ | -------------------------------------------------------------------- |
-| DynamoDB Gateway Endpoint | Gateway Endpoint   | Cho Lambda truy cập DynamoDB (state, config) qua private AWS network |
-| S3 Gateway Endpoint       | Gateway Endpoint   | Cho Lambda archive audit sang S3 qua private AWS network             |
-| Secrets Manager Endpoint  | Interface Endpoint | Cho Lambda đọc secret qua private AWS network nếu cấu hình           |
-| Bedrock Runtime Endpoint  | Interface Endpoint | Cho Lambda gọi AI/Bedrock qua private AWS network nếu khả dụng       |
+| Endpoint                  | Type               | Purpose                                                                  |
+| ------------------------- | ------------------ | ------------------------------------------------------------------------ |
+| DynamoDB Gateway Endpoint | Gateway Endpoint   | Cho Lambda/EKS truy cập DynamoDB audit/state/config qua private AWS path |
+| SQS Interface Endpoint    | Interface Endpoint | Cho workload truy cập raw/buffer/dispatch queue qua private AWS path     |
+| Secrets Manager Endpoint  | Interface Endpoint | Cho workload đọc secret qua private AWS network nếu cấu hình             |
+| Bedrock Runtime Endpoint  | Interface Endpoint | Cho AI Engine gọi AI/Bedrock qua private AWS network nếu khả dụng        |
+| ECR API/DKR Endpoint      | Interface Endpoint | Cho EKS pull image từ ECR private registry                               |
+| CloudWatch Logs Endpoint  | Interface Endpoint | Cho workload gửi logs private nếu cấu hình                               |
 
 ---
 
@@ -150,31 +182,35 @@ KMS
 
 ### 2.1 Service Roles
 
-| Role                                  | Used by                       | Permissions                                                                              |
-| ------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------- |
-| `tf1-cdo09-tenant-validator-role`     | `tenant-validator-lambda`     | Ghi validation audit event, ghi CloudWatch Logs, đọc tenant config nếu có                |
-| `tf1-cdo09-ai-context-processor-role` | `ai-context-processor-lambda` | Đọc context theo tenant, gọi AI/Bedrock endpoint, ghi CloudWatch Logs                    |
-| `tf1-cdo09-audit-dispatcher-role`     | `audit-dispatcher-lambda`     | `dynamodb:PutItem`, `s3:PutObject`, `secretsmanager:GetSecretValue`, ghi CloudWatch Logs |
-| `tf1-cdo09-deploy-role`               | GitHub Actions / CI-CD        | Deploy API Gateway, Lambda, IaC resources; không dùng quyền admin rộng                   |
-| `tf1-cdo09-readonly-role`             | Mentor/debug                  | Đọc CloudWatch Logs, describe resource, không có quyền chỉnh sửa                         |
+| Role                                      | Used by                         | Permissions                                                                                       |
+| ----------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `api-gateway-sqs-role`                    | API Gateway `/alerts`           | `sqs:SendMessage` vào `raw-alert-queue` only                                                      |
+| `alert-ingest-role`                       | `alert-ingest` Lambda           | `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` trên raw queue; `sqs:SendMessage` vào buffer queue; DynamoDB tenant config access; CloudWatch Logs |
+| `tf1-api-role` / IRSA                     | EKS `tf1-api`                   | Gọi Bedrock, đọc Secrets Manager, ghi/read DynamoDB audit/state/idempotency theo scope            |
+| `tf1-worker-role` / IRSA                  | EKS `tf1-worker`                | Consume buffer queue, call tf1-api, ghi/read DynamoDB state nếu cần                               |
+| `notify-dispatcher-role`                  | `notify-dispatcher` Lambda      | Đọc Slack secret, gửi Slack qua HTTPS, ghi notification/audit mapping vào DynamoDB                |
+| `jira-dispatcher-role`                    | `jira-dispatcher` Lambda        | Đọc Jira secret, gọi Jira qua HTTPS, ghi Jira mapping/callback audit vào DynamoDB                 |
+| `tf1-cdo09-deploy-role`                   | GitHub Actions / CI-CD          | Deploy API Gateway, Lambda, SQS, DynamoDB, EKS/IaC resources; không dùng quyền admin rộng         |
+| `tf1-cdo09-readonly-role`                 | Mentor/debug                    | Đọc CloudWatch Logs, describe resource, không có quyền chỉnh sửa                                  |
 
 ### 2.2 Least Privilege Rules
 
 - Không dùng policy dạng `*:*`.
-- Không cấp quyền `iam:*` cho deploy role nếu không cần.
-- Lambda chỉ được đọc secret đúng mục đích.
-- `audit-dispatcher-lambda` chỉ được ghi audit record/state, không được xóa DynamoDB table.
-- S3 audit bucket nên hạn chế `DeleteObject`.
-- DynamoDB access nên giới hạn trên DynamoDB table của TF1 CDO-09.
+- Không cấp quyền `iam:*`, `iam:PassRole`, `iam:AttachRolePolicy` nếu không cần.
+- API Gateway chỉ được `sqs:SendMessage` vào đúng `raw-alert-queue`.
+- `alert-ingest` Lambda chỉ được consume raw queue, gửi sang buffer queue và đọc/ghi DynamoDB theo nhu cầu thực tế.
+- Dispatcher chỉ được đọc secret đúng mục đích và ghi mapping/audit record cần thiết.
+- DynamoDB access nên giới hạn trên DynamoDB table `triage-hub-state-sandbox`.
 - KMS access chỉ cấp cho role cần mã hóa/giải mã dữ liệu.
+- Không cấp quyền xóa table (`dynamodb:DeleteTable`) cho runtime role.
 
 ### 2.3 K8s RBAC
 
 Áp dụng cho AI Engine triển khai trên Amazon EKS:
 
 - Phân quyền theo nguyên tắc least privilege sử dụng Kubernetes RBAC:
-  - `developer`: Quyền deploy, update ứng dụng trong tenant namespace.
-  - `sre`: Quyền manage, debug các pods, services.
+  - `developer`: Quyền deploy, update ứng dụng trong tenant/application namespace.
+  - `sre`: Quyền manage, debug pods, services.
   - `viewer`: Chỉ xem log, check status.
 - Tận dụng IAM Roles for Service Accounts (IRSA) để mapping Kubernetes ServiceAccounts với IAM Roles mà không cần dùng credential tĩnh.
 
@@ -196,16 +232,17 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 ### 3.1 Secrets Inventory
 
-| Secret                   | Storage                                       | Rotation            | Accessed by                   |
-| ------------------------ | --------------------------------------------- | ------------------- | ----------------------------- |
-| `JIRA_API_TOKEN`         | Secrets Manager `tf1/cdo09/jira/api-token`    | Manual for capstone | `audit-dispatcher-lambda`     |
-| `SLACK_WEBHOOK_URL`      | Secrets Manager `tf1/cdo09/slack/webhook`     | Manual for capstone | `audit-dispatcher-lambda`     |
-| `AI_ENDPOINT_AUTH_TOKEN` | Secrets Manager `tf1/cdo09/ai/endpoint-token` | Manual for capstone | `ai-context-processor-lambda` |
-| `BEDROCK_ACCESS_CONFIG`  | Prefer IAM role / Secrets Manager if required | Manual for capstone | `ai-context-processor-lambda` |
+| Secret                   | Storage                                       | Rotation            | Accessed by                              |
+| ------------------------ | --------------------------------------------- | ------------------- | ---------------------------------------- |
+| `JIRA_API_TOKEN`         | Secrets Manager `tf1/cdo09/jira/api-token`    | Manual for capstone | `jira-dispatcher` Lambda                 |
+| `SLACK_WEBHOOK_URL`      | Secrets Manager `tf1/cdo09/slack/webhook`     | Manual for capstone | `notify-dispatcher` Lambda               |
+| `SERVICE_AUTH_TOKEN`     | Secrets Manager / External Secret             | Manual for capstone | EKS `tf1-api` / `tf1-worker`             |
+| `BEDROCK_ACCESS_CONFIG`  | Prefer IAM role / Secrets Manager if required | Manual for capstone | EKS `tf1-api` / AI Engine runtime        |
 
 ### 3.2 Inject Pattern
 
-- Lambda đọc secret runtime bằng `secretsmanager:GetSecretValue`.
+- Lambda đọc secret runtime bằng `secretsmanager:GetSecretValue` nếu cần.
+- EKS workload có thể lấy secret qua External Secrets Operator từ Secrets Manager.
 - Không đưa secret trực tiếp vào source code.
 - Không commit `.env`, `*.tfvars`, token file hoặc webhook URL lên GitHub.
 - Nếu có local test, dùng `.env.example` thay vì `.env` thật.
@@ -217,7 +254,7 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 | --------------------------------------------- | -------------------------------------- |
 | Commit nhầm token lên GitHub                  | `.gitignore`, secret scanning          |
 | Log in ra Jira token/Slack webhook            | Redact sensitive pattern trước khi log |
-| Lambda đọc quá nhiều secret                   | IAM policy giới hạn theo secret ARN    |
+| Runtime role đọc quá nhiều secret             | IAM policy giới hạn theo secret ARN    |
 | Secret bị dùng sai môi trường                 | Prefix rõ ràng theo `tf1/cdo09/...`    |
 | Credential nằm trong container/build artifact | Không bake secret vào image/package    |
 
@@ -227,33 +264,38 @@ Role được assume phải giới hạn quyền deploy đúng resource của TF
 
 ### 4.1 Encryption at Rest
 
-| Data                    | Storage                          | KMS key                         | Notes                              |
-| ----------------------- | -------------------------------- | ------------------------------- | ---------------------------------- |
-| Incident audit record   | DynamoDB `tf1-cdo09-audit-table` | AWS-managed KMS hoặc CMK        | Partition key scoped by tenant     |
-| Long-term audit archive | S3 `tf1-cdo09-audit-archive`     | SSE-KMS / CMK                   | Prefix theo tenant_id              |
-| Jira token              | Secrets Manager                  | KMS                             | Không hardcode                     |
-| Slack webhook           | Secrets Manager                  | KMS                             | Không hardcode                     |
-| AI endpoint token       | Secrets Manager                  | KMS                             | Không hardcode                     |
-| Lambda logs             | CloudWatch Logs                  | AWS-managed encryption hoặc CMK | Retention policy cần được cấu hình |
+| Data                         | Storage                                      | KMS key / Encryption                         | Notes                                      |
+| ---------------------------- | -------------------------------------------- | -------------------------------------------- | ------------------------------------------ |
+| Audit/state/idempotency       | DynamoDB `triage-hub-state-sandbox`          | DynamoDB server-side encryption / AWS-managed KMS | Primary current audit/state store          |
+| Raw alert messages            | SQS `raw-alert-queue` + DLQ                  | SQS SSE / AWS-managed encryption if enabled  | Queue buffer + retry/DLQ                   |
+| Normalized incident messages  | SQS `buffer-queue`                           | SQS SSE / AWS-managed encryption if enabled  | Input for EKS worker                       |
+| Dispatch messages             | SQS `dispatch-queue`                         | SQS SSE / AWS-managed encryption if enabled  | Input for notify/jira dispatcher           |
+| Jira token                    | Secrets Manager                              | KMS / AWS-managed encryption                 | Không hardcode                             |
+| Slack webhook                 | Secrets Manager                              | KMS / AWS-managed encryption                 | Không hardcode                             |
+| Service/AI endpoint token     | Secrets Manager / K8s Secret from ESO        | KMS / AWS-managed encryption                 | Không bake vào image                       |
+| Lambda/EKS logs               | CloudWatch Logs                              | AWS-managed encryption hoặc CMK              | Retention policy cần được cấu hình         |
+| Container image               | ECR private registry                         | ECR encryption                               | Scan/signing là hardening                  |
 
 ### 4.2 Encryption in Transit
 
-| Traffic                      | Protection                                        |
-| ---------------------------- | ------------------------------------------------- |
-| Alert Source → API Gateway   | HTTPS/TLS                                         |
-| Lambda → AI/Bedrock endpoint | HTTPS/TLS                                         |
-| Lambda → Jira Cloud          | HTTPS/TLS qua NAT Gateway hoặc approved egress    |
-| Lambda → Slack Webhook       | HTTPS/TLS qua NAT Gateway hoặc approved egress    |
-| Lambda → DynamoDB/S3         | AWS private network qua VPC Endpoint nếu cấu hình |
-| Lambda → Secrets Manager     | HTTPS/TLS / Interface Endpoint nếu cấu hình       |
+| Traffic                               | Protection                                                              |
+| ------------------------------------- | ----------------------------------------------------------------------- |
+| Customer App → API Gateway             | AWS API Gateway HTTPS/TLS execute-api endpoint                          |
+| API Gateway → SQS                      | AWS Service Integration over AWS-managed secure channel                 |
+| Lambda/EKS → SQS                       | HTTPS/TLS, preferably via SQS VPC Endpoint                              |
+| Lambda/EKS → DynamoDB                  | HTTPS/TLS, DynamoDB Gateway Endpoint if configured                      |
+| EKS → Bedrock endpoint                 | HTTPS/TLS, Bedrock Interface Endpoint if configured                     |
+| Lambda/EKS → Secrets Manager           | HTTPS/TLS, Secrets Manager Interface Endpoint if configured             |
+| Dispatcher → Jira Cloud                | HTTPS/TLS qua NAT Gateway hoặc approved egress                          |
+| Dispatcher → Slack Webhook             | HTTPS/TLS qua NAT Gateway hoặc approved egress                          |
 
 ### 4.3 Key Management
 
-- KMS key dùng cho S3 audit archive và dữ liệu audit nhạy cảm.
-- KMS key rotation bật nếu dùng customer-managed key.
+- KMS/AWS-managed encryption dùng cho DynamoDB, Secrets Manager, CloudWatch Logs, ECR và các service lưu dữ liệu nhạy cảm.
+- Nếu dùng customer-managed key, nên bật key rotation.
 - Key policy chỉ cho phép role của TF1 CDO-09 sử dụng.
 - KMS usage nên được audit qua CloudTrail.
-- Không cấp quyền `kms:*` cho Lambda nếu không cần.
+- Không cấp quyền `kms:*` cho Lambda/EKS runtime nếu không cần.
 
 ---
 
@@ -265,11 +307,12 @@ Audit trail cần ghi lại đầy đủ vòng đời incident:
 
 | Event type                | Description                                          |
 | ------------------------- | ---------------------------------------------------- |
-| `ALERT_RECEIVED`          | Alert đi vào hệ thống qua API Gateway                |
+| `ALERT_RECEIVED`          | Alert đi vào hệ thống qua API Gateway/SQS            |
 | `TENANT_VALIDATED`        | `tenant_id` hợp lệ                                   |
 | `TENANT_REJECTED`         | Request bị reject do thiếu/sai `tenant_id`           |
 | `CONTEXT_GATHERED`        | Đã gom logs, metrics, deployment metadata            |
 | `AI_DECISION_CREATED`     | AI tạo diagnosis, confidence score, suggested action |
+| `IDEMPOTENCY_RECORDED`    | Ghi nhận trạng thái chống xử lý trùng                |
 | `JIRA_TICKET_CREATED`     | Jira ticket được tạo và gắn với incident             |
 | `SLACK_NOTIFICATION_SENT` | Slack notification được gửi đến team owner           |
 | `ACKNOWLEDGED`            | Engineer acknowledge incident                        |
@@ -278,53 +321,77 @@ Audit trail cần ghi lại đầy đủ vòng đời incident:
 
 ```json
 {
+  "PK": "AUDIT#audit-001",
+  "SK": "RECORDED#2026-06-24T10:00:00Z#AI_DECISION_CREATED",
   "tenant_id": "tenant-a",
   "incident_id": "inc-001",
-  "trace_id": "trace-123",
+  "correlation_id": "trace-123",
   "event_type": "AI_DECISION_CREATED",
   "ai_decision_id": "decision-001",
   "confidence_score": 0.86,
   "jira_ticket_id": "KAN-999",
   "slack_message_id": "slack-123",
-  "timestamp": "2026-06-24T10:00:00Z"
+  "timestamp": "2026-06-24T10:00:00Z",
+  "expires_at": 1782746400
 }
 ```
 
 ### 5.3 Storage + Retention
 
-| Log type                | Storage         | Retention                           | Query interface                      |
-| ----------------------- | --------------- | ----------------------------------- | ------------------------------------ |
-| Incident audit trail    | DynamoDB        | During capstone demo / configurable | Query by `tenant_id` + `incident_id` |
-| Long-term audit archive | S3              | 90 days demo policy                 | S3 prefix by tenant_id               |
-| Application logs        | CloudWatch Logs | 14 days demo policy                 | Logs Insights                        |
-| Infrastructure changes  | CloudTrail      | AWS default / configured            | CloudTrail Console                   |
+| Log type                     | Storage                                  | Retention                           | Query interface                       |
+| ---------------------------- | ---------------------------------------- | ----------------------------------- | ------------------------------------- |
+| Incident audit trail         | DynamoDB `triage-hub-state-sandbox`      | Configurable with TTL               | Query by key pattern / scan for demo  |
+| Idempotency records          | DynamoDB `triage-hub-state-sandbox`      | TTL using `expires_at` if available | Query by `IDEMPOTENCY#<audit_id>`     |
+| Jira/Slack mapping           | DynamoDB `triage-hub-state-sandbox`      | Demo/configurable                   | Query by `tenant_id` + `incident_id`  |
+| Application logs             | CloudWatch Logs                          | Demo retention / configured policy  | Logs Insights                         |
+| Infrastructure changes       | CloudTrail                               | AWS default / configured            | CloudTrail Console                    |
+
+> S3 runtime audit/archive is not part of the current sandbox flow. Current audit/state/idempotency/mapping is DynamoDB-backed.
 
 ### 5.4 Tenant-scoped Audit Key
 
-DynamoDB key design:
+DynamoDB key patterns:
 
 ```text
+Tenant config:
 PK = TENANT#<tenant_id>
-SK = INCIDENT#<incident_id>#EVENT#<timestamp>
+SK = CONFIG
+
+Incident state / mapping:
+PK = TENANT#<tenant_id>
+SK = INCIDENT#<incident_id>
+
+Notification audit:
+PK = TENANT#<tenant_id>
+SK = NOTIFICATION#<incident_id>#<timestamp>
+
+AI audit:
+PK = AUDIT#<audit_id>
+SK = RECORDED#<timestamp>#<record_type>
+
+Idempotency:
+PK = IDEMPOTENCY#<audit_id>
+SK = STATE
 ```
 
 Example:
 
 ```text
 PK = TENANT#tenant-a
-SK = INCIDENT#inc-001#EVENT#2026-06-24T10:00:00Z
+SK = INCIDENT#inc-001
 ```
 
-S3 archive prefix:
+TTL note:
 
 ```text
-s3://tf1-cdo09-audit-archive/tenant_id=<tenant_id>/incident_id=<incident_id>/
+DynamoDB TTL attribute should match the application retention field.
+Current AI Engine code writes `expires_at`, so DynamoDB TTL should use `expires_at` for those records.
 ```
 
 ### 5.5 PII Handling
 
-- Chỉ accept field đã định nghĩa trong telemetry contract.
-- Nếu alert payload có email, phone, access token hoặc thông tin nhạy cảm, cần redact trước khi ghi audit.
+- Chỉ accept field đã định nghĩa trong telemetry/AI contract.
+- Nếu alert payload có email, phone, access token hoặc thông tin nhạy cảm, cần redact trước khi ghi audit/log.
 - CloudWatch Logs không được chứa raw secret.
 - Audit record có thể lưu input hash thay vì raw payload nếu dữ liệu quá nhạy cảm.
 
@@ -334,25 +401,26 @@ s3://tf1-cdo09-audit-archive/tenant_id=<tenant_id>/incident_id=<incident_id>/
 
 Thiết kế sử dụng mô hình Hybrid Compute (Serverless + EKS). Để bảo vệ cụm EKS chạy AI Engine, các biện pháp bảo mật sau được áp dụng:
 
-- **Quét lỗ hổng Image**: Tích hợp quét lỗ hổng bảo mật bằng Trivy trong quy trình CI/CD. Chặn build/deploy nếu phát hiện lỗ hổng mức HIGH/CRITICAL.
-- **Ký và xác thực Image**: Sử dụng Cosign để ký số image sau khi quét pass. Cấu hình admission controller (Sigstore policy-controller) trên cụm EKS để chỉ cho phép chạy các pod có chữ ký số hợp lệ.
+- **Quét lỗ hổng Image**: Tích hợp quét lỗ hổng bảo mật bằng Trivy trong quy trình CI/CD. Chặn build/deploy nếu phát hiện lỗ hổng mức HIGH/CRITICAL theo rule của team.
+- **Ký và xác thực Image**: Có thể dùng Cosign để ký image sau khi scan pass. Admission policy có thể chặn pod nếu chữ ký không hợp lệ.
 - **In-cluster Guardrails**:
-  - Triển khai Gatekeeper (OPA) để thực thi chính sách bảo mật (chặn root user, yêu cầu resource limit, chặn hostNetwork).
-  - Sử dụng Pod Security Standards ở mức `restricted` cho tất cả application namespaces.
-  - Phân tách môi trường đa khách hàng (multi-tenant) sử dụng namespace riêng biệt kết hợp NetworkPolicy deny-all mặc định.
-- **IAM Integration**: Sử dụng IRSA (IAM Roles for Service Accounts) để gán quyền tối thiểu cho các ServiceAccounts tương ứng với từng Pod, không lưu credential tĩnh trong container.
+  - Gatekeeper/OPA để thực thi chính sách bảo mật nếu cluster đã bật.
+  - Pod Security Standards ở mức `restricted` cho application namespaces.
+  - NetworkPolicy deny-all mặc định + explicit allow rules cho traffic cần thiết.
+- **IAM Integration**: Sử dụng IRSA để gán quyền tối thiểu cho ServiceAccounts, không lưu credential tĩnh trong container.
 
 ---
 
 ## 7. Compliance Touchpoints (Owner: Huy)
 
-| Standard / Requirement | Relevant controls in this design                                    |
-| ---------------------- | ------------------------------------------------------------------- |
-| TF1 Client Requirement | Context isolation per tenant, audit trail cho mọi AI decision       |
-| SOC2 - Logical Access  | IAM least privilege, no public Lambda inbound, tenant-scoped access |
-| SOC2 - Monitoring      | CloudWatch Logs, audit records, CloudTrail/KMS audit                |
-| GDPR Article 32        | Encryption at rest/in transit, access control, tenant isolation     |
-| PCI-DSS                | Out of scope, no card data processed                                |
+| Standard / Requirement | Relevant controls in this design                                             |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| TF1 Client Requirement | Context isolation per tenant, DynamoDB audit/state trail for AI decisions     |
+| SOC2 - Logical Access  | IAM least privilege, no direct public Lambda inbound, tenant-scoped access    |
+| SOC2 - Monitoring      | CloudWatch Logs, DynamoDB audit records, CloudTrail/KMS audit                 |
+| GDPR Article 32        | Encryption at rest/in transit, access control, tenant isolation               |
+| Reliability/Auditability | SQS buffering, DLQ, correlation id, DynamoDB audit/state mapping             |
+| PCI-DSS                | Out of scope, no card data processed                                          |
 
 Document này chỉ mapping ở mức control → AWS service được dùng. Đây là capstone security design, không phải audit report enterprise đầy đủ.
 
@@ -363,12 +431,13 @@ Document này chỉ mapping ở mức control → AWS service được dùng. Đ
 Các câu hỏi cần xác nhận thêm với PM/mentor/team:
 
 1. Jira và Slack sẽ dùng token thật hay mock endpoint cho demo W11/W12?
-2. Audit archive retention nên để 30 ngày, 90 ngày hay chỉ trong phạm vi capstone?
-3. Tenant list dùng cho demo sẽ hardcode trong config, lưu trong DynamoDB hay SSM Parameter Store?
-4. AI/Bedrock endpoint có yêu cầu VPC Endpoint không, hay gọi qua public HTTPS endpoint?
-5. Alert payload có chứa PII không? Nếu có, field nào cần redact trước khi ghi audit?
-6. Nếu `tenant_id` không hợp lệ, response chuẩn là `400 Bad Request` hay custom error code?
-7. Có cần bật CloudTrail data events cho S3 audit bucket trong demo không?
+2. DynamoDB audit/state retention nên để bao lâu trong demo?
+3. TTL attribute chốt là `expires_at` hay `ttl` cho toàn bộ Lambda/AI Engine/dispatcher records?
+4. Tenant list dùng cho demo sẽ lưu trong DynamoDB, SSM Parameter Store hay seed script?
+5. AI/Bedrock endpoint có yêu cầu VPC Endpoint không, hay gọi qua public HTTPS endpoint?
+6. Alert payload có chứa PII không? Nếu có, field nào cần redact trước khi ghi audit/log?
+7. Nếu `tenant_id` không hợp lệ, response chuẩn là drop/retry/DLQ hay custom error code?
+8. SQS encryption có cần explicit SSE-KMS cho production hardening không?
 
 ---
 
@@ -380,13 +449,16 @@ Evidence file:
 
 - `docs/reports/03_security_design.md`
 - `diagrams/security-compliance.drawio` hoặc security diagram tương ứng
+- API Gateway mapping `X-Tenant-Id` → SQS Message Attribute `TenantId`
+- CloudWatch log của `alert-ingest` reject tenant mismatch
+- DynamoDB tenant config / tenant-scoped key evidence
 - Commit SHA: `<COMMIT_SHA>`
 - Pull Request: `<PR_URL>`
 
 Summary:
 
 ```text
-Implemented tenant isolation design for Triage Hub. Every alert must include tenant_id. tenant-validator-lambda rejects missing or invalid tenant_id. Audit records are stored with tenant-scoped keys in DynamoDB and tenant-based prefixes in S3 to prevent cross-tenant access.
+Implemented tenant isolation design for Triage Hub. Every alert must include tenant_id. API Gateway preserves X-Tenant-Id as SQS Message Attribute TenantId. alert-ingest validates tenant_id against payload and DynamoDB tenant config before forwarding valid incident seeds to buffer-queue.
 ```
 
 ### KAN-219 - Encryption
@@ -394,14 +466,17 @@ Implemented tenant isolation design for Triage Hub. Every alert must include ten
 Evidence file:
 
 - `docs/reports/03_security_design.md`
-- `diagrams/security-compliance.drawio` hoặc security diagram tương ứng
+- API Gateway HTTPS/TLS invoke URL evidence
+- DynamoDB encryption evidence
+- Secrets Manager evidence
+- SQS queue encryption/config evidence if enabled
 - Commit SHA: `<COMMIT_SHA>`
 - Pull Request: `<PR_URL>`
 
 Summary:
 
 ```text
-Implemented encryption design for data at rest and in transit. API Gateway, AI endpoint, Jira and Slack calls use HTTPS/TLS. DynamoDB, S3 and Secrets Manager are encrypted using KMS or AWS-managed encryption. Jira token and Slack webhook are stored in Secrets Manager and must not be hardcoded.
+Implemented encryption design for data at rest and in transit. API Gateway public ingress uses AWS-managed HTTPS/TLS. DynamoDB, SQS, Secrets Manager, ECR and CloudWatch Logs use AWS-managed encryption or KMS depending on service configuration. Jira token and Slack webhook are stored in Secrets Manager and must not be hardcoded.
 ```
 
 ### KAN-220 - End-to-End Audit Trail
@@ -409,86 +484,104 @@ Implemented encryption design for data at rest and in transit. API Gateway, AI e
 Evidence file:
 
 - `docs/reports/03_security_design.md`
-- `diagrams/security-compliance.drawio` hoặc security diagram tương ứng
+- DynamoDB table `triage-hub-state-sandbox`
+- DynamoDB TTL/encryption evidence
+- AI Engine `dynamodb_store.py` evidence for `expires_at` and audit/idempotency writes
+- CloudWatch Logs for incident processing
 - Commit SHA: `<COMMIT_SHA>`
 - Pull Request: `<PR_URL>`
 
 Summary:
 
 ```text
-Implemented end-to-end audit trail design. Audit Writer records ALERT_RECEIVED, TENANT_VALIDATED, AI_DECISION_CREATED, JIRA_TICKET_CREATED, SLACK_NOTIFICATION_SENT and ACKNOWLEDGED events. Audit records include tenant_id, incident_id, trace_id, confidence_score, ticket id and timestamp, stored in DynamoDB and archived to S3.
+Implemented end-to-end audit trail design using DynamoDB as the primary current audit/state/idempotency/mapping store. Audit records include tenant_id, incident_id, audit_id/correlation_id, AI decision metadata, Jira/Slack references and timestamps. S3 is not used as the current runtime audit store in sandbox.
+```
+
+### New assigned task - Secure Raw Alert Ingestion
+
+Evidence file:
+
+- API Gateway `/alerts` route configured as SQS SendMessage integration
+- SQS `raw-alert-queue` and `raw-alert-queue-dlq`
+- Lambda `alert-ingest` SQS trigger
+- IAM policy for API Gateway role: `sqs:SendMessage` to raw queue only
+- IAM policy for `alert-ingest`: receive/delete/get raw queue, send buffer queue
+- Commit SHA: `<COMMIT_SHA>`
+- Pull Request: `<PR_URL>`
+
+Summary:
+
+```text
+Implemented secure raw alert ingestion flow. API Gateway /alerts now sends raw alert payloads to SQS raw-alert-queue before alert-ingest Lambda processes them. This design improves reliability, supports DLQ, preserves tenant/correlation message attributes, and applies least-privilege IAM between API Gateway, SQS and Lambda.
 ```
 
 ---
 
-## 10. AI Engine Runtime Security — EKS angle (Owner: Thi)
+## 10. AI Engine Runtime Security — EKS angle (Owner: Thi / Security alignment: Huy)
 
-<!-- Scope: security baseline cho AI Engine chạy trên EKS. Bổ sung cho §1/§2/§6, không ghi đè.
-     Ground truth: ADR-003 (EKS angle), 02_infra_design.md §8, contracts của AI team. -->
+<!-- Scope: security baseline cho AI Engine chạy trên EKS. Bổ sung cho §1/§2/§6, không ghi đè. -->
 
-> Engine chạy **private hoàn toàn, no internet route**. Mọi egress qua VPC Endpoint; SaaS (Slack/Jira) chỉ ra ngoài qua Lambda Dispatcher + NAT (đường ngoại lệ).
+> Engine chạy private trong EKS. AWS service egress ưu tiên qua VPC Endpoints; SaaS (Slack/Jira) đi qua dispatcher Lambda + NAT/approved egress.
 
 ### 10.1 Supply-chain security
 
-Pipeline đóng gói image của AI team đảm bảo **không image nào chạy mà chưa quét + chưa ký**:
+Pipeline đóng gói image của AI team nên đảm bảo image được scan trước khi deploy:
 
-| Control          | Tool                                                | Gate                                                |
-| ---------------- | --------------------------------------------------- | --------------------------------------------------- |
-| Image scan       | Trivy                                               | **fail-on HIGH/CRITICAL** trong CI                  |
-| Image signing    | Cosign (Sigstore keyless)                           | sign sau khi scan pass                              |
-| Registry         | ECR private, `IMMUTABLE` tag, `scan_on_push`        | không overwrite tag                                 |
-| Admission verify | Sigstore `policy-controller` / Cluster Image Policy | **chặn pod** nếu chữ ký không hợp lệ trước khi chạy |
-| Base image       | distroless, non-root, `EXPOSE 8080`                 | giảm attack surface                                 |
-
-→ Tái dùng stack từ lab `aws-sercurity`.
+| Control          | Tool / Pattern                                      | Gate / Evidence                                      |
+| ---------------- | --------------------------------------------------- | ---------------------------------------------------- |
+| Image scan       | Trivy / ECR scan / CI security scan                 | Critical = 0, High documented mitigation             |
+| Image signing    | Cosign nếu team bật                                 | sign sau khi scan pass                               |
+| Registry         | ECR private, immutable tag nếu cấu hình             | không overwrite tag                                  |
+| Admission verify | Sigstore policy-controller nếu cluster bật          | chặn pod nếu chữ ký không hợp lệ                     |
+| Base image       | non-root/minimal image                              | giảm attack surface                                  |
 
 ### 10.2 IAM — IRSA least-privilege
 
-Mỗi ServiceAccount map 1 IAM Role (IRSA) qua STS, **không** static credential trong pod:
+Mỗi ServiceAccount nên map 1 IAM Role qua IRSA, **không** static credential trong pod:
 
-| Permission                       | Resource scope        | Dùng bởi                       |
-| -------------------------------- | --------------------- | ------------------------------ |
-| `bedrock:InvokeModel`            | specific model ARN    | tf1-api (khi `AI_MODE=hybrid`) |
-| `secretsmanager:GetSecretValue`  | `tf1/ai-engine/*` ARN | ESO                            |
-| `s3:PutObject`                   | audit bucket ARN only | tf1-api (ghi audit)            |
-| `dynamodb:GetItem/PutItem/Query` | state table ARN only  | tf1-api/worker                 |
-
-Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager), `ai-api-contract.md` (auth fallback).
+| Permission                       | Resource scope        | Dùng bởi                          |
+| -------------------------------- | --------------------- | --------------------------------- |
+| `bedrock:InvokeModel`            | specific model ARN    | tf1-api nếu dùng Bedrock          |
+| `secretsmanager:GetSecretValue`  | `tf1/ai-engine/*` ARN | ESO / tf1-api nếu cần             |
+| `dynamodb:GetItem/PutItem/Query` | state table ARN only  | tf1-api/worker audit/state        |
+| `sqs:ReceiveMessage/SendMessage` | queue ARN only        | tf1-worker / dispatch integration |
 
 ### 10.3 Secrets injection — ESO (External Secrets Operator)
 
-- Pull từ Secrets Manager qua **VPC Endpoint** → tạo K8s Secret. **No hardcode, no static `valueFrom`**.
-- Engine giữ: `BEDROCK` credentials, `SERVICE_AUTH_TOKEN`.
-- **`SLACK_WEBHOOK_URL` KHÔNG ở engine** — nằm ở Lambda Dispatcher (engine không có internet để gọi `hooks.slack.com`).
+- Pull từ Secrets Manager qua VPC Endpoint → tạo K8s Secret.
+- Engine giữ `SERVICE_AUTH_TOKEN`, Bedrock config nếu cần.
+- Slack/Jira secrets nên nằm ở dispatcher Lambda/Secrets Manager, không hardcode trong engine image.
 
-#### Secret lifecycle — W11 vs Production
+#### Secret lifecycle — W11/W12 vs Production
 
-- **Cơ chế (cả 2 môi trường)**: Terraform tạo **vỏ secret** với placeholder + `lifecycle { ignore_changes = [secret_string] }`; **giá trị thật KHÔNG bao giờ nằm trong code/Git/TF state** (chống leak state). App pull runtime qua ESO.
-- **W11 (capstone)**: điền giá trị thật **thủ công 1 lần** bằng `aws secretsmanager put-secret-value` sau `terraform apply`. Chấp nhận được cho demo.
-- **Production**: thay điền tay bằng cơ chế kiểm soát + audit:
-  - **Rotation tự động** (Secrets Manager rotation Lambda) cho secret tự sinh.
-  - **Vault / CI-CD inject / Sealed Secrets (SOPS)** cho secret vendor — có audit ai điền, lúc nào (CloudTrail/Vault).
-  - Không ai chạy `put-secret-value` bằng tay từ laptop dev.
+- **Cơ chế capstone**: Terraform có thể tạo vỏ secret placeholder; giá trị thật điền thủ công hoặc qua controlled CI secret injection.
+- **Production hardening**:
+  - Secrets Manager rotation.
+  - Vault / SOPS / CI-CD inject có audit trail.
+  - Không ai chạy `put-secret-value` thủ công từ laptop dev nếu vào production.
 
 ### 10.4 In-cluster guardrails
 
 | Control                    | Cấu hình                                                                 |
 | -------------------------- | ------------------------------------------------------------------------ |
-| **Gatekeeper (OPA)**       | block root user, require resource limits, deny hostNetwork, max replicas |
-| **RBAC**                   | `developer` / `sre` / `viewer` (xem §2.2)                                |
+| **Gatekeeper (OPA)**       | block root user, require resource limits, deny hostNetwork nếu bật       |
+| **RBAC**                   | `developer` / `sre` / `viewer`                                           |
 | **NetworkPolicy**          | deny-all default + explicit ingress/egress allow                         |
 | **Pod Security Standard**  | `restricted`, enforce ở namespace level                                  |
-| **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange                        |
+| **Multi-tenant isolation** | namespace-per-tenant + ResourceQuota + LimitRange nếu multi-tenant K8s   |
 
 ### 10.5 Network egress model
 
-- AWS service: **VPC Endpoint** — Bedrock, Secrets Manager, SQS, CloudWatch Logs, ECR (api/dkr), STS (Interface); S3, DynamoDB (Gateway, free).
-- SaaS: engine emit payload → SQS Dispatch Queue → **Lambda Dispatcher (NAT)** → Slack/Jira. NAT **chỉ** cho dispatcher, không cho engine.
+- AWS service: VPC Endpoint — Bedrock, Secrets Manager, SQS, CloudWatch Logs, ECR, STS nếu cần; DynamoDB gateway endpoint.
+- SaaS: engine/worker emit payload → SQS Dispatch Queue → Lambda Dispatcher → Slack/Jira qua NAT/approved egress.
+- NAT không nên là đường mặc định cho toàn bộ engine nếu các AWS services đã có VPC Endpoint.
 
-### 10.6 Audit immutability
+### 10.6 Audit persistence
 
-- AI decision audit ghi vào **S3 Object Lock (Governance mode, 90 ngày, KMS-encrypted)** — immutable, khớp §5.2.
-- DynamoDB **chỉ** giữ state/config/dedup/rate-limit, **không** dùng cho audit log.
+- AI decision audit/state/idempotency hiện ghi vào **DynamoDB `triage-hub-state-sandbox`**.
+- DynamoDB lưu `AUDIT#<audit_id>`, `IDEMPOTENCY#<audit_id>`, tenant/incident mappings và dispatcher records.
+- TTL nên dùng cùng field mà application ghi. AI Engine hiện dùng `expires_at` cho retention records.
+- S3 Object Lock không còn là current runtime audit path trong sandbox architecture.
 
 ---
 
@@ -503,10 +596,11 @@ Evidence: `deployment-contract.md:61` (SERVICE_AUTH_TOKEN trong Secrets Manager)
 
 ## Conclusion
 
-Security design này chứng minh đủ 3 phần được giao:
+Security design này chứng minh đủ 4 phần được giao:
 
-1. **Tenant Isolation:** mọi alert và audit record được xử lý theo `tenant_id`, hạn chế cross-tenant access.
+1. **Tenant Isolation:** mọi alert và DynamoDB record được xử lý theo `tenant_id`, hạn chế cross-tenant access.
 2. **Encryption:** dữ liệu được mã hóa khi truyền qua mạng bằng HTTPS/TLS và khi lưu trữ bằng KMS/AWS-managed encryption.
-3. **Audit Trail:** mọi bước quan trọng từ alert đến AI decision, Jira ticket và Slack notification đều được ghi lại để truy vết end-to-end.
+3. **Audit Trail:** mọi bước quan trọng từ alert đến AI decision, Jira ticket và Slack notification đều được ghi lại trong DynamoDB để truy vết end-to-end.
+4. **Secure Raw Alert Ingestion:** API Gateway `/alerts` gửi raw alert vào SQS `raw-alert-queue` trước khi Lambda xử lý, giúp tăng reliability, có DLQ, message attributes và IAM least privilege.
 
-Thiết kế này phù hợp với phạm vi W11 của capstone: tài liệu rõ ràng, có thể build trong W12, không over-engineer và bám đúng scope Security & Compliance của TF1 Triage Hub.
+Thiết kế này phù hợp với kiến trúc hiện tại của TF1 Triage Hub: hybrid Serverless + EKS, DynamoDB-backed audit/state store, queue-based ingestion, private AWS service access và DevSecOps evidence cho phần Security & Compliance.
