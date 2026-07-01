@@ -36,4 +36,13 @@ kubectl apply -f "$(dirname "$0")/../platform/argocd/projects/triage-hub-project
 echo "==> Automatically applying triage-hub-app Application..."
 kubectl apply -f "$(dirname "$0")/../platform/argocd/apps/triage-hub-app.yaml" -n "$NAMESPACE"
 
+echo "==> Fetching current AWS Account ID..."
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+echo "==> Annotating external-secrets-operator ServiceAccount with IAM Role..."
+kubectl annotate serviceaccount external-secrets-operator -n external-secrets eks.amazonaws.com/role-arn=arn:aws:iam::"${AWS_ACCOUNT_ID}":role/triage-hub-external-secrets-irsa-sandbox --overwrite
+
+echo "==> Restarting external-secrets-operator deployment to load IAM credentials..."
+kubectl rollout restart deployment/external-secrets-operator -n external-secrets
+
 echo "==> ArgoCD bootstrap complete!"
