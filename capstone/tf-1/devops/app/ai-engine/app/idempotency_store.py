@@ -9,7 +9,11 @@ from typing import Any
 
 from app import dynamodb_store
 from app.audit_store import audit_log_path
-from app.dynamodb_store import use_dynamodb_backend
+from app.dynamodb_store import (
+    IdempotencyCompletedError,  # noqa: F401
+    IdempotencyInProgressError,  # noqa: F401
+    use_dynamodb_backend,
+)
 
 DEFAULT_STALE_SECONDS = 120
 

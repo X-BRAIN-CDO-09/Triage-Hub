@@ -325,6 +325,22 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
   }
 }
 
+# 16b-2. Bedrock AgentCore VPC Endpoint (Interface) — data plane InvokeAgentRuntime.
+# Để pod tf1-api gọi AgentCore runtime (cross-account 589077667575) qua PrivateLink
+# thay vì đi NAT ra public API (private-first). Service data plane: bedrock-agentcore.
+resource "aws_vpc_endpoint" "bedrock_agentcore" {
+  vpc_id              = module.vpc_platform.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-agentcore"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc_platform.private_subnet_ids
+  security_group_ids  = [module.vpc_endpoints_sg.security_group_id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-bedrock-agentcore-vpce-${var.environment}"
+  }
+}
+
 # 16c. SQS VPC Endpoint (Interface) — Cho phép Pod giao tiếp SQS ngầm nội bộ
 resource "aws_vpc_endpoint" "sqs" {
   vpc_id              = module.vpc_platform.vpc_id
@@ -394,6 +410,44 @@ module "alb" {
   alb_security_group_id = module.alb_sg.security_group_id
 }
 
+# Publish ALB target group ARN vào SSM để CI/CD pipeline tự patch TargetGroupBinding
+# (overlays/sandbox/kustomization.yaml). TG ARN đổi mỗi lần cluster/ALB tạo lại nên
+# KHÔNG hardcode lâu dài — CI đọc /triage-hub/sandbox/alb_target_group_arn rồi patch.
+resource "aws_ssm_parameter" "alb_target_group_arn" {
+  name        = "/${var.project_name}/${var.environment}/alb_target_group_arn"
+  description = "Internal ALB target group ARN cho TargetGroupBinding (KEDA/ArgoCD overlay)"
+  type        = "String"
+  value       = module.alb.target_group_arn
+  overwrite   = true
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# 16e. Observability Module
+module "observability" {
+  source = "../../modules/observability"
+
+  project_name        = var.project_name
+  environment         = var.environment
+  aws_region          = var.aws_region
+  api_gateway_name    = "${var.project_name}-apigw-${var.environment}"
+  dynamodb_table_name = module.dynamodb.table_name
+  eks_cluster_name    = module.eks.cluster_name
+
+  lambda_functions = [
+    "${var.project_name}-alert-ingest",
+    "${var.project_name}-jira-dispatcher",
+    "${var.project_name}-notify-dispatcher"
+  ]
+
+  sqs_queues = [
+    "${var.project_name}-buffer-queue",
+    "${var.project_name}-dispatch-queue"
+  ]
+}
+
 # 17. EKS IRSA Roles for Workloads
 
 data "aws_iam_policy_document" "tf1_api_assume_role" {
@@ -459,6 +513,11 @@ resource "aws_iam_role_policy" "tf1_api_policy" {
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = ["arn:aws:bedrock:${var.aws_region}::foundation-model/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = ["arn:aws:iam::265808836805:role/CrossAccountBedrockRole"]
       },
       {
         Effect   = "Allow"
@@ -638,5 +697,22 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
 # 19. GitOps Bootstrapping: ArgoCD được cài bởi CI/CD pipeline (bootstrap-argocd job)
 # Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
 # Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
+
+# Tự động truy vấn IP của EC2 Prometheus
+data "aws_instance" "prometheus_ec2" {
+  instance_id = "i-09b8613caba420fc3"
+}
+
+# Lưu IP động của EC2 Prometheus vào SSM Parameter để CI/CD pipeline đọc
+resource "aws_ssm_parameter" "prometheus_ip" {
+  name      = "/${var.project_name}/${var.environment}/prometheus_ip"
+  type      = "String"
+  value     = data.aws_instance.prometheus_ec2.public_ip
+  overwrite = true
+
+  tags = {
+    Environment = var.environment
+  }
+}
 
 

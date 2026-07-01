@@ -70,6 +70,9 @@ spec:
               value: "true"
             - name: AWS_REGION
               value: "us-east-1"
+            - name: AWS_ROLE_ARN
+              value: "arn:aws:iam::265808836805:role/CrossAccountBedrockRole"
+
 
             # BEDROCK_MODEL_ID: model Bedrock dùng cho synthesis (llm.py:165,181)
             - name: BEDROCK_MODEL_ID
@@ -112,6 +115,8 @@ spec:
             # Runtime config
             - name: APP_ENV
               value: "sandbox"
+            - name: JIRA_HISTORY_PATH
+              value: "app/jira_history.json"
             - name: AIOPS_INVESTIGATION_MODE
               value: "auto"
             - name: AIOPS_TRIAGE_DEADLINE_SECONDS

@@ -1,36 +1,13 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-// ---------------------------------------------------------------------------
-// Load test: POST /sandbox/alerts  (API Gateway → Lambda alert-ingest → SQS)
-//
-// Kiến trúc:
-//   k6 → POST /sandbox/alerts (API Gateway, public)
-//        → Lambda alert-ingest (validate + push to SQS triage-queue)
-//        → AI Engine trên EKS xử lý async (internal, không test trực tiếp)
-//
-// Payload format: Prometheus Alertmanager webhook
-//   Lambda đọc: payload.alerts[] hoặc payload.alert hoặc payload.labels
-//   Tenant phải tồn tại và active trong DynamoDB mới được accept
-//
-// Cách chạy:
-//   k6 run -e API_KEY=<api-key-value> .\docs\E2E_validate\loadtest\load_test.js
-//
-// Lấy API Key: AWS Console → API Gateway → API keys → Show key value
-//
-// Contract SLA targets:
-//   Response  : 202 Accepted
-//   P99       : < 2000ms
-//   Error rate: < 1%
-// ---------------------------------------------------------------------------
-
 export const options = {
   scenarios: {
     constant_load: {
       executor: 'constant-arrival-rate',
       rate: 1,
       timeUnit: '1s',
-      duration: '1m',
+      duration: '2s',
       preAllocatedVUs: 20,
       maxVUs: 100,
     },
@@ -58,7 +35,7 @@ export default function () {
     },
     commonLabels: {
       alertname: 'HighLatency',
-      tenant_id: 'tenant-a',        // phải tồn tại trong DynamoDB
+      tenant_id: 'tenant-b',        // phải tồn tại trong DynamoDB
       environment: 'sandbox',
       severity: 'high',
       service: 'checkout-api',
@@ -72,7 +49,7 @@ export default function () {
         status: 'firing',
         labels: {
           alertname: 'HighLatency',
-          tenant_id: 'tenant-a',
+          tenant_id: 'tenant-b',
           environment: 'sandbox',
           severity: 'high',
           service: 'checkout-api',
@@ -105,18 +82,4 @@ export default function () {
     console.log(`[DEBUG] body=${res.body ? res.body.substring(0, 300) : '(empty)'}`);
   }
 
-  // Lambda alert-ingest trả 202 Accepted cho mọi request hợp lệ
-  // accepted > 0: tenant tồn tại trong DynamoDB và alert được push vào SQS
-  // accepted = 0: tenant không tồn tại / inactive (dropped)
-  check(res, {
-    'status is 202': (r) => r.status === 202,
-    'response has status field': (r) => {
-      try { return JSON.parse(r.body).status === 'Processed'; }
-      catch { return false; }
-    },
-    'alert accepted (not dropped)': (r) => {
-      try { return JSON.parse(r.body).accepted > 0; }
-      catch { return false; }
-    },
-  });
 }

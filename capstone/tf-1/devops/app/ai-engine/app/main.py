@@ -25,6 +25,8 @@ from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
 from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
+    IdempotencyCompletedError,
+    IdempotencyInProgressError,
     complete_record,
     fail_record,
     is_stale,
@@ -45,7 +47,6 @@ from app.observability import (
     DEGRADED_MODE_TOTAL,
     IDEMPOTENCY_EVENTS_TOTAL,
     INVESTIGATION_MODE_SELECTED_TOTAL,
-    QA_ITERATIONS_TOTAL,
     TRIAGE_INFLIGHT_REQUESTS,
     TRIAGE_REJECTED_TOTAL,
     TRIAGE_REQUEST_DURATION_SECONDS,
@@ -56,6 +57,7 @@ from app.observability import (
     metrics_response,
     span,
 )
+from app.qa_judge import run_qa
 from app.rca import analyze_request
 from app.report_store import list_reports, read_report
 
@@ -379,7 +381,17 @@ def triage_with_local_guards(request: TriageRequest, audit_id: str) -> TriageRes
         elif record and record.get("status") == "failed_retryable":
             IDEMPOTENCY_EVENTS_TOTAL.labels(result="failed_retryable_reprocessed").inc()
 
-        start_record(audit_id, hash_value)
+        try:
+            start_record(audit_id, hash_value)
+        except IdempotencyCompletedError as exc:
+            if isinstance(exc.record.get("response"), dict):
+                IDEMPOTENCY_EVENTS_TOTAL.labels(result="replayed_completed").inc()
+                return TriageResponse.model_validate(exc.record["response"])
+            raise
+        except IdempotencyInProgressError:
+            IDEMPOTENCY_EVENTS_TOTAL.labels(result="in_progress_rejected").inc()
+            TRIAGE_REJECTED_TOTAL.labels(reason="idempotency_in_progress").inc()
+            raise HTTPException(status_code=409, detail="Triage is already in progress for this audit_id")
         response = triage_request(request, audit_id, idempotency_metadata)
         complete_record(audit_id, hash_value, response)
         IDEMPOTENCY_EVENTS_TOTAL.labels(result="completed").inc()
@@ -743,65 +755,6 @@ def collect_evidence(request: TriageRequest, fallback: str) -> list[str]:
     return evidence or [fallback]
 
 
-def run_qa(request: TriageRequest, decision: dict[str, Any], rca: dict[str, Any]) -> dict[str, Any]:
-    max_iterations = int(os.getenv("AIOPS_QA_MAX_ITERATIONS", "1"))
-    repair_max_iterations = int(os.getenv("AIOPS_QA_REPAIR_MAX_ITERATIONS", "1"))
-    token_budget = int(os.getenv("AIOPS_LLM_MAX_TOKENS_PER_INCIDENT", "0") or 0)
-    metadata: dict[str, Any] = {
-        "enabled": max_iterations > 0,
-        "iterations": 0,
-        "repair_iterations": 0,
-        "result": "skipped" if max_iterations <= 0 else "passed",
-    }
-    if max_iterations <= 0:
-        QA_ITERATIONS_TOTAL.labels(result="skipped").inc()
-        return metadata
-
-    metadata["iterations"] = 1
-    issues = qa_findings(request, decision, rca)
-    if token_budget and estimate_qa_tokens(request, decision, rca) > token_budget:
-        metadata["result"] = "budget_exceeded"
-        metadata["confidence_delta"] = -0.1
-        BUDGET_EXCEEDED_TOTAL.labels(budget_type="qa_tokens").inc()
-        DEGRADED_MODE_TOTAL.labels(reason="qa_budget_exceeded").inc()
-    elif issues:
-        metadata["result"] = "failed"
-        metadata["issues"] = issues
-        metadata["confidence_delta"] = -0.1
-        if repair_max_iterations > 0:
-            metadata["repair_iterations"] = 1
-            metadata["repair_result"] = "not_attempted_deterministic_only"
-        DEGRADED_MODE_TOTAL.labels(reason="qa_failed").inc()
-    QA_ITERATIONS_TOTAL.labels(result=str(metadata["result"])).inc()
-    return metadata
-
-
-def qa_findings(request: TriageRequest, decision: dict[str, Any], rca: dict[str, Any]) -> list[str]:
-    findings: list[str] = []
-    if decision["status"] == "DIAGNOSED" and not decision.get("evidence"):
-        findings.append("diagnosis_missing_evidence")
-    if decision["status"] == "DIAGNOSED" and not (
-        request.metrics or request.logs or request.recent_deploys or rca.get("anomaly_evidence")
-    ):
-        findings.append("diagnosis_without_supporting_context")
-    if (
-        decision["classification"] == "latency_degradation"
-        and "latency" not in " ".join(decision.get("evidence", []) + [request.alert.title]).lower()
-    ):
-        findings.append("latency_classification_without_latency_evidence")
-    return findings
-
-
-def estimate_qa_tokens(request: TriageRequest, decision: dict[str, Any], rca: dict[str, Any]) -> int:
-    evidence_items = len(request.metrics) + len(request.logs) + len(request.traces) + len(request.recent_deploys)
-    return (
-        64
-        + (evidence_items * 24)
-        + (len(decision.get("evidence", [])) * 16)
-        + (len(rca.get("anomaly_evidence", [])) * 24)
-    )
-
-
 def log_triage_stage(
     request: TriageRequest,
     audit_id: str,
@@ -902,7 +855,7 @@ def build_response(
         }
     else:
         action_wording = reword_catalog_actions(request, decision, rca, selected_actions)
-    action_payloads: list[dict[str, Any]] = [a for a in action_wording["actions"] if isinstance(a, dict)]
+    action_payloads = action_wording["actions"]
     llm_metadata["action_wording"] = action_wording["metadata"]
     llm_metadata["cost_estimate"] = current_llm_usage_summary()
     actions = [RecommendedAction(**action) for action in action_payloads]

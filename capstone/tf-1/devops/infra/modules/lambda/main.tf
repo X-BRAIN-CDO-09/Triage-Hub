@@ -65,6 +65,13 @@ resource "aws_iam_role_policy_attachment" "vpc_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# 4b. X-Ray Daemon Write Access
+resource "aws_iam_role_policy_attachment" "xray_access" {
+  for_each   = var.lambdas
+  role       = aws_iam_role.this[each.key].name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 # 5. Custom IAM policy per-lambda
 resource "aws_iam_policy" "custom" {
   for_each = local.lambdas_with_custom_policies
@@ -121,6 +128,10 @@ resource "aws_lambda_function" "this" {
       subnet_ids         = coalesce(each.value.vpc_subnet_ids, var.default_vpc_subnet_ids)
       security_group_ids = coalesce(each.value.vpc_security_group_ids, var.default_vpc_security_group_ids)
     }
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 
   tags = { Name = "${var.project_name}-${each.key}" }

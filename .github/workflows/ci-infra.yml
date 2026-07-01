@@ -12,8 +12,8 @@ on:
       - "capstone/tf-1/devops/infra/**"
       - ".github/workflows/ci-infra.yml"
   schedule:
-    # 08:00 ICT (UTC+7) every day
-    - cron: "0 1 * * *"
+    # 08:05 ICT (UTC+7) every day
+    - cron: "5 1 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -401,6 +401,30 @@ jobs:
           echo ""
           echo "=== ArgoCD Applications ==="
           kubectl get applications -n "$ARGOCD_NAMESPACE" || true
+
+      - name: Tự động lấy IP Prometheus từ SSM và apply vào EKS
+        env:
+          SSM_PARAM: /triage-hub/sandbox/prometheus_ip
+          TEMPLATE_FILE: capstone/tf-1/devops/platform/base/ai-engine/prometheus-service.yaml.template
+          MANIFEST_FILE: capstone/tf-1/devops/platform/base/ai-engine/prometheus-external-service.yaml
+        run: |
+          set -euo pipefail
+
+          # 1. Đọc IP từ SSM
+          PROM_IP=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          echo "✅ IP Prometheus lấy từ SSM: $PROM_IP"
+
+          # 2. Thay thế IP vào file template
+          cp "$TEMPLATE_FILE" "$MANIFEST_FILE"
+          sed -i "s|PROMETHEUS_IP_PLACEHOLDER|${PROM_IP}|" "$MANIFEST_FILE"
+
+          # 3. Apply trực tiếp vào EKS
+          kubectl apply -f "$MANIFEST_FILE"
+          echo "✅ Đã apply Service/Endpoints Prometheus-Operated thành công với IP mới"
 
       # ------------------------------------------------------------------ #
       # Auto-patch: Đọc ARN từ SSM và cập nhật vào kustomization.yaml     #
