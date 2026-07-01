@@ -16,14 +16,13 @@ graph TB
     subgraph "AWS Cloud (CDO 09)"
         APIGW["API Gateway"]
         LambdaIngest["alert-ingest (Lambda)"]
-        JiraDisp["jira-dispatcher (Lambda)"]
-        Queue1["Buffer Queue (SQS) + DLQ"]
+        Queue1["Buffer Queue (SQS FIFO) + DLQ"]
         
         subgraph "VPC (Private Subnet)"
             SQS_EP1["SQS VPC Endpoint<br>(Interface)"]
             
             subgraph "EKS Cluster"
-                AI_App["AI App Pods"]
+                AI_App["AI App Pods<br>(tf1-api + tf1-worker)"]
                 Monitor["Prometheus / Grafana / OTel"]
             end
             
@@ -34,8 +33,11 @@ graph TB
             SQS_EP2["SQS VPC Endpoint<br>(Interface)"]
         end
         
-        Queue3["Dispatch Queue (SQS) + DLQ"]
-        LambdaSlack["slack-dispatcher (Lambda)"]
+        Queue3["Dispatch Queue (SQS Standard) + DLQ"]
+        LambdaNotify["notify-dispatcher (Lambda)"]
+        LambdaJira["jira-dispatcher (Lambda)"]
+        LambdaBroadcast["broadcast-notifier (Lambda)"]
+        EventBridge["EventBridge"]
         
         S3["S3 Artifact"]
         Dynamo["DynamoDB"]
@@ -45,8 +47,8 @@ graph TB
     end
 
     CustApp -->|1. Fire Alert| APIGW
-    APIGW --> LambdaIngest
-    APIGW -->|Jira Ticket Flow| JiraDisp
+    APIGW -->|/alerts| LambdaIngest
+    APIGW -->|/slack| LambdaJira
     LambdaIngest --> Queue1
     Queue1 --> SQS_EP1 --> AI_App
     AI_App -->|2. Pull Logs/Metrics| CustApp
@@ -57,14 +59,30 @@ graph TB
     AI_App --> Dynamo_EP --> Dynamo
     
     AI_App --> SQS_EP2 --> Queue3
-    Queue3 --> LambdaSlack
+    Queue3 --> LambdaNotify
     
-    JiraDisp -->|4. Create Jira Ticket| Jira
-    LambdaSlack -->|5. Notify Slack| Slack
+    LambdaNotify -->|4. Create Jira Ticket| Jira
+    LambdaNotify -->|5. Post Slack Block Kit| Slack
+    LambdaNotify -->|6. Publish assign event| EventBridge
+    EventBridge --> LambdaBroadcast
+    LambdaBroadcast -->|7. Broadcast to #incident-updates| Slack
+    LambdaJira -->|8. PUT /assignee| Jira
+    LambdaJira -->|9. Publish assign event| EventBridge
 ```
 
 *Caption: Kiến trúc kết hợp linh hoạt (Hybrid) giữa các dịch vụ hướng sự kiện Serverless (API Gateway, SQS, Lambda) cho giai đoạn tiếp nhận nhanh và cụm Amazon EKS khép kín trong VPC Private Subnet cho giai đoạn xử lý AI chuyên sâu (AI App Pods tự động thu thập Logs/Metrics từ Customer App).*
 
+
+### 1.5 Lambda Component Table
+
+| Lambda | Trigger | Responsibility | Output |
+|---|---|---|---|
+| `alert-ingest` | API Gateway `POST /alerts` | Validate tenant + alert schema, construct `incident_seed.v1`, enqueue to SQS Buffer Queue | SQS Buffer FIFO Queue |
+| `notify-dispatcher` | SQS Dispatch Queue (Standard) | Create Jira ticket via `POST /rest/api/3/issue`, post Slack Block Kit via `chat.postMessage`, save audit to DynamoDB, publish assign-requested event to EventBridge | EventBridge `alert.assign.requested` |
+| `jira-dispatcher` | API Gateway `POST /slack` (Slack interactive payload) | Verify Slack signature, parse `jira_issue_key` + `account_id`, call Jira `PUT /rest/api/3/issue/{key}/assignee`, publish assigned event to EventBridge | EventBridge `alert.assigned` |
+| `broadcast-notifier` | EventBridge rule `alert.assigned` | Format assignment confirmation, post ephemeral + broadcast message to `#incident-updates` | Slack message |
+
+*Caption: Bốn Lambda trong hệ thống. Chỉ `alert-ingest` và `jira-dispatcher` sau API Gateway Public. `notify-dispatcher` consume từ SQS trong private subnet. `broadcast-notifier` hoàn toàn event-driven.*
 
 ---
 
@@ -76,7 +94,7 @@ graph TB
 | **API entry** | Amazon API Gateway | Tiếp nhận Webhook cảnh báo đầu vào từ khách hàng với hiệu năng cao, tự động scale. | Pay-per-use (~$3.5 / triệu requests). |
 | **Database** | Amazon DynamoDB | Lưu trữ tenant configurations, metadata và audit trail trạng thái của các sự cố với thời gian phản hồi sub-millisecond. | Tận dụng Free Tier, pay-per-use (~$5/tháng). |
 | **Storage** | Amazon S3 | Lưu trữ artifacts và tài liệu log/metric thô đã thu thập được để lưu vết phân tích. | S3 Standard tier (~$0.023/GB/tháng). |
-| **Event bus** | Amazon SQS | Đóng vai trò các Buffer Queues có DLQ để đảm bảo không bị mất gói tin khi hệ thống bị quá tải đột ngột. | Rất rẻ, ~$0.40 / triệu messages. |
+| **Event bus** | Amazon SQS + Amazon EventBridge | **SQS**: Buffer Queue (FIFO) cho alert intake + Dispatch Queue (Standard) cho dispatcher. Cả hai kèm DLQ chống mất gói tin.<br>**EventBridge**: Decouple `notify-dispatcher` khỏi `broadcast-notifier`, routing event giữa các Lambda. | SQS ~$0.40/triệu messages.<br>EventBridge ~$1.00/triệu events. |
 | **AI Processing** | Amazon Bedrock | Gọi mô hình ngôn ngữ lớn (LLM) để phân tích nguyên nhân gốc rễ một cách an toàn, tuân thủ chính sách bảo mật dữ liệu của AWS. | Thanh toán theo Token tiêu thụ thực tế. |
 | **Observability** | Prometheus, Grafana, OpenTelemetry | Theo dõi sức khỏe hệ thống và ứng dụng AI trực tiếp bên trong cụm EKS. | Open-source, chỉ tốn chi phí lưu trữ trên EBS/S3. |
 
@@ -305,22 +323,24 @@ Inject qua **ESO** (External Secrets Operator) từ Secrets Manager → K8s Secr
 - Context chỉ trong scope tenant/service/time-window ✓
 - `/v1/triage` direct sample requests chạy ✓
 
+---
+
 ## 9. Slack Alert & Interactive Assignment Architecture (Owner: Hoàng)
 
-![Slack Architecture](../assets/Slack-Integration.drawio.png)
+![Slack Architecture](../assets/jira-slack.drawio.png)
 
 ### 9.1 Slack Interactive Flow
 Hệ thống áp dụng kiến trúc **"AI Suggestion + Human-in-the-loop"** thay vì Auto-assign hoàn toàn để kiểm soát rủi ro phân công nhầm người. 
-- **Notification Lambda**: Nhận `ticket_payload` từ AI, bóc tách `suggested_assignee` và tạo Slack Block Kit JSON có kèm nút **[Confirm & Assign]**.
-- **API Gateway**: Đóng vai trò là Public Webhook Endpoint để nhận tín hiệu click chuột từ nền tảng Slack.
-- **Callback Lambda**: Bóc tách event từ Slack, trích xuất `jira_issue_key` và gọi REST API của Jira để tự động gán việc cho nhân sự được đề xuất.
+- **`notify-dispatcher`**: Nhận `ticket_payload` từ Dispatch Queue, tạo Jira ticket, bóc tách `suggested_assignee` và tạo Slack Block Kit JSON có kèm nút **[Confirm & Assign]**, rồi publish event lên EventBridge.
+- **API Gateway**: Đóng vai trò là Public Webhook Endpoint để nhận tín hiệu click chuột từ nền tảng Slack (tích hợp Slack Request Verification).
+- **`jira-dispatcher`**: Bóc tách event từ Slack, xác thực chữ ký, trích xuất `jira_issue_key` và gọi REST API của Jira để tự động gán việc cho nhân sự được đề xuất.
 
 ### 9.2 Component Deep-Dive
 | Component | AWS Service | Purpose in Slack Flow |
 |---|---|---|
-| Slack Notifier | Lambda | Gửi tin báo sự cố 1 chiều lên Slack Channel |
-| Slack Webhook | API Gateway | Nhận payload tương tác (POST request) từ người dùng Slack |
-| Slack Callback | Lambda | Xử lý sự kiện bấm nút [Confirm & Assign] và gọi Jira API |
+| `notify-dispatcher` | Lambda | Gửi Block Kit có nút [Confirm & Assign] lên Slack (xem §1.5) |
+| Slack Webhook | API Gateway | Nhận payload tương tác (POST request) từ người dùng Slack (với Slack Request Verification) |
+| `jira-dispatcher` | Lambda | Xử lý sự kiện bấm nút [Confirm & Assign], verify Slack signature và gọi Jira assign API (xem §1.5) |
 | Token Storage | Secrets Manager | Lưu trữ an toàn Bot Token (Slack) và API Token (Jira) |
 
 ### 9.3 Sequence Diagram
@@ -330,8 +350,11 @@ Sơ đồ trình tự xử lý luồng tương tác 2 chiều giữa con ngườ
 
 ### 9.4 Security & Authentication
 Do API Gateway phải mở dạng Public (để Slack gọi vào), kiến trúc bảo mật áp dụng các lớp phòng thủ sau:
-- **Slack Signature Verification:** API Gateway (hoặc Lambda Callback) sử dụng `Slack Signing Secret` (lưu tại Secrets Manager) để xác thực Header `X-Slack-Signature`. Chỉ những request xuất phát từ chính nền tảng Slack mới được phép thực thi.
-- **Least-privilege IAM:** Hàm Lambda chỉ được cấp quyền tối thiểu: `secretsmanager:GetSecretValue` và quyền ghi log CloudWatch. Ngăn chặn triệt để rủi ro tấn công leo thang đặc quyền.
+- **Slack Signature Verification:** `jira-dispatcher` sử dụng `Slack Signing Secret` (lưu tại Secrets Manager) để xác thực Header `X-Slack-Signature`. Chỉ những request xuất phát từ chính nền tảng Slack mới được phép thực thi.
+- **Least-privilege IAM:** Mỗi Lambda chỉ được cấp quyền tối thiểu cho tác vụ của nó:
+  - `jira-dispatcher`: `secretsmanager:GetSecretValue` (Slack Signing Secret, Jira API token, Slack Bot Token), `lambda:InvokeFunction` (async self-invoke), `eventbridge:PutEvents`, `dynamodb:PutItem` (audit trail), CloudWatch logs.
+  - `notify-dispatcher`: `secretsmanager:GetSecretValue` (Slack Bot Token, Jira API token), `dynamodb:GetItem` + `PutItem` (Jira mapping, notification audit), CloudWatch logs.
+  - Các Lambda khác có scope tương ứng (xem §1.5). Ngăn chặn leo thang đặc quyền nếu một function bị compromise.
 
 ### 9.5 Edge Cases & Failure Recovery
 Các tình huống ngoại lệ được thiết kế để đảm bảo luồng "Human-in-the-loop" không trở thành "điểm đứt gãy" (single point of failure):
@@ -339,16 +362,18 @@ Các tình huống ngoại lệ được thiết kế để đảm bảo luồng
 | Rủi ro (Failure Mode) | Cách xử lý (Mitigation) |
 |---|---|
 | Người dùng bấm nút 2 lần liên tiếp (Double-click) | Slack Block Kit hỗ trợ cấu trúc tự động vô hiệu hóa nút sau khi click. Lambda cũng kiểm tra state của Jira trước khi gán. |
-| Jira API sập (Downtime) | Lambda catch lỗi HTTP 5xx, trả về thông báo lỗi dạng ephemeral message cập nhật thẳng vào Slack để báo team assign tay. |
+| Jira API sập (Downtime) | `jira-dispatcher` catch lỗi HTTP 5xx, trả về thông báo lỗi dạng ephemeral message cập nhật thẳng vào Slack để báo team assign tay. |
 | Slack yêu cầu timeout 3s | API Gateway được cấu hình để phản hồi `200 OK` ngay lập tức về cho Slack. Logic gọi API Jira được Lambda xử lý bất đồng bộ, tránh lỗi Timeout hiển thị cho user. |
+
+---
 
 ## 10. Jira Integration Layer (Owner: Phong)
 
 ### 10.1 Architecture
 
-![Jira Integration Architecture](../assets/Jira-Integration.drawio.png)
+*(Sơ đồ kiến trúc tổng thể tại [§9 Slack Architecture](#9-slack-alert--interactive-assignment-architecture) — biểu đồ này bao gồm cả luồng Jira.)*
 
-Kiến trúc áp dụng nguyên tắc **Jira-First**: AI Engine gửi diagnosis payload qua API Gateway → EventBridge. `jira-dispatcher` consume event, tra cứu `account_id` do AI đề xuất từ DynamoDB, tạo Jira ticket, và **chỉ khi thành công** mới emit `slack.notify` event. `slack-dispatcher` không bao giờ gọi Jira. Khi Jira fail, payload được đưa vào SQS DLQ và `slack.fallback` event gửi raw text alert.
+Kiến trúc áp dụng nguyên tắc **Jira-First**: AI Engine gửi `ticket_payload` vào **SQS Dispatch Queue**. `notify-dispatcher` consume event này và thực hiện đồng thời: tạo Jira ticket (`POST /rest/api/3/issue`) và post Slack Block Kit. Sau đó nó publish `alert.assign.requested` event lên **EventBridge**. Khi người dùng bấm **[Confirm & Assign]** trên Slack, API Gateway nhận interactive payload và gọi `jira-dispatcher`, Lambda này xác thực Slack signature rồi gọi `PUT /rest/api/3/issue/{key}/assignee` để gán người. Kết quả assignment được publish qua EventBridge cho `broadcast-notifier` gửi broadcast về `#incident-updates`. **Luồng tạo Jira ticket không đi qua API Gateway** — nó nằm trong `notify-dispatcher`. `jira-dispatcher` chỉ handle assignment, không tạo ticket. Khi Jira fail, payload được đưa vào SQS DLQ và fallback text được gửi qua Slack.
 
 ### 10.2 Sequence flow
 
@@ -358,11 +383,11 @@ Kiến trúc áp dụng nguyên tắc **Jira-First**: AI Engine gửi diagnosis 
 
 | Component | AWS Service | Rationale | Cost estimate |
 |---|---|---|---|
-| Compute | `jira-dispatcher` Lambda | Event-driven, pay-per-use, zero idle cost. Single-purpose function với <30s runtime, phù hợp Lambda. | Free Tier up to 1M req/month. ~$0.50/month ở 10k alerts. |
-| Database | DynamoDB | Key-value lookup theo `tenant_id#email`. Không cần join, single-digit ms reads. Managed, auto-scaling. | On-demand. ~$0.25/GB-month. ~5KB per mapping × 50 tenants × 50 users = negligible. |
-| Event Bus | EventBridge | Native Lambda target, 24h retry window, schema registry, event filtering. Giúp decouple dispatchers không cần custom middleware. | $1.00/million events. 2 events per alert (ingest + notify). |
-| Queue | SQS (DLQ) | Dead-letter queue cho failed alerts. Max 14-day retention, redrive về Lambda để replay. | $0.40/million requests. DLQ nhận <1% traffic. |
-| Security | Secrets Manager | Auto-rotation mỗi 30 days. Fine-grained IAM scope chỉ đọc cho Lambda. Encrypted at rest via KMS. | $0.40/secret/month + $0.05/10k API calls. Một secret cho Jira API token. |
+| Compute | `notify-dispatcher` + `jira-dispatcher` Lambda | `notify-dispatcher` tạo Jira ticket + post Slack (SQS-triggered). `jira-dispatcher` assign Jira (API GW-triggered). Cả hai single-purpose, <30s runtime. | Free Tier up to 1M req/month. ~$1.00/month ở 10k alerts. |
+| Database | DynamoDB | Key-value lookup với `PK = TENANT#{tenantId}#INCIDENT#{incidentId}` cho audit records. Không cần join, single-digit ms reads. Managed, auto-scaling. | On-demand. ~$0.25/GB-month. ~1KB per record × 10k alerts = negligible. |
+| Event Bus | EventBridge | Native Lambda target (`broadcast-notifier`), 24h retry, event filtering. Decouple `notify-dispatcher` khỏi `broadcast-notifier`. | $1.00/million events. 1 event per alert (`alert.assigned`). |
+| Queue | SQS Dispatch Queue (Standard) + DLQ | Standard queue giữa Dispatch Queue và `notify-dispatcher`. DLQ cho failed alerts, max 14-day retention, redrive manual. | $0.40/million requests. DLQ nhận <1% traffic. |
+| Security | Secrets Manager | Auto-rotation mỗi 30 days. Fine-grained IAM scope chỉ đọc cho Lambda. Encrypted at rest via KMS. | $0.40/secret/month × 2 secrets (Slack Bot Token + Jira API Token). |
 
 ### 10.4 Design rationale
 
@@ -370,7 +395,7 @@ Kiến trúc áp dụng nguyên tắc **Jira-First**: AI Engine gửi diagnosis 
 
 Hai competing patterns đã bị reject:
 
-**Slack-First Chained Dependency** — `slack-dispatcher` tạo Jira ticket như side effect sau khi post Slack. Điều này coupling notification với ticketing: nếu Slack chậm, Jira creation bị stall. Nếu engineer acknowledge trước khi Jira tồn tại, audit trail bị phá vỡ. Slack API failure đồng nghĩa toàn bộ incident không được record.
+**Slack-First Chained Dependency** — Một Lambda duy nhất post Slack trước, sau đó tạo Jira ticket như side effect. Điều này coupling notification với ticketing: nếu Slack chậm, Jira creation bị stall. Nếu engineer acknowledge trước khi Jira tồn tại, audit trail bị phá vỡ. Slack API failure đồng nghĩa toàn bộ incident không được record.
 
 **Blind Auto-Assignment** — AI-recommended owner được assign ngay lập tức không cần human confirmation. Nếu AI sai (deactivated user, wrong team, cross-tenant mapping), tickets languish trong wrong queue, làm tăng MTTA.
 
@@ -388,13 +413,15 @@ Jira-First coi Jira ticket là **single source of truth**. Ticket phải tồn t
 
 #### 10.4.3 Accepted weakness
 
-**Stale DynamoDB mapping.** Background sync chạy mỗi 5 phút. Nếu engineer mới join trước khi sync chạy, `jira-dispatcher` không thể resolve email → Jira `account_id`.
+**AI-suggested `account_id` may be invalid.** `suggested_assignee_account_id` đến từ AI payload, không qua DynamoDB caching. Nếu AI đề xuất `account_id` đã deactivated, sai tenant, hoặc không tồn tại trên Jira, `jira-dispatcher` nhận 400 từ `PUT /assignee` và ticket remain **unassigned**.
 
-- Ticket luôn được tạo ở trạng thái **unassigned** bất kể mapping state. Human-in-the-loop qua Slack là primary path, không phải DynamoDB lookup.
-- DynamoDB miss không phải failure — "Accept" flow sẽ prompt manual input. Estimated <2% initial assignments.
-- Sync interval có thể giảm xuống 1 minute với negligible cost (~120 extra Jira API calls/day).
+- Ticket luôn ở trạng thái **unassigned** — assignment chỉ xảy ra khi human bấm nút và Jira accept. Không có auto-assign rủi ro.
+- "Assign Me" / manual dropdown là primary path, không phải AI suggestion.
+- DynamoDB mapping (`TENANT#{tenantId}#INCIDENT#{incidentId}`) chỉ dùng cho idempotency — tránh tạo duplicate Jira tickets khi Lambda retry.
 
-Đánh đổi: chấp nhận <5 phút staleness window để lấy operational simplicity, thay vì xây streaming CDC pipeline từ Jira (webhook listener, retries, callback auth). Pragmatic cho capscope và first production release.
+**No user-mapping cache.** `jira-dispatcher` resolve user bằng real-time API chain: Slack `users.info` → email → Jira `user/search`. Không có DynamoDB user-mapping table, không có background sync. Điều này đơn giản hóa vận hành (không stale cache, không sync pipeline) nhưng tăng latency cho self-assign/manual-assign flow (~1–2s cho 2 API calls) và phụ thuộc vào Slack API availability.
+
+Đánh đổi: chấp nhận latency ~1–2s cho API chain thay vì xây DynamoDB user cache với CDC pipeline từ Jira (webhook listener, retries, callback auth). Pragmatic cho capscope — <5% interactions bị ảnh hưởng, phần còn lại dùng `suggested_assignee_account_id` từ AI payload không cần lookup.
 
 ### 10.5 Multi-tenant approach
 
@@ -403,7 +430,7 @@ Mọi request đều mang `X-Tenant-Id` header (UUID v4). API Gateway validate p
 | Dimension | Pattern | Rationale |
 |---|---|---|
 | Compute | Shared | Một Lambda xử lý tất cả tenants. Cold start paid once. Không cross-tenant state trong memory — toàn bộ state ở DynamoDB. |
-| Data | Pooled (row-level) | Một DynamoDB table với Partition Key = `tenant_id#email`. IAM condition `ddb:LeadingKeys` enforce tenant scope ở policy level — fail-closed ngay cả khi application code có bug. |
+| Data | Pooled (row-level) | Một DynamoDB table với Partition Key = `TENANT#{tenantId}#INCIDENT#{incidentId}` cho audit records. IAM condition `ddb:LeadingKeys` enforce tenant scope ở policy level — fail-closed ngay cả khi application code có bug. |
 | Network | Shared | Một VPC, một subnet group. Không cần per-tenant ENI hay NAT Gateway. |
 
 Silo isolation (per-tenant table) tốn ~$6.50/month cho 50 tables vs ~$0/month idle cho một pooled table — 13× chi phí, không có measurable security benefit nhờ IAM guardrail.
@@ -421,9 +448,11 @@ Mọi AI decision đều được link với Jira ticket để đảm bảo trac
 
 | Failure | Detection | Recovery | RTO | RPO |
 |---|---|---|---|---|
-| Jira API down (429/500) | Lambda catch HTTP >= 400. EventBridge retry exhausted (3 attempts), route to DLQ. | Payload ghi vào SQS DLQ kèm original `alert.ingested` envelope. `jira-dispatcher` emit `slack.fallback` → `slack-dispatcher` gửi raw alert text với "[JIRA DOWN]" prefix. DLQ redrive thủ công sau khi Jira recover. | < 60s (detection + fallback) | 0 (payload in DLQ) |
-| AI recommend invalid/deactivated `account_id` | Jira trả 400 trên `PUT /assignee` — `"user does not exist"`. | `jira-dispatcher` catch 400, log vào CloudWatch. Ticket remain **unassigned**. `slack.notify` event chứa `assignee_status: "unassigned_invalid_user"`. Slack hiển thị "Assign Me" button → webhook callback để reassign cho current engineer. | < 30s | 0 (ticket created, chỉ assignment fail) |
-| DynamoDB lookup timeout | Lambda metric `DynamoDB.GetItem` latency > 3s trigger CloudWatch alarm. Function catch `ProvisionedThroughputExceededException` hoặc timeout. | Ticket created unassigned. `slack.notify` chứa `assignee_status: "dynamodb_timeout"`. Slack hiển thị "⚠️ User mapping unavailable — please assign manually." | < 5s | 0 (assignment deferred to human) |
+| Jira API down (429/500) | `notify-dispatcher` catch HTTP >= 400 when creating ticket. Explicit DLQ write + `console.error`. | Payload ghi vào SQS DLQ kèm original `alert.ingested` envelope. `notify-dispatcher` gửi raw alert text với "[JIRA DOWN]" prefix. DLQ redrive thủ công sau khi Jira recover. | < 60s (detection + fallback) | 0 (payload in DLQ) |
+| AI recommend invalid/deactivated `account_id` | Jira trả 400 trên `PUT /assignee` — `"user does not exist"`. | `jira-dispatcher` catch 400, log vào CloudWatch. Ticket remain **unassigned**. EventBridge `alert.assigned` chứa `assignee_status: "unassigned_invalid_user"`. `broadcast-notifier` hiển thị "Assign Me" ephemeral → Slack callback để current engineer self-assign. | < 30s | 0 (ticket created, chỉ assignment fail) |
+| DynamoDB audit save timeout | `notify-dispatcher` metric `DynamoDB.PutItem` latency > 3s trigger CloudWatch alarm. Function catch exception. | Audit skip logged to CloudWatch. Ticket + Slack vẫn thành công. Retry audit qua DLQ replay sau. | < 5s | < 1s (audit gap, không ảnh hưởng assignment) |
+
+---
 
 ## 11. Alert processing (Owner: Hiền)
 
@@ -445,8 +474,8 @@ Quy trình xử lý cảnh báo (Alert Processing Pipeline) được thiết k�
 4. **Emit Result:** Sau khi hoàn thành phân tích RCA, AI App đóng gói payload kết quả và đẩy vào **Dispatch Queue (SQS)** (formerly Queue 3) thông qua SQS VPC Endpoint.
 
 ### 11.3 Giai đoạn 3: Phân phối và Tương tác (Dispatch & Notification)
-1. **Trigger Dispatcher:** Lambda **`slack-dispatcher`** / **`jira-dispatcher`** tiêu thụ tin nhắn từ **Dispatch Queue (SQS)**.
-2. **Notify Slack & Jira:** Định dạng lại dữ liệu phân tích thành Block Kit UI để gửi lên Slack (với nút gán việc) và đồng bộ sang Jira tạo ticket sự cố (Human-in-the-loop).
+1. **Trigger Dispatcher:** Lambda **`notify-dispatcher`** tiêu thụ tin nhắn từ **Dispatch Queue (SQS)**, đồng thời tạo Jira ticket và gửi Slack Block Kit. Lambda **`jira-dispatcher`** nhận Slack interactive payload qua **API Gateway** để xử lý nút [Confirm & Assign].
+2. **Broadcast:** Lambda **`broadcast-notifier`** lắng nghe EventBridge event `alert.assigned` để gửi broadcast về `#incident-updates`.
 
 ## Related documents
 
