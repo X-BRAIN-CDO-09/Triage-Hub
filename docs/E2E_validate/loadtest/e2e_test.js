@@ -3,13 +3,11 @@ import { check } from 'k6';
 
 export const options = {
   scenarios: {
-    constant_load: {
-      executor: 'constant-arrival-rate',
-      rate: 1,
-      timeUnit: '1s',
-      duration: '3s',
-      preAllocatedVUs: 20,
-      maxVUs: 100,
+    e2e_scenarios: {
+      executor: 'shared-iterations',
+      vus: 1,
+      iterations: 3,
+      maxDuration: '30s',
     },
   },
 
@@ -25,25 +23,28 @@ export default function () {
 
   const scenarios = [
     {
-      name: 'Critical Incident',
+      name: 'critical_incident_scenario',
       alertname: 'ServiceDown',
       severity: 'critical',
       summary: 'Checkout-API is down',
-      description: 'The service is returning 500 errors across all regions'
+      description: 'The service is returning 500 errors across all regions',
+      expectedNotification: true,
     },
     {
-      name: 'Latency Degradation',
+      name: 'latency_degradation_scenario',
       alertname: 'HighLatency',
-      severity: 'warning',
+      severity: 'high',
       summary: 'Checkout-API latency spike',
-      description: 'p99 latency reached 5s, 5x higher than normal'
+      description: 'p99 latency reached 5s, 5x higher than normal',
+      expectedNotification: true,
     },
     {
-      name: 'False Positive',
+      name: 'false_positive_scenario',
       alertname: 'FlappingAlert',
-      severity: 'info',
+      severity: 'low',
       summary: 'Service availability fluctuating',
-      description: 'This is a test alert to verify the filtering/false-positive suppression logic'
+      description: 'This is a noisy flapping false alarm to verify false-positive suppression logic',
+      expectedNotification: false,
     }
   ];
 
@@ -79,6 +80,7 @@ export default function () {
           environment: 'sandbox',
           severity: currentScenario.severity,
           service: 'checkout-api',
+          expected_notification: String(currentScenario.expectedNotification),
           region: 'us-east-1',
         },
         annotations: {
@@ -102,10 +104,14 @@ export default function () {
 
   const res = http.post(url, payload, params);
 
-  // Debug iteration đầu tiên
-  if (__ITER === 0) {
-    console.log(`[DEBUG] status=${res.status}`);
-    console.log(`[DEBUG] body=${res.body ? res.body.substring(0, 300) : '(empty)'}`);
-  }
+  console.log(`[E2E] ${currentScenario.name} expected_notification=${currentScenario.expectedNotification} status=${res.status}`);
+  console.log(`[E2E] response=${res.body ? res.body.substring(0, 300) : '(empty)'}`);
 
+  check(res, {
+    'ingest accepted request': (r) => r.status === 202 || r.status === 200,
+    'response has processed status': (r) => {
+      try { return JSON.parse(r.body).status === 'Processed' || JSON.parse(r.body).SendMessageResponse; }
+      catch { return false; }
+    },
+  });
 }
