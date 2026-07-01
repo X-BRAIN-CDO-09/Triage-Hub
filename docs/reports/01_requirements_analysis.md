@@ -1,7 +1,7 @@
 # Requirements Analysis - Task force 1 · CDO 09
 
 <!-- Doc owner: Nhóm CDO 09 (Tiến)
-     Status: Draft (W11 T3-T4)
+     Status: Approved (W12)
      Word target: 800-1500 từ -->
 
 ## 1. Đề tài context (Owner: Tiến)
@@ -12,15 +12,16 @@ Triage Hub sẽ tự động hóa luồng tiếp nhận cảnh báo, gom thông 
 
 ## 2. Infra non-functional requirements (Owner: Tiến)
 
-| NFR                   | Target                                                | Justification                                                                        |
-| --------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Multi-tenant scale    | ≥ 50 tenants                                          | Đáp ứng nhu cầu tăng trưởng khách hàng SaaS B2B của startup                          |
-| SLO p99 latency       | < 1000ms                                              | Đảm bảo phản hồi nhanh cho các API tiếp nhận và chuyển tiếp alert                    |
-| Availability          | ≥ 99.5%                                               | Cam kết dịch vụ SLA hoạt động liên tục cho hệ thống trực ca on-call                  |
-| Error rate            | < 0.5%                                                | Hạn chế tối đa việc mất mát tin nhắn cảnh báo để không bỏ lỡ sự cố                   |
-| Cost per tenant/month | ~ $20 - $30 / tenant                                  | Ngân sách tối ưu hóa dựa trên việc sử dụng tài nguyên dùng chung và Serverless       |
-| Onboarding SLA        | < 10 phút                                             | Tự động hóa quá trình khởi tạo tenant (Provision Namespace, DB tables, và IAM Roles) |
-| Security baseline     | IAM least-priv + KMS encryption + Audit Trail 90 ngày | Tuân thủ các tiêu chuẩn bảo mật cho dữ liệu log/metric của khách hàng                |
+| NFR                   | Target               | Justification                                                                           |
+| --------------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| Multi-tenant scale    | ≥ 50 tenants         | Đáp ứng nhu cầu tăng trưởng khách hàng SaaS B2B của startup                             |
+| SLO p99 latency       | < 1000ms             | Đảm bảo phản hồi nhanh cho các API tiếp nhận và chuyển tiếp alert                       |
+| Availability          | ≥ 99.5%              | Cam kết dịch vụ SLA hoạt động liên tục cho hệ thống trực ca on-call                     |
+| Error rate            | < 0.5%               | Hạn chế tối đa việc mất mát tin nhắn cảnh báo để không bỏ lỡ sự cố                      |
+| Cost per tenant/month | ~ $20 - $30 / tenant | Ngân sách tối ưu hóa dựa trên việc sử dụng tài nguyên dùng chung và Serverless          |
+| Onboarding SLA        | < 1 phút             | Tự động hóa quá trình khởi tạo tenant (Ghi DynamoDB và liên kết API Gateway Usage Plan) |
+
+| Security baseline | IAM least-priv + KMS encryption + Audit Trail 90 ngày | Tuân thủ các tiêu chuẩn bảo mật cho dữ liệu log/metric của khách hàng |
 
 ## 3. Differentiation angle (KEY) (Owner: Tiến)
 
@@ -42,5 +43,5 @@ Triage Hub sẽ tự động hóa luồng tiếp nhận cảnh báo, gom thông 
 
 - [x] **Q1: Tần suất gửi telemetry data từ phía Customer App là bao nhiêu để tính toán tải cho Buffer Queue?**
   - _Giải quyết với nhóm AI & Client:_ Tối đa ~100 alerts/phút trong các tình huống cao điểm, hệ thống SQS hiện tại hoàn toàn đáp ứng được.
-- [ ] **Q2: AI API Contract yêu cầu đầu ra chi tiết của Schema đề xuất giải pháp như thế nào để map chính xác vào Jira Ticket fields?**
-  - _Cần làm việc với nhóm AI trước Thứ 5 để chốt schema._
+- [x] **Q2: AI API Contract yêu cầu đầu ra chi tiết của Schema đề xuất giải pháp như thế nào để map chính xác vào Jira Ticket fields?**
+  - _Giải quyết:_ Đã chốt schema output `TriageResponse` chứa các trường `suspected_root_cause`, `recommended_actions` và block `ticket_payload` (bao gồm summary, description, labels) giúp Lambda `notify-dispatcher` map trực tiếp sang Jira API.
