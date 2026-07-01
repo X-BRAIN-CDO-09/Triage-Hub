@@ -9,8 +9,7 @@ from typing import Any
 
 from app import dynamodb_store
 from app.audit_store import audit_log_path
-from app.dynamodb_store import IdempotencyCompletedError, IdempotencyInProgressError, use_dynamodb_backend
-
+from app.dynamodb_store import use_dynamodb_backend
 
 DEFAULT_STALE_SECONDS = 120
 
@@ -27,7 +26,9 @@ def request_hash(request: Any) -> str:
         "AIOPS_QA_MAX_ITERATIONS": os.getenv("AIOPS_QA_MAX_ITERATIONS"),
         "AIOPS_QA_REPAIR_MAX_ITERATIONS": os.getenv("AIOPS_QA_REPAIR_MAX_ITERATIONS"),
     }
-    payload = json.dumps({"request": body, "settings": settings}, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    payload = json.dumps(
+        {"request": body, "settings": settings}, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

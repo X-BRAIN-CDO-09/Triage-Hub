@@ -14,31 +14,40 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.action_catalog import select_actions
-from app.audit_store import append_audit_record, build_failure_audit_record, build_success_audit_record, latest_audit_record
-from app.evidence_budget import compact_request_evidence
 from app.agent_runtime import agent_platform_enabled, run_agent_platform
+from app.audit_store import (
+    append_audit_record,
+    build_failure_audit_record,
+    build_success_audit_record,
+    latest_audit_record,
+)
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
+from app.dynamodb_store import IdempotencyCompletedError, IdempotencyInProgressError
+from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
     complete_record,
     fail_record,
-    IdempotencyCompletedError,
-    IdempotencyInProgressError,
     is_stale,
     read_record,
     request_hash,
     start_record,
 )
 from app.investigation_router import select_investigation_mode
-from app.llm import current_llm_usage_summary, investigate_with_tools, reset_llm_usage, reword_catalog_actions, synthesize_investigation_summary
+from app.llm import (
+    current_llm_usage_summary,
+    investigate_with_tools,
+    reset_llm_usage,
+    reword_catalog_actions,
+    synthesize_investigation_summary,
+)
 from app.observability import (
     BUDGET_EXCEEDED_TOTAL,
     DEGRADED_MODE_TOTAL,
-    INVESTIGATION_MODE_SELECTED_TOTAL,
     IDEMPOTENCY_EVENTS_TOTAL,
-    QA_ITERATIONS_TOTAL,
-    TRIAGE_REJECTED_TOTAL,
+    INVESTIGATION_MODE_SELECTED_TOTAL,
     TRIAGE_INFLIGHT_REQUESTS,
+    TRIAGE_REJECTED_TOTAL,
     TRIAGE_REQUEST_DURATION_SECONDS,
     TRIAGE_REQUESTS_TOTAL,
     configure_logging,
@@ -47,10 +56,9 @@ from app.observability import (
     metrics_response,
     span,
 )
-from app.qa_judge import estimate_qa_tokens, qa_findings, run_qa
+from app.qa_judge import run_qa
 from app.rca import analyze_request
 from app.report_store import list_reports, read_report
-
 
 configure_logging()
 configure_tracing()
@@ -310,11 +318,19 @@ def triage(
     audit_id = build_audit_id(request)
     started = time.perf_counter()
     try:
-        with span("request_validation", audit_id=audit_id, tenant_id=request.tenant_id, service=request.alert.service, environment=request.environment):
+        with span(
+            "request_validation",
+            audit_id=audit_id,
+            tenant_id=request.tenant_id,
+            service=request.alert.service,
+            environment=request.environment,
+        ):
             validate_headers(request, x_tenant_id, x_correlation_id, authorization)
     except HTTPException as exc:
         _append_audit_record_safely(
-            build_failure_audit_record(request, audit_id, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2))
+            build_failure_audit_record(
+                request, audit_id, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2)
+            )
         )
         raise
     return triage_with_local_guards(request, audit_id)
@@ -342,7 +358,12 @@ def triage_with_local_guards(request: TriageRequest, audit_id: str) -> TriageRes
     idempotency_metadata: dict[str, Any] = {"request_hash": hash_value}
     try:
         record = read_record(audit_id)
-        if record and record.get("status") == "completed" and record.get("request_hash") == hash_value and isinstance(record.get("response"), dict):
+        if (
+            record
+            and record.get("status") == "completed"
+            and record.get("request_hash") == hash_value
+            and isinstance(record.get("response"), dict)
+        ):
             IDEMPOTENCY_EVENTS_TOTAL.labels(result="replayed_completed").inc()
             return TriageResponse.model_validate(record["response"])
         if record and record.get("status") == "completed" and record.get("request_hash") != hash_value:
@@ -399,7 +420,9 @@ def triage_semaphore() -> threading.BoundedSemaphore | None:
     return _triage_semaphore
 
 
-def triage_request(request: TriageRequest, audit_id: str | None = None, idempotency_metadata: dict[str, Any] | None = None) -> TriageResponse:
+def triage_request(
+    request: TriageRequest, audit_id: str | None = None, idempotency_metadata: dict[str, Any] | None = None
+) -> TriageResponse:
     audit_id = audit_id or build_audit_id(request)
     started = time.perf_counter()
     TRIAGE_INFLIGHT_REQUESTS.inc()
@@ -408,7 +431,13 @@ def triage_request(request: TriageRequest, audit_id: str | None = None, idempote
     evidence_budget_metadata: dict[str, Any] = {"truncated": False, "stages": []}
     try:
         reset_llm_usage()
-        with span("triage_request", audit_id=audit_id, tenant_id=request.tenant_id, service=request.alert.service, environment=request.environment):
+        with span(
+            "triage_request",
+            audit_id=audit_id,
+            tenant_id=request.tenant_id,
+            service=request.alert.service,
+            environment=request.environment,
+        ):
             log_triage_stage(request, audit_id, "started", "ok")
             with span("context_enrichment", audit_id=audit_id):
                 enriched_body = enrich_triage_context(request.model_dump(mode="json"))
@@ -443,16 +472,24 @@ def triage_request(request: TriageRequest, audit_id: str | None = None, idempote
                 with span("llm_investigation", audit_id=audit_id):
                     request, rca, decision, tool_metadata = investigate_with_tools(request, decision, rca)
                     request, budget_metadata = compact_request_evidence(request)
-                    evidence_budget_metadata = merge_evidence_budget(evidence_budget_metadata, "agent_assisted_tools", budget_metadata)
+                    evidence_budget_metadata = merge_evidence_budget(
+                        evidence_budget_metadata, "agent_assisted_tools", budget_metadata
+                    )
             elif mode_selection.selected_mode == "agent_platform":
                 with span("agent_platform", audit_id=audit_id):
-                    request, rca, decision, agent_metadata, platform_action_ids = run_agent_platform(request, decision, rca)
+                    request, rca, decision, agent_metadata, platform_action_ids = run_agent_platform(
+                        request, decision, rca
+                    )
                     request, budget_metadata = compact_request_evidence(request)
-                    evidence_budget_metadata = merge_evidence_budget(evidence_budget_metadata, "agent_platform_tools", budget_metadata)
+                    evidence_budget_metadata = merge_evidence_budget(
+                        evidence_budget_metadata, "agent_platform_tools", budget_metadata
+                    )
 
             with span("deterministic_rca_reclassify", audit_id=audit_id):
                 rca = enrich_rca_with_jira_history(request, rca)
-                if mode_selection.selected_mode != "agent_platform" or (agent_metadata and agent_metadata.get("fallback")):
+                if mode_selection.selected_mode != "agent_platform" or (
+                    agent_metadata and agent_metadata.get("fallback")
+                ):
                     decision = classify(request, rca)
                 else:
                     decision = decision.copy()
@@ -462,7 +499,9 @@ def triage_request(request: TriageRequest, audit_id: str | None = None, idempote
                 qa_metadata = run_qa(request, decision, rca)
             if qa_metadata.get("confidence_delta"):
                 decision = decision.copy()
-                decision["confidence"] = max(0.0, round(decision["confidence"] + float(qa_metadata["confidence_delta"]), 2))
+                decision["confidence"] = max(
+                    0.0, round(decision["confidence"] + float(qa_metadata["confidence_delta"]), 2)
+                )
 
             with span("response_assembly", audit_id=audit_id):
                 response = build_response(
@@ -495,12 +534,18 @@ def triage_request(request: TriageRequest, audit_id: str | None = None, idempote
                 fallback_reason=(agent_metadata or {}).get("fallback_reason"),
                 estimated_cost_usd=response.llm_metadata.get("cost_estimate", {}).get("total_estimated_cost_usd"),
             )
-            _append_audit_record_safely(build_success_audit_record(request, response, round((time.perf_counter() - started) * 1000, 2)))
+            _append_audit_record_safely(
+                build_success_audit_record(request, response, round((time.perf_counter() - started) * 1000, 2))
+            )
             return response
     except Exception as exc:
         DEGRADED_MODE_TOTAL.labels(reason="triage_exception").inc()
         log_triage_stage(request, audit_id, "failed", "error", error_class=type(exc).__name__, started=started)
-        _append_audit_record_safely(build_failure_audit_record(request, audit_id, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2)))
+        _append_audit_record_safely(
+            build_failure_audit_record(
+                request, audit_id, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2)
+            )
+        )
         raise
     finally:
         duration = time.perf_counter() - started
@@ -603,7 +648,10 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "summary": "Alert metadata was provided, but supporting metrics, logs, deploys, and ownership context are missing.",
             "evidence": ["No supporting telemetry context was included with the alert."],
             "actions": [
-                ("ESCALATE_OWNER", "Ask the AIOps context layer to attach metrics, logs, recent deploys, and ownership context before diagnosis."),
+                (
+                    "ESCALATE_OWNER",
+                    "Ask the AIOps context layer to attach metrics, logs, recent deploys, and ownership context before diagnosis.",
+                ),
             ],
             "rca": rca,
         }
@@ -617,23 +665,35 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "classification": "noisy_or_ambiguous_alert",
             "confidence": 0.45,
             "summary": "Signals are weak or ambiguous; the alert should be investigated without assigning a firm root cause.",
-            "evidence": collect_evidence(request, fallback="Alert text or severity indicates a noisy or ambiguous condition."),
+            "evidence": collect_evidence(
+                request, fallback="Alert text or severity indicates a noisy or ambiguous condition."
+            ),
             "actions": [
                 ("OBSERVE", "Check whether the alert repeats and compare it against user-impacting metrics."),
-                ("HUMAN_REVIEW", "Have the service owner confirm whether this is actionable before creating remediation work."),
+                (
+                    "HUMAN_REVIEW",
+                    "Have the service owner confirm whether this is actionable before creating remediation work.",
+                ),
             ],
             "rca": rca,
         }
 
-    if request.alert.severity == "critical" or any(token in text for token in ["down", "unavailable", "connection refused"]):
+    if request.alert.severity == "critical" or any(
+        token in text for token in ["down", "unavailable", "connection refused"]
+    ):
         return {
             "status": "DIAGNOSED",
             "classification": "critical_service_down",
             "confidence": 0.86,
             "summary": f"{request.alert.service} appears unavailable or critically degraded based on the alert and supporting context.",
-            "evidence": collect_evidence(request, fallback="Critical severity alert indicates service availability impact."),
+            "evidence": collect_evidence(
+                request, fallback="Critical severity alert indicates service availability impact."
+            ),
             "actions": [
-                ("RUNBOOK_CHECK", "Follow the service-down runbook and verify health checks, dependency availability, and recent deploy status."),
+                (
+                    "RUNBOOK_CHECK",
+                    "Follow the service-down runbook and verify health checks, dependency availability, and recent deploy status.",
+                ),
                 ("ESCALATE_OWNER", "Page or notify the owning team for immediate human review."),
             ],
             "rca": rca,
@@ -649,7 +709,10 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "evidence": collect_evidence(request, fallback="Latency-related alert title or metrics were included."),
             "actions": [
                 ("HUMAN_REVIEW", "Check saturation metrics, dependency latency, and slow query or timeout logs."),
-                ("ROLLBACK_CONSIDER", "If recent deploy correlation is confirmed, consider rollback through the approved runbook."),
+                (
+                    "ROLLBACK_CONSIDER",
+                    "If recent deploy correlation is confirmed, consider rollback through the approved runbook.",
+                ),
             ],
             "rca": rca,
         }
@@ -659,7 +722,9 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
         "classification": "general_investigation",
         "confidence": 0.55,
         "summary": "The alert has context but does not match a high-confidence TF1 skeleton scenario.",
-        "evidence": collect_evidence(request, fallback="Context was present but did not match a known deterministic rule."),
+        "evidence": collect_evidence(
+            request, fallback="Context was present but did not match a known deterministic rule."
+        ),
         "actions": [
             ("HUMAN_REVIEW", "Review supplied logs, metrics, and deploys before assigning a root cause."),
         ],
@@ -669,7 +734,9 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
 
 def has_ownership_context(request: TriageRequest) -> bool:
     ownership = request.ownership
-    return bool(ownership and (ownership.owner_team or ownership.slack_channel or ownership.jira_project or ownership.runbooks))
+    return bool(
+        ownership and (ownership.owner_team or ownership.slack_channel or ownership.jira_project or ownership.runbooks)
+    )
 
 
 def collect_evidence(request: TriageRequest, fallback: str) -> list[str]:
@@ -765,7 +832,9 @@ def build_response(
         llm_result = {"enabled": False, "provider": "deterministic", "skipped_reason": f"{investigation_mode}_mode"}
     else:
         llm_result = synthesize_investigation_summary(request, decision, rca)
-    investigation_summary = request.investigation_summary or llm_result.get("summary") or rca.get("investigation_summary")
+    investigation_summary = (
+        request.investigation_summary or llm_result.get("summary") or rca.get("investigation_summary")
+    )
     if investigation_mode == "agent_platform" and decision.get("agent_final"):
         investigation_summary = decision["summary"]
     llm_metadata = {key: value for key, value in llm_result.items() if key != "summary"}
@@ -779,7 +848,10 @@ def build_response(
             for index, action in enumerate(selected_actions):
                 action["priority"] = index + 1
     if investigation_mode in {"deterministic_only", "agent_platform"}:
-        action_wording = {"actions": selected_actions, "metadata": {"enabled": False, "provider": "deterministic", "skipped_reason": f"{investigation_mode}_mode"}}
+        action_wording = {
+            "actions": selected_actions,
+            "metadata": {"enabled": False, "provider": "deterministic", "skipped_reason": f"{investigation_mode}_mode"},
+        }
     else:
         action_wording = reword_catalog_actions(request, decision, rca, selected_actions)
     action_payloads = action_wording["actions"]

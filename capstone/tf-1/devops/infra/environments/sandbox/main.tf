@@ -779,19 +779,14 @@ resource "aws_iam_role_policy" "aws_lbc_ec2_policy" {
 # Xem: .github/workflows/ci-infra.yml → job bootstrap-argocd
 # Lý do tách ra: tránh lỗi EKS token hết hạn khi terraform apply chạy lâu
 
-# Tự động truy vấn IP của EC2 Prometheus bằng filter động
-data "aws_instances" "prometheus_ec2" {
-  filter {
-    name   = "tag:Name"
-    values = ["*prometheus*"]
-  }
-}
-
-# Lưu IP động của EC2 Prometheus vào SSM Parameter để CI/CD pipeline đọc (fallback về 127.0.0.1 nếu không tìm thấy)
+# Lưu IP public của EC2 Prometheus (module customer_app) vào SSM để CI/CD đọc.
+# Dùng output trực tiếp của module thay vì data source lọc tag: chính xác tuyệt đối
+# (EC2 tag "t3-large-instance" KHÔNG khớp filter "*prometheus*" cũ -> SSM từng nhận
+# nhầm 127.0.0.1). Tham chiếu module cũng đảm bảo terraform biết thứ tự phụ thuộc.
 resource "aws_ssm_parameter" "prometheus_ip" {
   name      = "/${var.project_name}/${var.environment}/prometheus_ip"
   type      = "String"
-  value     = length(data.aws_instances.prometheus_ec2.public_ips) > 0 ? data.aws_instances.prometheus_ec2.public_ips[0] : "127.0.0.1"
+  value     = module.customer_app.public_ip != "" ? module.customer_app.public_ip : "127.0.0.1"
   overwrite = true
 
   tags = {
