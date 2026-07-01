@@ -4,10 +4,10 @@ metadata:
   name: loki
   namespace: monitoring
 spec:
+  clusterIP: None
   ports:
     - name: http
-      port: 3100
-      targetPort: 9000
+      port: 9000
       protocol: TCP
 ---
 apiVersion: v1
