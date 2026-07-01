@@ -8,9 +8,14 @@ from typing import Any
 from app.action_catalog import ACTION_CATALOG
 from app.context_tools import ToolRegistry, ToolScopeError, merge_tool_result_into_request, scope_from_request
 from app.llm import active_model_id, agentcore_llm_enabled, agentcore_session_id, build_prompt_payload, tracked_llm_call
-from app.observability import AGENT_FALLBACK_TOTAL, AGENT_ITERATIONS_TOTAL, AGENT_TOOL_REQUESTS_TOTAL, DEGRADED_MODE_TOTAL, span
+from app.observability import (
+    AGENT_FALLBACK_TOTAL,
+    AGENT_ITERATIONS_TOTAL,
+    AGENT_TOOL_REQUESTS_TOTAL,
+    DEGRADED_MODE_TOTAL,
+    span,
+)
 from app.rca import analyze_request
-
 
 VALID_STATUSES = {"DIAGNOSED", "INVESTIGATE", "INSUFFICIENT_CONTEXT", "UNSAFE_SUGGESTION_BLOCKED"}
 VALID_CLASSIFICATIONS = {

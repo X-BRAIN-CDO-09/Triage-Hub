@@ -10,6 +10,7 @@ import pytest
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
+from app import dynamodb_store
 from app.action_catalog import select_actions
 from app.agent_runtime import contains_blocked_text, run_agent_platform
 from app.aiops_worker import (
@@ -23,14 +24,20 @@ from app.aiops_worker import (
     publish_slack,
     publish_to_triage_hub_sqs,
 )
-from app.context_tools import ContextClient, ToolRegistry, ToolScope, ToolScopeError
-from app import dynamodb_store
-from app.evidence_budget import compact_request_evidence
 from app.audit_store import append_audit_record, latest_audit_record
+from app.context_tools import ContextClient, ToolRegistry, ToolScope, ToolScopeError
+from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import complete_record, fail_record, read_record, request_hash, start_record, write_record
 from app.incident_seed import IncidentSeed, build_triage_request_from_seed
 from app.investigation_router import select_investigation_mode
-from app.llm import agentcore_session_id, build_prompt_payload, investigate_with_tools, parse_tool_calls, read_agentcore_response, reword_catalog_actions
+from app.llm import (
+    agentcore_session_id,
+    build_prompt_payload,
+    investigate_with_tools,
+    parse_tool_calls,
+    read_agentcore_response,
+    reword_catalog_actions,
+)
 from app.main import MetricPoint, MetricSeries, TriageRequest, _rate_limit_hits, app, build_audit_id, classify
 from app.observability import sanitize_log_fields
 from app.qa_judge import parse_qa_judge_response, run_qa
