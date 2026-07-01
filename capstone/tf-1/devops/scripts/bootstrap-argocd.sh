@@ -24,4 +24,13 @@ helm install argocd argo/argo-cd \
   --set server.service.type=ClusterIP \
   --set server.rdp.enabled=false
 
+echo "==> Waiting for ArgoCD Server to be ready..."
+kubectl rollout status deployment/argocd-server -n "$NAMESPACE" --timeout=300s
+
+echo "==> Automatically applying triage-hub AppProject..."
+kubectl apply -f "$(dirname "$0")/../platform/argocd/projects/triage-hub-project.yaml" -n "$NAMESPACE"
+
+echo "==> Automatically applying triage-hub-app Application..."
+kubectl apply -f "$(dirname "$0")/../platform/argocd/apps/triage-hub-app.yaml" -n "$NAMESPACE"
+
 echo "==> ArgoCD bootstrap complete!"
