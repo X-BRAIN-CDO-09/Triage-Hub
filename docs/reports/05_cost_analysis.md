@@ -50,7 +50,7 @@ Dưới đây là các phương pháp tối ưu hóa chi phí đã được áp 
 - [x] Data transfer optimization: Đã sử dụng VPC Interface Endpoints cho Bedrock và SQS để định tuyến traffic bên trong AWS, tránh phí NAT Gateway đắt đỏ.
 - [x] Tối ưu hóa API Gateway Cache và SQS Batching để giảm số lượng request gọi vào Lambda và Bedrock.
 - [ ] Right-sizing cho EKS pods và Lambda memory
-- [ ] Log retention tiering cho hệ thống Observability
+- [x] Log retention tiering & Custom Metrics filtering cho hệ thống Observability: Thiết lập vòng đời tự động xoá log (retention) và hạn chế bắn custom metrics phân giải cao, tránh việc CloudWatch phát sinh phí rác khổng lồ khi số lượng user đạt ngưỡng 20,000.
 
 ## 4. Cost vs alternatives (cùng task force) (Owner: Nhật)
 
@@ -58,6 +58,7 @@ Dưới đây là các phương pháp tối ưu hóa chi phí đã được áp 
 |---|---|---|
 | Kiến trúc Serverless 100% (Không EKS) | ~$10 - $15 | Không mất ~$265 Fixed Cost EKS/VPC ban đầu, rất rẻ ở Scale nhỏ. Tuy nhiên khi lên Scale lớn, Bedrock Agents + Lambda concurrency cost sẽ tăng tuyến tính mạnh. |
 | Kiến trúc EKS Hybrid (Triage-Hub hiện tại) | ~$8.50 ở Scale 200 | Mất Fixed Cost ban đầu nhưng khả năng tùy biến Agent Core cao hơn, cho phép nhồi nhét nhiều AI workload vào các Spot instances để tiết kiệm. |
+| Observability: CloudWatch Native vs Self-hosted (Prometheus/Grafana) | ~$0.50/tenant | Tự host cụm Prometheus/Grafana HA cho 50 tenants (20,000 users) phát sinh phí cố định hạ tầng (EC2, EBS) và chi phí vận hành khổng lồ. CloudWatch là Managed Service với TCO rẻ hơn nhiều, được tối ưu phí biến đổi qua Log Retention. |
 
 ## 5. Measured actual (Pack #2 only - fill in W12) (Owner: Nhật & Thi)
 

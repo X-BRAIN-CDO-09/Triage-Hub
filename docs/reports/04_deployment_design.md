@@ -150,12 +150,12 @@ Mục tiêu là onboard tenant demo dưới 30 phút. Self-service onboarding đ
 
 | Component | Tool (Triển khai thực tế) |
 |---|---|
-| Metrics (AWS) | CloudWatch metrics cho API Gateway, Lambda, SQS, DynamoDB, ALB, EC2 và EKS |
-| Metrics (App) | Prometheus metrics từ AI Engine cho LLM cost, circuit breaker, idempotency, budget và agent iterations |
-| Logs | CloudWatch Logs cho Lambda/EKS; JSON structured logs từ `aiops.engine` |
-| Traces | AWS X-Ray/ServiceLens và OpenTelemetry spans từ AI Engine |
-| Dashboards | CloudWatch dashboard `triage-hub-dashboard-sandbox` và Grafana dashboards qua platform manifests |
-| Alerts | CloudWatch alarms, SNS, EventBridge và `broadcast-notifier` Lambda để broadcast Slack |
+| Metrics (AWS) | CloudWatch Standard Metrics & Container Insights (API GW, Lambda, SQS, DynamoDB, ALB, EC2, EKS) |
+| Metrics (App) | 19 custom Prometheus metrics từ AI Engine (`prometheus_client`) — LLM cost, circuit breaker, idempotency, budget, agent iterations |
+| Logs | CloudWatch Logs (`/aws/lambda/triage-hub-*`, EKS via Container Insights add-on); JSON structured log qua `aiops.engine` logger |
+| Traces | AWS X-Ray (ServiceLens — API Gateway, Lambda, SQS) + OpenTelemetry OTLP (`aiops.engine` spans trong AI Engine) |
+| Dashboards | CloudWatch Dashboard `triage-hub-dashboard-sandbox` (6 sections: Health Overview, Pipeline, Detailed Metrics, Logs Insights, Alarms, Cost & ServiceLens) |
+| Alerts | CloudWatch Alarms (~22 alarms) + SNS `triage-hub-alerts-sandbox` (Email/SMS)|
 
 ## 9. Open questions (Owner: Kiên)
 
