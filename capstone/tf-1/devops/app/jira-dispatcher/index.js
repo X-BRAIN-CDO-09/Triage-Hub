@@ -11,6 +11,7 @@
 const { DynamoDBClient, PutItemCommand, GetItemCommand } = require("@aws-sdk/client-dynamodb");
 const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
 const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
+const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
 const crypto = require("crypto");
 
 // Timeout mặc định cho các request HTTP bên ngoài (ms)
@@ -27,12 +28,14 @@ let cachedSlackBotToken = null;
 const dynamoClient = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
+const eventBridgeClient = new EventBridgeClient({});
 
 // Environment variables (set by Terraform)
 const DYNAMODB_TABLE = process.env.DYNAMODB_TABLE;
 const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 const SLACK_SIGNING_SECRET_ARN = process.env.SLACK_SIGNING_SECRET_ARN;
 const SLACK_BOT_TOKEN_ARN = process.env.SLACK_BOT_TOKEN_ARN;
+const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -446,6 +449,34 @@ async function processAsyncSlackCallback(event) {
       await updateSlackMessage(responseUrl, updatedBlocks);
     }
     
+    // Broadcast notification via EventBridge
+    if (EVENT_BUS_NAME && status === "SUCCESS") {
+      try {
+        const command = new PutEventsCommand({
+          Entries: [{
+            EventBusName: EVENT_BUS_NAME,
+            Source: "triage-hub.jira",
+            DetailType: "IncidentAssigned",
+            Detail: JSON.stringify({
+              incident_id: incidentId,
+              jira_issue_key: issueKey,
+              assignee_name: assigneeName,
+              slack_user_id: slackUserId,
+              title: actionValue.title || "Untitled incident",
+              service: actionValue.service || "unknown",
+              severity: actionValue.severity || "medium",
+              jira_url: actionValue.jira_url || jiraLink,
+              target_channel: "#incident-updates"
+            })
+          }]
+        });
+        await eventBridgeClient.send(command);
+        logStructured("INFO", "Published broadcast event to EventBridge");
+      } catch (err) {
+        logStructured("ERROR", "Failed to publish broadcast event", { error: err.message });
+      }
+    }
+
     return { statusCode: 200, body: "" };
   }
 
@@ -454,6 +485,7 @@ async function processAsyncSlackCallback(event) {
     let status = "SUCCESS";
     let assigneeAccountId = null;
     let assigneeLabel = `<@${slackUserId}>`;
+    let broadcastAssigneeName = `<@${slackUserId}>`;
     let failureReason = null;
 
     if (!issueKey) {
@@ -475,6 +507,7 @@ async function processAsyncSlackCallback(event) {
         assigneeLabel = jiraUser.displayName
           ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
           : `<@${slackUserId}>`;
+        broadcastAssigneeName = jiraUser.displayName || `<@${slackUserId}>`;
         logStructured("INFO", "Self-assign succeeded", {
           issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
         });
@@ -523,6 +556,34 @@ async function processAsyncSlackCallback(event) {
 
     if (responseUrl) {
       await updateSlackMessage(responseUrl, updatedBlocks);
+    }
+
+    // Broadcast notification via EventBridge
+    if (EVENT_BUS_NAME && status === "SUCCESS") {
+      try {
+        const command = new PutEventsCommand({
+          Entries: [{
+            EventBusName: EVENT_BUS_NAME,
+            Source: "triage-hub.jira",
+            DetailType: "IncidentAssigned",
+            Detail: JSON.stringify({
+              incident_id: incidentId,
+              jira_issue_key: issueKey,
+              assignee_name: broadcastAssigneeName,
+              slack_user_id: slackUserId,
+              title: actionValue.title || "Untitled incident",
+              service: actionValue.service || "unknown",
+              severity: actionValue.severity || "medium",
+              jira_url: actionValue.jira_url || jiraLink,
+              target_channel: "#incident-updates"
+            })
+          }]
+        });
+        await eventBridgeClient.send(command);
+        logStructured("INFO", "Published broadcast event to EventBridge for self-assign");
+      } catch (err) {
+        logStructured("ERROR", "Failed to publish broadcast event for self-assign", { error: err.message });
+      }
     }
 
     return { statusCode: 200, body: "" };
