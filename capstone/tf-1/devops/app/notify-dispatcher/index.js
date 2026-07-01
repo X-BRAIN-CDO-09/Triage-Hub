@@ -349,7 +349,7 @@ function escapeSlackMrkdwn(text) {
 // Core: Build Slack Block Kit message từ AI triage result
 // =============================================================================
 function buildSlackBlocks(triageResult, jiraMapping, jiraBaseUrl, assigneeDetails) {
-  const severityStr = triageResult.severity || "medium";
+  const severityStr = triageResult.severity || triageResult.alert?.severity || "medium";
   const severity = getSeverityDisplay(severityStr);
   const service = triageResult.ticket_payload?.fields?.owner_team
     || triageResult.alert?.service
