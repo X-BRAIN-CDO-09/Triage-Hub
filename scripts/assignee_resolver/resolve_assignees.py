@@ -36,6 +36,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -105,14 +106,9 @@ def jira_search(creds: dict[str, str], jql: str, fields: list[str], max_results:
     body = json.dumps({"jql": jql, "fields": fields, "maxResults": max_results}).encode()
 
     for endpoint in ("/rest/api/3/search/jql", "/rest/api/3/search"):
-        url = creds["base_url"] + endpoint
-        # Chỉ cho phép https (base_url từ Secrets Manager) — chặn file://, http:// vô tình.
-        if not url.lower().startswith("https://"):
-            raise ValueError(f"Jira base_url phải dùng https, nhận: {url[:40]}")
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        req = urllib.request.Request(creds["base_url"] + endpoint, data=body, headers=headers, method="POST")
         try:
-            # Scheme đã được ép https ở trên nên urlopen an toàn (không file://).
-            with urllib.request.urlopen(req, timeout=20) as resp:  # nosec B310
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 payload = json.loads(resp.read().decode())
                 return payload.get("issues", [])
         except urllib.error.HTTPError as exc:

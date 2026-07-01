@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "triage-hub-lambda-tests",
   "version": "1.0.0",
   "description": "Jest unit tests for TF1 Lambda functions — no AWS required",
@@ -6,24 +6,20 @@
   "scripts": {
     "test": "jest --verbose",
     "test:alert-ingest": "jest test_lambda_alert_ingest.js --verbose",
+    "test:push-to-ai": "jest test_lambda_push_to_ai.js --verbose",
     "test:coverage": "jest --coverage"
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": [
-      "**/test_lambda_*.js"
-    ],
+    "testMatch": ["**/test_lambda_*.js"],
     "clearMocks": true,
-    "resetModules": true,
-    "modulePaths": [
-      "<rootDir>/node_modules"
-    ]
+    "resetModules": true
   },
   "devDependencies": {
     "jest": "^29.7.0"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1076.0",
-    "@aws-sdk/client-sqs": "^3.600.0"
+    "@aws-sdk/client-sqs": "^3.600.0",
+    "@aws-sdk/client-secrets-manager": "^3.600.0"
   }
 }
