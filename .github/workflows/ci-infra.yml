@@ -472,33 +472,10 @@ jobs:
           echo "=== ArgoCD Applications ==="
           kubectl get applications -n "$ARGOCD_NAMESPACE" || true
 
-      - name: Tự động lấy IP Prometheus từ SSM và apply vào EKS
-        env:
-          SSM_PARAM: /triage-hub/sandbox/prometheus_ip
-          TEMPLATE_FILE: capstone/tf-1/devops/platform/base/ai-engine/prometheus-service.yaml.template
-          MANIFEST_FILE: capstone/tf-1/devops/platform/base/ai-engine/prometheus-external-service.yaml
-        run: |
-          set -euo pipefail
-
-          # 1. Đọc IP từ SSM
-          PROM_IP=$(aws ssm get-parameter \
-            --name "$SSM_PARAM" \
-            --query 'Parameter.Value' \
-            --output text)
-
-          echo "✅ IP Prometheus lấy từ SSM: $PROM_IP"
-
-          # 2. Thay thế IP vào file template
-          cp "$TEMPLATE_FILE" "$MANIFEST_FILE"
-          sed -i "s|PROMETHEUS_IP_PLACEHOLDER|${PROM_IP}|" "$MANIFEST_FILE"
-
-          # 3. Apply trực tiếp vào EKS
-          kubectl apply -f "$MANIFEST_FILE"
-          echo "✅ Đã apply Service/Endpoints Prometheus-Operated thành công với IP mới"
-
       # ------------------------------------------------------------------ #
-      # Auto-patch: Đọc ARN từ SSM và cập nhật vào kustomization.yaml     #
-      # Mỗi lần terraform apply tạo lại ALB, bước này tự động commit ARN mới  #
+      # Auto-patch: Đọc IP/ARN từ SSM và cập nhật manifest trong Git       #
+      # GitOps hoá: KHÔNG kubectl apply thủ công nữa — chỉ commit giá trị  #
+      # mới vào Git, ArgoCD (automated + selfHeal) sẽ tự sync phần còn lại #
       # ------------------------------------------------------------------ #
       - name: Checkout full repo (for git push)
         uses: actions/checkout@v4
@@ -514,6 +491,33 @@ jobs:
         with:
           role-to-assume: ${{ secrets.TF_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Render Prometheus/Loki external Service manifests từ SSM IP
+        env:
+          SSM_PARAM: /triage-hub/sandbox/prometheus_ip
+        run: |
+          set -euo pipefail
+
+          # EC2 monitoring duy nhất chạy cả Prometheus (NodePort 9090) và Loki
+          # (NodePort 3100), gộp qua Nginx cổng 9000 — cùng 1 IP cho cả 2 Endpoints.
+          MONITORING_IP=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          echo "✅ IP EC2 monitoring lấy từ SSM: $MONITORING_IP"
+
+          cp capstone/tf-1/devops/platform/base/ai-engine/prometheus-service.yaml.template \
+             capstone/tf-1/devops/platform/base/ai-engine/prometheus-external-service.yaml
+          sed -i "s|PROMETHEUS_IP_PLACEHOLDER|${MONITORING_IP}|" \
+             capstone/tf-1/devops/platform/base/ai-engine/prometheus-external-service.yaml
+
+          cp capstone/tf-1/devops/platform/base/ai-engine/loki-service.yaml.template \
+             capstone/tf-1/devops/platform/base/ai-engine/loki-external-service.yaml
+          sed -i "s|LOKI_IP_PLACEHOLDER|${MONITORING_IP}|" \
+             capstone/tf-1/devops/platform/base/ai-engine/loki-external-service.yaml
+
+          echo "✅ Đã render Service/Endpoints Prometheus + Loki với IP mới (chưa apply, sẽ commit vào Git)"
 
       - name: Patch kustomization.yaml với ARN mới từ SSM
         env:
@@ -542,9 +546,11 @@ jobs:
           echo "✅ kustomization.yaml sau patch:"
           grep -A2 'targetGroupARN' "$KUSTOMIZATION_FILE"
 
-      - name: Commit và push ARN mới lên Git
+      - name: Commit và push IP/ARN mới lên Git
         env:
           KUSTOMIZATION_FILE: capstone/tf-1/devops/platform/overlays/sandbox/kustomization.yaml
+          PROMETHEUS_MANIFEST: capstone/tf-1/devops/platform/base/ai-engine/prometheus-external-service.yaml
+          LOKI_MANIFEST: capstone/tf-1/devops/platform/base/ai-engine/loki-external-service.yaml
           BRANCH_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -552,13 +558,14 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Chỉ commit nếu file thực sự thay đổi (tránh empty commit)
-          if git diff --quiet "$KUSTOMIZATION_FILE"; then
-            echo "ℹ️ ARN không thay đổi, bỏ qua bước commit."
+          git add "$KUSTOMIZATION_FILE" "$PROMETHEUS_MANIFEST" "$LOKI_MANIFEST"
+
+          # Chỉ commit nếu có gì đó thực sự thay đổi (tránh empty commit)
+          if git diff --cached --quiet; then
+            echo "ℹ️ IP/ARN không thay đổi, bỏ qua bước commit."
           else
-            git add "$KUSTOMIZATION_FILE"
-            git commit -m "ci(infra): auto-patch targetGroupARN từ SSM [skip ci]"
+            git commit -m "ci(infra): auto-patch targetGroupARN + Prometheus/Loki IP từ SSM [skip ci]"
             # Sử dụng HEAD:<branch_name> để push an toàn cả khi ở trạng thái detached HEAD
             git push origin HEAD:"$BRANCH_NAME"
-            echo "✅ Đã push ARN mới lên branch $BRANCH_NAME"
+            echo "✅ Đã push IP/ARN mới lên branch $BRANCH_NAME"
           fi

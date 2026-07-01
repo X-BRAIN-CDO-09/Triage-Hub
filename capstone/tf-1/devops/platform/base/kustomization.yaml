@@ -11,6 +11,10 @@ resources:
   - ai-engine/hpa.yaml
   - ai-engine/pdb.yaml
   - ai-engine/servicemonitor.yaml
+  # Service/Endpoints trỏ ra EC2 monitoring (IP do CI tự patch từ SSM
+  # /triage-hub/sandbox/prometheus_ip mỗi khi IP đổi — xem ci-infra.yml).
+  - ai-engine/prometheus-external-service.yaml
+  - ai-engine/loki-external-service.yaml
   - ai-worker/serviceaccount.yaml
   - ai-worker/deployment.yaml
   - ai-worker/scaledobject.yaml

@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
+from statistics import mean
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -502,6 +503,7 @@ def triage_request(
                 decision["confidence"] = max(
                     0.0, round(decision["confidence"] + float(qa_metadata["confidence_delta"]), 2)
                 )
+            decision = apply_qa_revision(decision, qa_metadata)
 
             with span("response_assembly", audit_id=audit_id):
                 response = build_response(
@@ -627,19 +629,59 @@ def build_audit_id(request: TriageRequest) -> str:
     return "audit-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
 
 
+def apply_qa_revision(decision: dict[str, Any], qa_metadata: dict[str, Any]) -> dict[str, Any]:
+    if os.getenv("AIOPS_QA_ALLOW_RECLASSIFY", "false").lower() not in {"1", "true", "yes"}:
+        return decision
+    if qa_metadata.get("verdict") not in {"fail", "uncertain"}:
+        return decision
+    suggested_classification = qa_metadata.get("suggested_classification")
+    if suggested_classification not in {
+        "critical_service_down",
+        "latency_degradation",
+        "noisy_or_ambiguous_alert",
+        "general_investigation",
+        "insufficient_context",
+    }:
+        return decision
+    suggested_status = qa_metadata.get("suggested_status")
+    if suggested_status not in {"DIAGNOSED", "INVESTIGATE", "INSUFFICIENT_CONTEXT"}:
+        suggested_status = (
+            "INVESTIGATE"
+            if suggested_classification in {"noisy_or_ambiguous_alert", "general_investigation"}
+            else decision["status"]
+        )
+    revised = decision.copy()
+    revised["classification"] = suggested_classification
+    revised["status"] = suggested_status
+    revised["confidence"] = min(float(revised.get("confidence", 0.0)), 0.65)
+    rationale = qa_metadata.get("rationale")
+    if isinstance(rationale, str) and rationale.strip():
+        revised["summary"] = f"QA revised diagnosis: {rationale.strip()}"
+    revised["agent_final"] = False
+    return revised
+
+
 def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[str, Any]:
     rca = rca or analyze_request(request)
-    text = " ".join(
+    alert_context_text = " ".join(
         [
             request.alert.title,
             request.alert.description or "",
             " ".join(log.message for log in request.logs),
-            " ".join(metric.metric_name for metric in request.metrics),
             " ".join((deploy.change_summary or "") for deploy in request.recent_deploys),
         ]
     ).lower()
+    anomaly_text = anomaly_signal_text(rca)
+    family_scores = fault_family_scores(request, rca, alert_context_text)
+    service_features = primary_service_features(request)
+    resource_score = family_scores["resource_cpu"] + family_scores["resource_mem"] + family_scores["resource_disk"]
+    critical_score = family_scores["traffic_loss"] + family_scores["error_availability"]
+    latency_score = family_scores["latency"]
+    resource_side_effect = service_features["resource_pressure"] >= 1.8 and service_features["latency_ratio"] < 1.15
 
-    has_context = bool(request.metrics or request.logs or request.recent_deploys or has_ownership_context(request))
+    has_context = bool(
+        request.metrics or request.logs or request.recent_deploys or anomaly_text or has_ownership_context(request)
+    )
     if not has_context:
         return {
             "status": "INSUFFICIENT_CONTEXT",
@@ -656,10 +698,9 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "rca": rca,
         }
 
-    if any(token in text for token in ["noisy", "flapping", "false alarm", "ambiguous"]) or request.alert.severity in {
-        "low",
-        "unknown",
-    }:
+    if any(token in alert_context_text for token in ["noisy", "flapping", "false alarm", "ambiguous"]) or (
+        request.alert.severity in {"low", "unknown"} and not anomaly_text
+    ):
         return {
             "status": "INVESTIGATE",
             "classification": "noisy_or_ambiguous_alert",
@@ -678,9 +719,11 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "rca": rca,
         }
 
-    if request.alert.severity == "critical" or any(
-        token in text for token in ["down", "unavailable", "connection refused"]
-    ):
+    if (
+        family_scores["traffic_loss"] >= 0.6
+        and family_scores["traffic_loss"] >= latency_score * 0.45
+        and not resource_side_effect
+    ) or (family_scores["error_availability"] >= 0.5 and family_scores["error_availability"] > latency_score):
         return {
             "status": "DIAGNOSED",
             "classification": "critical_service_down",
@@ -699,8 +742,58 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
             "rca": rca,
         }
 
-    anomaly_text = " ".join(item.get("reason", "") for item in rca.get("anomaly_evidence", []))
-    if "latency" in text or "p95" in text or "timeout" in text or "latency" in anomaly_text.lower():
+    if resource_score >= 0.5 and resource_score >= latency_score * 0.5 and critical_score < 1.0:
+        return {
+            "status": "INVESTIGATE",
+            "classification": "noisy_or_ambiguous_alert",
+            "confidence": 0.48,
+            "summary": "Telemetry is dominated by resource-level signals; investigate before assigning a latency or outage diagnosis.",
+            "evidence": collect_evidence(
+                request, fallback="Resource anomaly evidence outweighed latency or availability signals."
+            ),
+            "actions": [
+                (
+                    "OBSERVE",
+                    "Check whether resource anomaly correlates with user-impacting metrics before opening remediation work.",
+                ),
+                ("HUMAN_REVIEW", "Have the service owner review resource saturation and workload context."),
+            ],
+            "rca": rca,
+        }
+
+    if latency_score >= 0.85 and service_features["resource_pressure"] >= 1.2:
+        return {
+            "status": "INVESTIGATE",
+            "classification": "noisy_or_ambiguous_alert",
+            "confidence": 0.5,
+            "summary": "Latency evidence is present, but primary-service resource pressure is also elevated; classify as ambiguous pending saturation review.",
+            "evidence": collect_evidence(
+                request, fallback="Primary service resource pressure overlapped with latency evidence."
+            ),
+            "actions": [
+                (
+                    "OBSERVE",
+                    "Compare latency against CPU, memory, disk, and workload saturation before assigning the incident class.",
+                ),
+                (
+                    "HUMAN_REVIEW",
+                    "Ask the service owner to confirm whether latency is the symptom or the root incident family.",
+                ),
+            ],
+            "rca": rca,
+        }
+
+    if (
+        latency_score >= 1.5
+        or (latency_score >= 0.85 and resource_score < 0.5 and critical_score < 0.6)
+        or (
+            not anomaly_text
+            and any(
+                token in alert_context_text
+                for token in ["latency", "p95", "p90", "p50", "timeout", "duration", "delay", "slow"]
+            )
+        )
+    ):
         return {
             "status": "DIAGNOSED",
             "classification": "latency_degradation",
@@ -730,6 +823,126 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
         ],
         "rca": rca,
     }
+
+
+def anomaly_signal_text(rca: dict[str, Any], min_score: float = 0.5) -> str:
+    signals: list[str] = []
+    has_scored_evidence = False
+    for item in rca.get("anomaly_evidence", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("detector", "")).lower().startswith("window_"):
+            continue
+        try:
+            score = float(item.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < min_score:
+            continue
+        has_scored_evidence = True
+        signals.extend(str(item.get(key, "")) for key in ("metric_name", "reason", "detector", "service"))
+    if not has_scored_evidence:
+        return ""
+    for candidate in rca.get("rca_candidates", [])[:3]:
+        if isinstance(candidate, dict):
+            signals.append(str(candidate.get("service", "")))
+    return " ".join(signal for signal in signals if signal).lower()
+
+
+def primary_service_features(request: TriageRequest) -> dict[str, float]:
+    features = {
+        "latency_ratio": 0.0,
+        "latency_abs": 0.0,
+        "resource_pressure": 0.0,
+        "workload_drop": 0.0,
+        "workload_baseline": 0.0,
+    }
+    for series in request.metrics:
+        if series.service != request.alert.service:
+            continue
+        values = [float(point.value) for point in series.points]
+        if len(values) < 2:
+            continue
+        baseline = mean(values[:-1])
+        current = values[-1]
+        name = series.metric_name.lower()
+        ratio = current / max(abs(baseline), 1e-9)
+        if any(token in name for token in ("latency", "duration", "timeout", "delay")):
+            features["latency_ratio"] = max(features["latency_ratio"], ratio)
+            features["latency_abs"] = max(features["latency_abs"], current)
+        elif any(token in name for token in ("cpu", "mem", "memory", "disk", "diskio")):
+            features["resource_pressure"] = max(features["resource_pressure"], ratio)
+        elif any(
+            token in name
+            for token in (
+                "request",
+                "requests",
+                "traffic",
+                "throughput",
+                "qps",
+                "rps",
+                "success",
+                "count",
+                "rate",
+                "workload",
+            )
+        ):
+            if baseline > 0:
+                features["workload_drop"] = max(features["workload_drop"], (baseline - current) / baseline)
+                features["workload_baseline"] = max(features["workload_baseline"], baseline)
+    return features
+
+
+def fault_family_scores(request: TriageRequest, rca: dict[str, Any], alert_context_text: str) -> dict[str, float]:
+    scores = {
+        "traffic_loss": 0.0,
+        "error_availability": 0.0,
+        "latency": 0.0,
+        "resource_cpu": 0.0,
+        "resource_mem": 0.0,
+        "resource_disk": 0.0,
+    }
+    if request.alert.severity == "critical":
+        scores["error_availability"] += 2.0
+    if any(token in alert_context_text for token in ["down", "unavailable", "connection refused"]):
+        scores["error_availability"] += 1.5
+    if any(
+        token in alert_context_text
+        for token in ["latency", "p95", "p90", "p50", "timeout", "duration", "delay", "slow"]
+    ):
+        scores["latency"] += 0.75
+
+    for item in rca.get("anomaly_evidence", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            score = float(item.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < 0.5:
+            continue
+        detector = str(item.get("detector", "")).lower()
+        if detector.startswith("window_"):
+            continue
+        text = " ".join(str(item.get(key, "")) for key in ("metric_name", "reason", "detector")).lower()
+        if detector == "traffic_loss" or any(
+            token in text for token in ["traffic loss", "traffic_loss", "loss/drop detected", "workload"]
+        ):
+            scores["traffic_loss"] += score * 1.5
+        if any(token in text for token in ["latency", "p95", "p90", "p50", "timeout", "duration", "delay", "slow"]):
+            scores["latency"] += score
+        if any(
+            token in text
+            for token in ["availability", "error_rate", "5xx", "loss", "down", "unavailable", "connection refused"]
+        ):
+            scores["error_availability"] += score
+        if "cpu" in text:
+            scores["resource_cpu"] += score
+        if any(token in text for token in ["mem", "memory"]):
+            scores["resource_mem"] += score
+        if any(token in text for token in ["disk", "diskio"]):
+            scores["resource_disk"] += score
+    return scores
 
 
 def has_ownership_context(request: TriageRequest) -> bool:
