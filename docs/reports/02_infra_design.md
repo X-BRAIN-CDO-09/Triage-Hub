@@ -205,44 +205,45 @@ Việc chọn phương án **Hybrid** giúp dung hòa hai yếu tố đối lậ
 ## 8. AI Engine Runtime Module (Owner: Thi)
 
 <!-- Scope: hosting + runtime của AI Engine trên EKS.
-     Engine logic/app do AI team own; phần này chỉ cover infra host + deploy + scale + tích hợp. -->
+     Engine logic/app do AI team own; phần này chỉ cover infra host + deploy + scale + tích hợp + observability wiring. -->
 
 ### 8.1 Scope & boundary
 
-Module này chịu trách nhiệm **host AI Engine của AI team trên Amazon EKS**, không sở hữu logic RCA/prompt (thuộc AI team). Phạm vi:
+Module này chịu trách nhiệm **host AI Engine của AI team trên Amazon EKS**, không sở hữu logic RCA/prompt (thuộc AI team). Phạm vi CDO:
 
-- Containerize + sign image engine.
-- Deploy engine lên EKS qua GitOps.
-- Auto scaling engine theo tải.
+- Containerize + sign image engine (supply-chain security).
+- Deploy engine lên EKS qua GitOps (ArgoCD + Argo Rollouts canary).
+- Auto scaling engine theo tải (HPA cho API, KEDA cho worker, Cluster Autoscaler cho node).
+- **Wiring observability**: expose Prometheus/Loki (chạy ngoài cluster) cho engine query evidence.
+- Runtime persistence (DynamoDB), secrets (ESO/IRSA), network isolation.
 
-Engine chạy **private hoàn toàn** (no internet route); mọi egress đi qua VPC Endpoint, riêng SaaS (Slack/Jira) qua Lambda Dispatcher + NAT (đường ngoại lệ).
+Engine chạy trong **private subnet**. Truy cập AWS service nhạy cảm (Bedrock, Secrets Manager) qua **VPC Endpoint** — traffic ở lại trong AWS. Egress ra ngoài (observability EC2, Sigstore, GitHub) đi qua **NAT Gateway**. SaaS (Slack/Jira) **không** gọi trực tiếp từ engine — qua Lambda Dispatcher.
 
 ### 8.2 Architecture
 
 ![AI Engine Runtime Module — host engine trên Amazon EKS, private subnet, us-east-1](../assets/Triage_Hub-AI_Engine%20Hostin.png)
 
-*Hình 8.1 — AI Engine Runtime Module trên Amazon EKS (private, no internet route). Ba luồng: **Build & Sign** (GitHub Action → Trivy → Cosign → ECR → policy-controller verify), **Deploy & Runtime** (ArgoCD GitOps → EKS; `POST /v1/triage` → Internal ALB → tf1-api ↔ tf1-worker; secrets qua ESO + IRSA; egress Bedrock/Secrets qua VPC Endpoint), và **Auto Scaling** (HPA pod 2–10 + Cluster Autoscaler node 2–10). Mọi egress đi qua VPC Endpoint — không gì ra internet.*
+*Hình 8.1 — AI Engine Runtime Module trên Amazon EKS (private subnet, us-east-1). Ba luồng: **Build & Sign** (GitHub Action → Trivy fail-on HIGH/CRITICAL → Cosign keyless → ECR private → Sigstore policy-controller verify chữ ký trước khi pod chạy), **Deploy & Runtime** (ArgoCD GitOps + Argo Rollouts canary → EKS; `POST /v1/triage` → Internal ALB → tf1-api ↔ tf1-worker; secrets qua ESO + IRSA; egress Bedrock/Secrets qua VPC Endpoint, egress observability/Sigstore qua NAT), và **Auto Scaling** (HPA pod 2–10 cho API + KEDA cho worker + Cluster Autoscaler node 2–4).*
 
 <details>
 <summary>Sơ đồ logic (Mermaid) — luồng dữ liệu chi tiết</summary>
 
 ```mermaid
 graph TB
-    SEED["incident_seed.v1<br/>(from CDO)"] --> BUF["SQS Buffer + DLQ"]
-    BUF --> WK["tf1-worker (Pod)<br/>consume seed"]
-    WK -->|sync /v1/triage| ALB["Internal ALB"]
-    ALB --> API["tf1-api (Pod)<br/>FastAPI /v1/triage + report"]
-    API -->|read-only| CTX["Context backend<br/>Prometheus/Loki/deploy/ownership"]
-    API -->|InvokeModel / InvokeAgent| BR["Bedrock + AgentCore (VPCe)"]
-    API -->|audit| S3[("S3 Object Lock")]
-    API -->|state| DDB[("DynamoDB")]
-    WK -->|report| S3R[("S3 report + CloudFront")]
-    WK -->|Slack/Jira payload| DQ["SQS Dispatch Queue"]
-    DQ --> DISP["Lambda Dispatcher (NAT)"]
+    SEED["incident_seed.v1<br/>(from CDO alert-ingest)"] --> BUF["SQS buffer-queue.fifo + DLQ"]
+    BUF -->|KEDA scale theo queue depth| WK["tf1-worker (Deployment)<br/>consume seed"]
+    WK -->|sync POST /v1/triage| ALB["Internal ALB (private)"]
+    ALB --> API["tf1-api (Argo Rollout)<br/>FastAPI /v1/triage + report"]
+    API -->|read-only evidence| SHIM["Headless Service shim<br/>prometheus-operated / loki :9000"]
+    SHIM -->|NAT| EC2["EC2 monitoring (ngoài cluster)<br/>Prometheus/Loki/Grafana"]
+    API -->|InvokeModel / InvokeAgent| BR["Bedrock + AgentCore (VPC Endpoint)"]
+    API -->|audit + state + idempotency| DDB[("DynamoDB single-table<br/>triage-hub-state")]
+    WK -->|Slack/Jira notify payload| DQ["SQS dispatch-queue"]
+    DQ --> DISP["Lambda notify/jira-dispatcher (NAT)"]
     DISP --> SAAS["Slack / Jira"]
 ```
 
-*Caption: Engine gồm 2 Deployment (tf1-api + tf1-worker) trên EKS. Worker consume incident_seed từ buffer, gọi tf1-api `/v1/triage` đồng bộ qua Internal ALB, engine query context read-only + Bedrock, ghi audit immutable, rồi đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher gửi đi.*
+*Caption: Engine gồm `tf1-api` (Argo Rollout, FastAPI) + `tf1-worker` (Deployment, SQS consumer). Worker consume `incident_seed` từ buffer (KEDA scale theo độ sâu queue), gọi `tf1-api /v1/triage` đồng bộ qua Internal ALB. Engine query evidence read-only từ Prometheus/Loki qua shim Headless Service, gọi Bedrock/AgentCore qua VPC Endpoint, ghi audit/state vào DynamoDB, rồi worker đẩy payload Slack/Jira ra Dispatch Queue cho Lambda Dispatcher.*
 
 </details>
 
@@ -250,78 +251,120 @@ graph TB
 
 | Component | Service | Vai trò trong module | Owner |
 |---|---|---|---|
-| Engine compute | EKS managed node group | host tf1-api + tf1-worker | CDO |
-| API entry | Internal ALB (private, TLS 1.2+, 443→8080) | sync `/v1/triage` | CDO |
+| Engine compute | EKS managed node group (private) | host tf1-api + tf1-worker | CDO |
+| API entry | Internal ALB (private, 443→8080) | sync `/v1/triage` | CDO |
 | Image registry | ECR private | image Cosign-signed | CDO |
 | Engine app | container (FastAPI + worker) | logic RCA/triage | AI team |
-| Secrets inject | Secrets Manager + ESO | Bedrock/AgentCore creds | CDO |
-| Audit | S3 Object Lock | log mọi AI decision (immutable) | CDO |
+| Secrets inject | Secrets Manager + ESO | Bedrock/AgentCore config, service token | CDO |
+| Runtime state + audit | **DynamoDB single-table** (`triage-hub-state`) | audit metadata-only, idempotency, incident state, jira_history | CDO |
+| Evidence source | Prometheus/Loki trên EC2 (qua shim) | metrics/logs read-only cho RCA | CDO wiring |
 
 ### 8.4 Build & supply-chain
 
-Pipeline đóng gói engine của AI team thành image an toàn:
+Pipeline đóng gói engine của AI team thành image an toàn (`ci-ai-engine.yml`):
 
-`Dockerfile (multi-stage, distroless, non-root, EXPOSE 8080)` → `docker build` → `Trivy scan (fail on HIGH/CRITICAL)` → `Cosign sign` → `push ECR private` → `policy-controller verify chữ ký trước khi pod chạy`.
+`Dockerfile (multi-stage, non-root user 1000, healthcheck, PSS Restricted)` → `docker build` → `Trivy scan (exit-code=1, fail on HIGH/CRITICAL)` → `Cosign keyless sign (Sigstore/Fulcio/Rekor)` → `push ECR private` → `Sigstore policy-controller verify chữ ký trước khi pod chạy`.
 
-→ Không image nào chạy mà chưa quét lỗ hổng + chưa ký. Tận dụng stack từ lab `aws-sercurity`.
+→ Không image nào chạy mà chưa quét lỗ hổng + chưa ký. `ClusterImagePolicy` chỉ chấp nhận image ký bởi workflow `ci-ai-engine.yml` của repo này (subject/issuer regexp).
 
 ### 8.5 Deploy on EKS
 
-- Deploy qua **ArgoCD (app-of-apps, GitOps)** + **Argo Rollouts** canary 10→50→100%, auto-rollback on abort.
-- **2 Deployment** namespace-per-tenant:
-  - `tf1-api` (FastAPI): expose `/v1/triage` + report API, readiness/liveness `/healthz:8080`.
-  - `tf1-worker`: consume incident_seed, gọi tf1-api nội bộ (sync), persist + audit, emit ticket/Slack payload.
-- **IRSA least-privilege** (scoped ARN): `bedrock:InvokeModel`, `agentcore:InvokeAgent`, `secretsmanager:GetSecretValue`, `s3:PutObject`, `dynamodb:*` (table riêng).
-- **In-cluster security:** Gatekeeper (OPA: block root, required resources, deny hostNetwork, max replicas), RBAC, NetworkPolicy deny-all, Pod Security `restricted`.
+- Deploy qua **ArgoCD (app-of-apps, GitOps)**. AppProject `triage-hub` + root-app sync toàn bộ manifest; `selfHeal=true` nên mọi thay đổi thủ công trên cluster bị revert về git.
+- **`tf1-api` = Argo Rollout** (canary 10%→50%→100%, background AnalysisRun, auto-rollback on abort — xem 8.13). **`tf1-worker` = Deployment thường**.
+- **1 namespace `triage-hub` dùng chung cho mọi tenant** (mô hình *pooled*), cô lập bằng `tenant_id` trong khoá dữ liệu + NetworkPolicy — **KHÔNG** namespace-per-tenant. Namespace gắn label Pod Security `restricted` (enforce/audit/warn).
+- **IRSA least-privilege (scoped ARN)** — đã verify với terraform:
+  - `tf1-api`: `dynamodb:GetItem/PutItem/UpdateItem/Query` (chỉ table ARN, không `*`) · `secretsmanager:GetSecretValue` · `bedrock:InvokeModel/InvokeModelWithResponseStream` (foundation-model) · `bedrock:InvokeAgent` + `bedrock-agentcore:InvokeAgentRuntime` (runtime ARN). *(Không có `s3:PutObject` — audit ghi DynamoDB.)*
+  - `tf1-worker`: `dynamodb:*` (table) · `secretsmanager:GetSecretValue`.
+  - `keda-operator`: `sqs:GetQueueAttributes` (đọc độ sâu queue để scale worker).
+- **In-cluster governance:** Gatekeeper (OPA), RBAC (developer/sre/viewer RoleBindings), NetworkPolicy deny-all default + allow-list tường minh, Pod Security Standard `restricted`.
 
-### 8.6 Auto scaling
+### 8.6 Auto scaling (3 lớp độc lập)
 
-- **HPA**: Policy 1 — CPU 70%; Policy 2 — custom metric ALB request/pod = 100 (qua Prometheus Adapter). Min 2 / Max 10 pods (theo `deployment-contract.md:35`).
-- **Cluster Autoscaler**: thêm/bớt node khi pod pending. Min 2 / Max 10 nodes.
-- **SQS Buffer** đệm alert bursty trong lúc HPA kịp scale.
+**8.6a — HPA cho `tf1-api`** (`hpa.yaml`, scaleTargetRef = Rollout):
+- Policy 1: CPU utilization 70%.
+- Policy 2: custom metric `http_requests_per_second = 100`/pod (qua Prometheus Adapter).
+- Min **2** / Max **10** pods.
+
+**8.6b — KEDA cho `tf1-worker`** (`scaledobject.yaml`):
+- Trigger `aws-sqs-queue` theo **độ sâu buffer-queue** (`queueLength=5` → ~5 message/replica trước khi scale thêm).
+- Min **1** / Max **10** replica.
+- Auth qua `TriggerAuthentication` + IRSA của keda-operator (`identityOwner=operator`).
+- Đây là điểm khác HPA: worker scale theo **backlog công việc thật**, không phải CPU — phản ứng nhanh với alert storm.
+
+**8.6c — Cluster Autoscaler** (node group): thêm/bớt node khi pod `Pending`. Min **2** / Max **4** nodes (`t3.large`).
+
+**SQS buffer** đệm alert bursty trong lúc KEDA/HPA kịp scale.
 
 ### 8.7 AI endpoint integration
 
-- Endpoint: **`POST /v1/triage`** (sync) + **`GET /v1/reports`** + **`GET /v1/reports/{id}`**.
-- Input: `incident_seed.v1` (lightweight — không chứa full metrics/logs).
-- Output: classification, severity, confidence, suspected_root_cause, recommended_actions, anomaly_evidence, investigation_summary, audit_id, Slack/Jira payload, report URL.
-- SLA: engine gọi **đồng bộ qua Internal ALB**, p99 < 500ms cho `/v1/triage` (theo `ai-api-contract.md:103`). SQS chỉ buffer intake/dispatch, **không** nằm trong request path sync.
+- Endpoint: **`POST /v1/triage`** (sync) + **`GET /v1/reports`**, **`GET /v1/reports/{id}`**, **`GET /v1/audit/{audit_id}`**, **`/healthz`**, **`/readyz`**, **`/metrics`**.
+- Input: `TriageRequest` (envelope `tenant_id/correlation_id/incident_id/environment` + `alert` + optional `metrics/logs/traces/recent_deploys/ownership`). Header bắt buộc `X-Tenant-Id` (khớp body), `X-Correlation-Id`, `Authorization`.
+- Output: `TriageResponse` (classification, severity, confidence, `suspected_root_cause`, `recommended_actions`, `ticket_payload`, optional `suggested_assignee_account_id` + `suggestion_reason`, `audit_id`).
+- SLA: gọi **đồng bộ qua Internal ALB**, mục tiêu **p99 < 2s** cho `/v1/triage` (theo `ai-api-contract.md` SLA table). SQS chỉ nằm ở intake/dispatch, **không** trong request path sync.
+- Guardrails engine-side: rate-limit **60 req/min/tenant** (429), payload ≤ **512KB** (413), idempotency theo `audit_id` (replay cùng response).
 
-### 8.8 Context access (read-only, CDO-exposed)
+### 8.8 Observability connectivity (evidence access — CDO wiring)
 
-Engine **tự lấy context** (không nhận full telemetry trong seed). CDO expose read-only:
+Engine **tự query evidence read-only** (metrics/logs) để làm RCA. Prometheus/Loki **không chạy trong EKS** mà trên **EC2 monitoring riêng** (mô phỏng observability của customer). CDO wiring đường truy cập:
 
-- Metrics (Prometheus-compatible, delay < 60s), Logs (Loki-compatible, delay < 120s), Deploy metadata, Ownership/runbook mapping.
-- Mọi query **scope theo `tenant_id / environment / service / time-window`**, bounded p95 < 2s.
+- **Shim Headless Service** (`prometheus-operated`, `loki` trong ns `monitoring`, `clusterIP: None`, port **9000**): DNS trả **thẳng IP EC2**, bỏ qua kube-proxy iptables DNAT — tránh lỗi intermittent timeout khi route ClusterIP tới Endpoints ngoài VPC.
+- **IP EC2 tự cập nhật**: IP đổi mỗi lần recreate → lưu ở SSM `/triage-hub/sandbox/prometheus_ip`; `ci-infra` render lại Service/Endpoints từ SSM và commit vào git (ArgoCD sync).
+- **nginx proxy trên EC2 (cổng 9000)** gộp: `/` → Prometheus (9090), `/loki/` → Loki (3100) — engine dùng chung 1 host:port, phân luồng theo path.
+- **NetworkPolicy egress**: `tf1-api`/`tf1-worker` mở egress TCP 9000 tới shim; mọi egress khác vẫn deny-default.
+- Query **scope theo `tenant_id/environment/service/time-window`**, bounded (evidence budget cap trong engine). Metrics gắn nhãn `tenant_id`, `service` để cô lập.
+- **SG EC2** chỉ mở cổng proxy cho **NAT EIP** của platform VPC (least-exposure).
 
 ### 8.9 Egress & network model
 
-- Engine **no internet route**. AWS service đi qua VPC Endpoint: Bedrock, AgentCore, Secrets Manager, SQS, CloudWatch Logs, ECR (api/dkr), STS (Interface); S3, DynamoDB (Gateway).
-- SaaS (Slack/Jira) **không gọi trực tiếp từ engine** — engine emit payload → SQS Dispatch Queue → Lambda Dispatcher (có NAT) → Slack/Jira. `SLACK_WEBHOOK_URL` giữ ở dispatcher, không ở engine.
+- **VPC Endpoint** (traffic ở lại AWS): Bedrock, AgentCore, Secrets Manager, SQS, CloudWatch Logs, ECR (api/dkr), STS (Interface); S3, DynamoDB (Gateway).
+- **NAT Gateway** (internet egress có kiểm soát): GitHub (ArgoCD/CI), EC2 monitoring (Prometheus/Loki), Sigstore (Cosign keyless sign/verify).
+- SaaS (Slack/Jira) **không** gọi trực tiếp từ engine — engine/worker emit payload → SQS dispatch-queue → Lambda Dispatcher (NAT) → Slack/Jira. `SLACK_WEBHOOK_URL`/Slack bot token giữ ở dispatcher.
 
 ### 8.10 Secrets
 
-Inject qua **ESO** (External Secrets Operator) từ Secrets Manager → K8s Secret. No hardcode, no `valueFrom` tĩnh. Engine giữ: Bedrock/AgentCore credentials. (Webhook Slack thuộc dispatcher.)
+Inject qua **ESO (External Secrets Operator)** từ Secrets Manager → K8s Secret (`ai-engine-secrets`). No hardcode, no static `valueFrom`. Engine giữ: `BEDROCK_MODEL_ID`, `AGENTCORE_RUNTIME_ARN`, `PROMETHEUS_URL`/`LOKI_URL` (shim), `AIOPS_DYNAMODB_TABLE`, SQS URLs, `SERVICE_AUTH_TOKEN`. Bedrock **không dùng API key** — auth bằng IAM/IRSA (`bedrock:InvokeModel`). Slack webhook thuộc dispatcher, không ở engine.
 
-### 8.11 Failure modes & resilience
+### 8.11 Runtime persistence (DynamoDB single-table)
+
+Engine dùng **1 bảng DynamoDB** `triage-hub-state-<env>` (`PK`/`SK`, `PAY_PER_REQUEST`, TTL trên `ttl`) cho mọi state runtime — **không** S3 Object Lock:
+
+| Loại record | PK / SK pattern | Mục đích |
+|---|---|---|
+| Audit | audit record theo `audit_id` | log mọi AI decision (metadata-only, retention TTL) |
+| Idempotency | keyed by `audit_id` | replay cùng response cho cùng `correlation_id`, chống double-process |
+| Incident state | `TENANT#{tenant}#INCIDENT#{id}` / `AUDIT#{ts}` | mapping incident ↔ Jira, audit callback |
+| Assignee mapping | `JIRA_HISTORY#{tenant}#{env}#{service}` / `SUGGESTION` | nguồn `suggested_assignee_account_id` (do resolver seed) |
+
+Cô lập tenant: `tenant_id` nằm trong Partition Key → query 1 tenant không chạm tenant khác.
+
+### 8.12 Failure modes & resilience
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Pod crash | liveness probe | K8s restart (<60s) |
+| Pod crash | liveness probe `/healthz` | K8s restart (<60s) |
 | Node fail | node health | Cluster Autoscaler thay node |
-| AI 503/timeout | app metric | fallback rule-based alert (ensure availability) |
-| Bedrock throttle | app metric | exp backoff → DLQ |
-| Malformed seed | schema validate | DLQ, no silent drop |
-| Alert spike | queue depth | SQS buffer + HPA |
+| AI 503/timeout | app metric | worker giữ message trong SQS → retry sau visibility timeout; 500 → fallback ticket |
+| Bedrock throttle | app metric | fallback compute-only (deterministic RCA) |
+| Malformed seed | schema validate | DLQ (maxReceiveCount), no silent drop |
+| Alert spike | queue depth | SQS buffer + KEDA scale worker |
+| Evidence source unreachable | analysis query error | canary AnalysisRun tolerant (`failureLimit`); `or vector(0)` fallback |
 
-### 8.12 Acceptance mapping (AI team checklist)
+### 8.13 Canary analysis & auto-rollback
 
-- Latency incident → engine trả latency report ✓
-- Critical service-down → service-down actions ✓
-- Noisy alert → observe / human-review only ✓
-- Invalid seed → DLQ/error path, no silent drop ✓
-- Context chỉ trong scope tenant/service/time-window ✓
-- `/v1/triage` direct sample requests chạy ✓
+`tf1-api` deploy dạng **Argo Rollout canary**: `setWeight 10 → pause → 50 → pause → 100`, với **background AnalysisRun** (`AnalysisTemplate tf1-api-latency`) đo qua shim Prometheus (`prometheus-operated:9000`):
+
+- **p99-latency**: `histogram_quantile(0.99, ...{job="tf1-api"})` — fail nếu **> 800ms**.
+- **error-rate**: tỉ lệ 5xx — fail nếu **> 1%**.
+- Tham số: `initialDelay 3m` (warm-up), `interval 1m`, `count 5`, `failureLimit 2`, `timeout 60`, `or vector(0)` graceful fallback khi chưa có data.
+- Vượt ngưỡng liên tiếp → **Rollout tự abort + rollback** về stable (RTO < 60s), không cần can thiệp tay.
+
+### 8.14 In-cluster policy enforcement (Gatekeeper)
+
+Ngoài Sigstore (image signing) + NetworkPolicy + PSS, cluster enforce **7 Gatekeeper ConstraintTemplate** (OPA) áp cho ns `triage-hub`:
+
+`K8sRequiredSecurityContext` (runAsNonRoot, no privilege-escalation, drop ALL caps, chặn hostNetwork/PID/IPC/hostPath) · `K8sAllowedRepos` (chỉ ECR project) · `K8sRequiredResources` (bắt buộc cả requests LẪN limits — chống noisy-neighbor multi-tenant) · `K8sRequiredProbes` · `K8sRequiredLabels` · `K8sDisallowedTags` (chặn `:latest`/untagged) · `K8sRequireNetworkPolicy` (referential — mọi namespace phải có NetworkPolicy).
+
+Rollout an toàn: khởi đầu `enforcementAction=dryrun` (audit-only), chuyển `deny` theo từng constraint sau khi xác nhận zero-violation.
 
 ---
 
