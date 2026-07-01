@@ -33,16 +33,34 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # 1. Mock numpy + sklearn (rca.py dùng IsolationForest, np.array, np.corrcoef)
 # ---------------------------------------------------------------------------
 mock_np = MagicMock()
-mock_np.array = lambda x, **kw: x  # trả lại list thô — đủ để test chạy
+
+
+class _FakeArray(list):
+    def reshape(self, *a):
+        return self
+
+
+mock_np.array = lambda x, **kw: _FakeArray(x)
 mock_np.std = lambda x, **kw: 1.0
 mock_np.corrcoef = lambda *a, **kw: [[0.0, 0.0], [0.0, 0.0]]
 sys.modules["numpy"] = mock_np
 
 mock_sklearn = MagicMock()
 mock_isolation_forest_cls = MagicMock()
-# fit_predict trả -1 (outlier) hay 1 (normal) — trả 1 để không trigger anomaly trong test cơ bản
-mock_isolation_forest_cls.return_value.fit_predict.return_value = [1]
-mock_isolation_forest_cls.return_value.score_samples.return_value = [-0.1]
+
+
+class _FakeIsolationForest:
+    def __init__(self, *a, **kw):
+        pass
+
+    def fit_predict(self, data):
+        return [1] * (len(data) - 1) + [-1]
+
+    def score_samples(self, data):
+        return [-0.7]
+
+
+mock_isolation_forest_cls.side_effect = _FakeIsolationForest
 mock_sklearn.ensemble.IsolationForest = mock_isolation_forest_cls
 sys.modules["sklearn"] = mock_sklearn
 sys.modules["sklearn.ensemble"] = mock_sklearn.ensemble
@@ -119,7 +137,17 @@ mock_prom.Counter = _FakeMetric
 mock_prom.Gauge = _FakeMetric
 mock_prom.Histogram = _FakeMetric
 mock_prom.CollectorRegistry = MagicMock(return_value=MagicMock())
-mock_prom.generate_latest = MagicMock(return_value=b"")
+mock_prom.generate_latest = MagicMock(
+    return_value=b"\n".join(
+        [
+            b'aiops_triage_requests_total{status="DIAGNOSED",classification="latency_degradation"} 1.0',
+            b"aiops_triage_request_duration_seconds_count 1.0",
+            b"aiops_triage_inflight_requests 0.0",
+            b'aiops_context_enrichment_result_total{result="skipped"} 1.0',
+            b'aiops_investigation_mode_selected_total{mode="deterministic_only",source="router"} 1.0',
+        ]
+    )
+)
 mock_prom.openmetrics = MagicMock()
 mock_prom.openmetrics.exposition = MagicMock()
 mock_prom.openmetrics.exposition.CONTENT_TYPE_LATEST = "text/plain"
@@ -151,7 +179,19 @@ mock_boto3 = MagicMock()
 
 # Stub Attr / Key đủ để dynamodb_store.py import thành công
 class _FakeAttr:
+    def __init__(self, name=None):
+        self.name = name
+
     def eq(self, v):
+        return self
+
+    def ne(self, v):
+        return self
+
+    def lt(self, v):
+        return self
+
+    def not_exists(self):
         return self
 
     def begins_with(self, v):
