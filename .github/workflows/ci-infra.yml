@@ -28,11 +28,17 @@ on:
         required: true
         default: false
         type: boolean
+      deploy_app_after_apply:
+        description: "Also run App CI deploy after Terraform apply"
+        required: true
+        default: false
+        type: boolean
       confirm:
         description: 'Type "apply-sandbox" to confirm apply'
         required: true
         type: string
 permissions:
+  actions: write
   contents: read
   id-token: write
   pull-requests: write
@@ -338,6 +344,36 @@ jobs:
 
       - name: Export deployment outputs
         run: terraform output -no-color || true
+
+  dispatch-app-ci:
+    name: Trigger App CI deploy
+    needs: terraform-apply
+    if: |
+      needs.terraform-apply.result == 'success' &&
+      (
+        github.event_name == 'schedule' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy_app_after_apply == 'true'
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch App CI workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ref = context.ref.replace('refs/heads/', '');
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci-app.yml',
+              ref,
+              inputs: {
+                deploy: 'true'
+              }
+            });
+            core.info(`Dispatched App CI/CD on ${ref} with deploy=true`);
 
   # ====================================================================== #
   # Stage 2: Bootstrap ArgoCD                                              #
