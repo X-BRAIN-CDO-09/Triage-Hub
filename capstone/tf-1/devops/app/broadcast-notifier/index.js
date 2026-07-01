@@ -66,6 +66,21 @@ function escapeSlackMrkdwn(text) {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+async function getSlackUserIdByEmail(botToken, email) {
+  const response = await fetchWithRetry(
+    `https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(email)}`,
+    { method: "GET", headers: { Authorization: `Bearer ${botToken}` } }
+  );
+  if (!response || !response.ok) {
+    throw new Error(`Slack users.lookupByEmail HTTP ${response ? response.status : "timeout"}`);
+  }
+  const data = await response.json();
+  if (!data.ok) {
+    throw new Error(`Slack users.lookupByEmail error: ${data.error}`);
+  }
+  return data.user?.id;
+}
+
 exports.handler = async (event) => {
   console.log("Received EventBridge event:", JSON.stringify(event));
 
@@ -76,12 +91,25 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: "Invalid payload" };
   }
 
-  const { incident_id, jira_issue_key, assignee_name, slack_user_id, title, service, severity, jira_url } = detail;
+  const { incident_id, jira_issue_key, assignee_name, assignee_email, slack_user_id, title, service, severity, jira_url } = detail;
   
   // You can define target_channel dynamically or fixed
   const targetChannel = detail.target_channel || "#incident-updates"; 
   
-  const assigneeText = assignee_name && assignee_name !== "unknown" ? assignee_name : `<@${slack_user_id}>`;
+  let assigneeText = assignee_name && assignee_name !== "unknown" ? assignee_name : `<@${slack_user_id}>`;
+  
+  if (assignee_email && !assigneeText.startsWith("<@")) {
+    try {
+      const botToken = await getSlackBotToken();
+      const targetSlackId = await getSlackUserIdByEmail(botToken, assignee_email);
+      if (targetSlackId) {
+        assigneeText = `<@${targetSlackId}>`;
+      }
+    } catch (err) {
+      console.warn("Could not lookup Slack user by email:", err.message);
+    }
+  }
+
   const sevDisplay = getSeverityDisplay(severity);
 
   const fallbackText = `🚨 [${sevDisplay.label}] ${title || "Incident Update"} has been assigned to ${assigneeText}`;
