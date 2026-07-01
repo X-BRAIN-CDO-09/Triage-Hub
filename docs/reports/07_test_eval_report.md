@@ -10,7 +10,7 @@
 |---|---|---|
 | Unit test | pytest | **44%** Statement Coverage trên toàn bộ dự án (1,736 / 3,125 dòng covered) — `app/main.py` đạt **40%**, 3 file test đạt **100%** |
 | Integration test | pytest + TestClient | Kiểm thử thành công luồng `/healthz` và cô lập đa phân vùng độc lập (Tenant Isolation) — **100%** pass rate |
-| E2E test | <Playwright / k6> | Happy path 3 scenarios |
+| E2E test | k6 | Happy path 3 scenarios |
 | Load test | k6  | Sustained 100 RPS for 10 min |
 | Chaos test | <Litmus / manual> | 3 curveball scenarios |
 
@@ -25,7 +25,43 @@ Hệ thống đã triển khai và thực thi thành công bộ kiểm thử t�
   - `tests/conftest.py` (Cấu hình môi trường cô lập): **100%** (83 dòng, 0 miss)
   - `app/main.py` (Luồng xử lý API chính): **40%** (268 dòng, 107 covered — đã bao phủ toàn bộ các luồng rẽ nhánh điều hướng, kiểm tra tính hợp lệ của Header phân vùng dữ liệu và cấu trúc gói tin Incident đầu vào)
 - **Kết luận:** Hệ thống đảm bảo tính an toàn dữ liệu, cô lập phân vùng Tenant triệt để ngay tại tầng Gateway Validation trước khi chuyển tiếp dữ liệu vào các engine tính toán sâu hơn. Bộ kiểm thử đáp ứng tiêu chuẩn bàn giao tích hợp cho giai đoạn tiếp theo.
+
 ![Pytest Coverage Result](../assets/UTandITcn.png)
+
+### Minh họa kịch bản E2E test
+
+Các ảnh minh họa E2E kịch bản và đầu ra Slack sau đã được thu thập cho mục đánh giá:
+-  cảnh báo Critical Incident và luồng cảnh báo khẩn cấp.
+![Slack Critical Alert](../assets/slackcritical.png)
+- `slack_latency.png`: cảnh báo Latency Degradation khi độ trễ vượt ngưỡng.
+![Slack Latency Alert](../assets/slack_latency.png)
+- `slack_flapping.png`: cảnh báo flapping/noisy alert cho tình huống dao động tín hiệu.
+![Slack Flapping Alert](../assets/slack_flapping.png)
+- `slack_jira.png`: hiển thị liên kết Jira ticket trong message Slack.
+![Slack Jira Ticket View](../assets/slack_jira.png)
+- `kich_ban.png`: kịch bản ở k6 gửi vào hệ thống.
+![kich ban](../assets/kich_ban.png)
+
+Các ảnh này giúp minh chứng rằng hệ thống không chỉ chấp nhận alert đầu vào, mà còn dẫn dắt sự cố đến các kênh vận hành đúng cách, bao gồm cả phát hiện sự cố latency, sự cố nghiêm trọng, cảnh báo nhiễu và mapping tới ticket Jira.
+
+### Chaos test / stress test ảnh minh họa
+| Scenario | Injection method | Expected behavior | Result |
+|---|---|---|---|
+| Critical service down |Scale deployment to 0 replicas | create Jira, send Slack | PASS |
+| Latency degradation |Inject EXTRA_LATENCY=2.5s via env variable |  create Jira, send Slack | PASS |
+| noisy alert | CPU stress test / noisy signal injection |  avoid create Jira, send Slack | false |
+
+-  tổng quan về chaos test và các tình huống fault injection đã được kích hoạt.
+![Chaos Test Overview](../assets/chaotest.png)
+-  minh họa sự cố dịch vụ down, xác thực hệ thống vẫn phát hiện và đưa ra cảnh báo khẩn cấp.
+![Chaos Test Service Down](../assets/chaotest_services_down.png)
+-  thể hiện tình huống dữ liệu nhiễu / inhibitor, kiểm thử khả năng phân biệt cảnh báo thật và giả.
+![Chaos Test Inhibitor / Noisy Alert](../assets/chaotest_infoinhibitor.png)
+-  cảnh báo CPU noise, kiểm tra hệ thống với tín hiệu biến động và chế độ cảnh báo flapping.
+![Chaos Test CPU Noise](../assets/chaotest_cpu_noise.png)
+
+Các ảnh này mở rộng bộ minh họa bằng trường hợp chaos test, chứng minh hệ thống xử lý tốt kịch bản gián đoạn dịch vụ, nhiễu tín hiệu và sự cố hiệu năng trong môi trường thử nghiệm.
+
 ## 2. SLO evidence (Owner: Khang & Nhật)
 
 Nguồn contract: `AIO_Contract/ai-api-contract.md` § SLA Targets và `AIO_Contract/deployment-contract.md` § Scaling.
