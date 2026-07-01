@@ -194,7 +194,7 @@ locals {
   sqs_y_offset = 23 + ceil(length(var.lambda_functions) / 2) * 6
   sqs_widgets = [
     for i, queue_name in var.sqs_queues : {
-      type = "metric", x = (i % 2) * 12, y = local.sqs_y_offset + floor(i / 2) * 6, width = 12, height = 6
+      type = "metric", x = 0, y = local.sqs_y_offset + (i * 6), width = 24, height = 6
       properties = {
         metrics = [
           ["AWS/SQS", "NumberOfMessagesSent", "QueueName", queue_name, { "stat" : "Sum" }],
@@ -210,7 +210,7 @@ locals {
     }
   ]
 
-  dynamo_y_offset = local.sqs_y_offset + ceil(length(var.sqs_queues) / 2) * 6
+  dynamo_y_offset = local.sqs_y_offset + length(var.sqs_queues) * 6
   dynamodb_widget = var.dynamodb_table_name != "" ? [{
     type = "metric", x = 0, y = local.dynamo_y_offset, width = 24, height = 6
     properties = {
