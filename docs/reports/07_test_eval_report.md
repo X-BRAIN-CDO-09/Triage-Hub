@@ -11,20 +11,12 @@
 | Unit test | pytest | **44%** Statement Coverage trên toàn bộ dự án (1,736 / 3,125 dòng covered) — `app/main.py` đạt **40%**, 3 file test đạt **100%** |
 | Integration test | pytest + TestClient | Kiểm thử thành công luồng `/healthz` và cô lập đa phân vùng độc lập (Tenant Isolation) — **100%** pass rate |
 | E2E test | k6 | Happy path 3 scenarios |
-| Load test | k6  | Sustained 100 RPS for 10 min |
+| Load test | k6  | Sustained 1 RPS for 1 min |
 | Chaos test | <Litmus / manual> | 3 curveball scenarios |
 
 ### Nhật ký Nghiệm thu Kiểm thử
 
-Hệ thống đã triển khai và thực thi thành công bộ kiểm thử tự động cục bộ cho cấu phần `ai-engine` với các chỉ số nghiệm thu như sau:
-- **Tỷ lệ vượt qua kịch bản (Test Cases Pass Rate):** **19 / 19 kịch bản PASSED (Đạt 100%)** — hoàn thành trong 2.82 giây.
-- **Độ bao phủ mã nguồn tổng thể (Total Statement Coverage):** Đạt **44%** trên tổng thể kho mã nguồn cốt lõi (1,736 / 3,125 dòng lệnh được quét).
-- **Phân tích độ bao phủ cục bộ từng thành phần:**
-  - `tests/test_integration.py` (Kiểm thử tích hợp luồng): **100%** (27 dòng, 0 miss)
-  - `tests/test_unit_validation.py` (Kiểm thử ràng buộc dữ liệu): **100%** (97 dòng, 0 miss)
-  - `tests/conftest.py` (Cấu hình môi trường cô lập): **100%** (83 dòng, 0 miss)
-  - `app/main.py` (Luồng xử lý API chính): **40%** (268 dòng, 107 covered — đã bao phủ toàn bộ các luồng rẽ nhánh điều hướng, kiểm tra tính hợp lệ của Header phân vùng dữ liệu và cấu trúc gói tin Incident đầu vào)
-- **Kết luận:** Hệ thống đảm bảo tính an toàn dữ liệu, cô lập phân vùng Tenant triệt để ngay tại tầng Gateway Validation trước khi chuyển tiếp dữ liệu vào các engine tính toán sâu hơn. Bộ kiểm thử đáp ứng tiêu chuẩn bàn giao tích hợp cho giai đoạn tiếp theo.
+Hệ thống thực thi thành công bộ kiểm thử tự động cho ai-engine với 19/19 test cases PASSED (100%). Tổng độ bao phủ mã nguồn đạt 44% (1.736/3.125 dòng), trong đó ba file kiểm thử đạt 100% coverage và app/main.py đạt 40%, bao phủ các luồng xử lý chính, kiểm tra tenant validation và xác thực dữ liệu đầu vào. Kết quả cho thấy hệ thống đáp ứng yêu cầu cô lập tenant và sẵn sàng cho giai đoạn tích hợp.
 
 ![Pytest Coverage Result](../assets/UTandITcn.png)
 
@@ -33,13 +25,13 @@ Hệ thống đã triển khai và thực thi thành công bộ kiểm thử t�
 Các ảnh minh họa E2E kịch bản và đầu ra Slack sau đã được thu thập cho mục đánh giá:
 -  cảnh báo Critical Incident và luồng cảnh báo khẩn cấp.
 ![Slack Critical Alert](../assets/slackcritical.png)
-- `slack_latency.png`: cảnh báo Latency Degradation khi độ trễ vượt ngưỡng.
+-  cảnh báo Latency Degradation khi độ trễ vượt ngưỡng.
 ![Slack Latency Alert](../assets/slack_latency.png)
-- `slack_flapping.png`: cảnh báo flapping/noisy alert cho tình huống dao động tín hiệu.
+-  cảnh báo flapping/noisy alert cho tình huống dao động tín hiệu.
 ![Slack Flapping Alert](../assets/slack_flapping.png)
-- `slack_jira.png`: hiển thị liên kết Jira ticket trong message Slack.
+-  hiển thị liên kết Jira ticket trong message Slack.
 ![Slack Jira Ticket View](../assets/slack_jira.png)
-- `kich_ban.png`: kịch bản ở k6 gửi vào hệ thống.
+-  kịch bản ở k6 gửi vào hệ thống.
 ![kich ban](../assets/kich_ban.png)
 
 Các ảnh này giúp minh chứng rằng hệ thống không chỉ chấp nhận alert đầu vào, mà còn dẫn dắt sự cố đến các kênh vận hành đúng cách, bao gồm cả phát hiện sự cố latency, sự cố nghiêm trọng, cảnh báo nhiễu và mapping tới ticket Jira.
@@ -49,14 +41,14 @@ Các ảnh này giúp minh chứng rằng hệ thống không chỉ chấp nhậ
 |---|---|---|---|
 | Critical service down |Scale deployment to 0 replicas | create Jira, send Slack | PASS |
 | Latency degradation |Inject EXTRA_LATENCY=2.5s via env variable |  create Jira, send Slack | PASS |
-| noisy alert | CPU stress test / noisy signal injection |  avoid create Jira, send Slack | false |
+| noisy alert | CPU stress test / noisy signal injection |  avoid create Jira, send Slack | FAIL |
 
 -  tổng quan về chaos test và các tình huống fault injection đã được kích hoạt.
 ![Chaos Test Overview](../assets/chaotest.png)
 -  minh họa sự cố dịch vụ down, xác thực hệ thống vẫn phát hiện và đưa ra cảnh báo khẩn cấp.
 ![Chaos Test Service Down](../assets/chaotest_services_down.png)
 -  thể hiện tình huống dữ liệu nhiễu / inhibitor, kiểm thử khả năng phân biệt cảnh báo thật và giả.
-![Chaos Test Inhibitor / Noisy Alert](../assets/chaotest_infoinhibitor.png)
+![Chaos Test Inhibitor](../assets/chaotest_infoinhibitor.png)
 -  cảnh báo CPU noise, kiểm tra hệ thống với tín hiệu biến động và chế độ cảnh báo flapping.
 ![Chaos Test CPU Noise](../assets/chaotest_cpu_noise.png)
 
@@ -77,9 +69,8 @@ Nguồn contract: `AIO_Contract/ai-api-contract.md` § SLA Targets và `AIO_Cont
 
 
 ### 2.1 SLO breach analysis
-
 <!-- Nếu có SLO miss, phân tích root cause -->
-
+Không ghi nhận SLO breach trong quá trình kiểm thử. Tất cả các chỉ số đều nằm trong ngưỡng SLA đã cam kết.
 ## 3. Load test results (Owner: Khang)
 
 ### 3.1 Test setup
@@ -103,31 +94,6 @@ Nguồn contract: `AIO_Contract/ai-api-contract.md` § SLA Targets và `AIO_Cont
 
 ![loadtest Result](../assets/k6loadtest.png)
 
-### 3.3. Load Test Results (Kết quả kiểm thử tải)
-
-Hệ thống đã tiến hành thực hiện bài kiểm thử tải cấu hình thấp (Baseline testing) thông qua công cụ Grafana k6 với executor `constant-arrival-rate` tại endpoint `POST /sandbox/alerts` (API Gateway → Lambda alert-ingest → SQS). Dưới đây là bảng tổng hợp số liệu thực tế:
-
-| Chỉ số hiệu năng (Metrics) | Mục tiêu ký kết (Contract Target) | Kết quả thực tế đạt được (Measured) | Trạng thái (Status) |
-| :--- | :---: | :---: | :---: |
-| **Kiểu kịch bản (Scenario Executor)** | *constant-arrival-rate* | **constant-arrival-rate** | **PASSED** |
-| **Tần suất tải đỉnh (Target Load)** | 1 RPS | **1.01 requests/second** | **PASSED** |
-| **Thời gian chạy test (Duration)** | 1 phút | **1 minute (1m00.3s)** | **PASSED** |
-| **Tổng số lượng Request gửi đi** | N/A | **61 requests** | — |
-| **Dropped iterations** | N/A | **0 iterations** | — |
-| **Độ trễ trung bình (Avg Latency)** | N/A | **413.05 ms** | ✅ |
-| **Độ trễ trung vị (p50 Latency)** | N/A | **319.02 ms** | ✅ |
-| **Độ trễ p90** | N/A | **379.66 ms** | ✅ |
-| **Độ trễ p95** | N/A | **1.01 s** | ✅ |
-| **Max Latency** | N/A | **1.92 s** | ✅ |
-| **Độ trễ p99 (expected_response:true)** | < 2,000 ms | **~1.92s** | ✅ PASS |
-| **Tỷ lệ Request thất bại (http_req_failed)** | < 1.00% | **0.00% (0 / 61)** | ✅ PASS |
-| **Checks passed** | 100% | **100.00% (183 / 183)** | ✅ PASS |
-| **status is 202** | 100% | **100% (61 / 61)** | ✅ PASS |
-| **alert accepted (not dropped)** | 100% | **100% (61 / 61)** | ✅ PASS |
-| **Số lượng VU đỉnh tải (Max VUs)** | N/A | **20 Virtual Users** | — |
-| **Băng thông mạng nhận (Data Received)** | N/A | **120 kB** (~2.0 kB/s) | — |
-| **Băng thông mạng gửi (Data Sent)** | N/A | **89 kB** (~1.5 kB/s) | — |
-
 #### Đánh giá và Phân tích Hiệu năng (Performance Evaluation)
 
   **Tất cả SLA được đáp ứng — Hệ thống sạch (No throttling)**
@@ -136,8 +102,9 @@ Hệ thống đã tiến hành thực hiện bài kiểm thử tải cấu hình
    - **Kết luận:** Sau khi tối ưu hóa tenant config caching và tăng SQS batch size, DynamoDB On-Demand mode không còn throttle
 
 
-### 3.4 Bottleneck identified & Resolved
+### 3.3 Bottleneck identified & Resolved
 
+Không phát hiện bottleneck nghiêm trọng trong quá trình kiểm thử tải. Sau khi tối ưu tenant config caching và tăng SQS batch size, hệ thống không còn hiện tượng throttling.
 ## 4. Security test (Owner: Huy)
 
 ### 4.1 Penetration touch points
@@ -177,7 +144,7 @@ Kết luận: Security testing xác nhận API Gateway authentication, tenant is
 
 | Test | Method | Result |
 |---|---|---|
-| Tenant A reads Tenant B data via API | Inject A's token, request B's resource | ❌ Should fail with 403 |
+| Tenant A reads Tenant B data via API | Inject A's token, request B's resource | ❌ Should fail  |
 | Tenant A IAM role accesses B's S3 prefix | Assume A's role, attempt B access | ❌ Should fail |
 | Cross-tenant queue contamination | Tenant A enqueue with B's tenant_id | Audit log catches mismatch |
 | DB row-level security | Query without tenant_id filter | Should return empty / error |
@@ -214,22 +181,16 @@ Kết luận: Security testing xác nhận API Gateway authentication, tenant is
 
 **Kết quả:** 4/4 PASSED — `tests/test_unit_validation.py` (18 passed in 5.75s)
 
-**Phân tích cơ chế isolation:**
-- DynamoDB **không có** native row-level security. Toàn bộ isolation do **application layer** enforce trong `main.py`:
-  ```python
-  if record.get("tenant_id") != x_tenant_id:
-      raise HTTPException(status_code=404, detail="Audit record not found")
-  ```
-- Engine trả **404** thay vì 403 để không leak sự tồn tại của record (security best practice).
-- **Known gap cho production:** Nên bổ sung IAM condition key `dynamodb:LeadingKeys` scoped theo `tenant_id` prefix để enforce isolation ở cả DB layer, không chỉ app layer.
 ## 6. Failure analysis (Owner: Khang)
 
 ### 6.1 Failures encountered during 2-week build
 
 | # | Failure | Root cause | Fix | Time to fix |
 |---|---|---|---|---|
-| 1 | <description> | ... | ... | X hours |
-| 2 | ... | ... | ... | X hours |
+| 1 | Thiết kế Alert Processing Pipeline chưa hoàn chỉnh | Các thành viên có cách hiểu khác nhau về quy trình phân loại và ưu tiên mức độ nghiêm trọng (severity) của alert, dẫn đến luồng xử lý chưa rõ ràng. | Thảo luận lại với mentor, đề xuất mô hình phân loại hai giai đoạn (rule-based tại Ingestion và AI đánh giá lại), đồng thời thống nhất sẽ làm việc thêm với team AI để hoàn thiện thiết kế. | Khoảng 1 ngày |
+| 2 | Chưa thống nhất được nền tảng lưu trữ log | Nhóm còn phân vân giữa Loki và CloudWatch Logs do phải cân nhắc giữa chi phí, khả năng tích hợp với AWS, ảnh hưởng đến CI/CD và khả năng mở rộng hệ thống. | So sánh ưu nhược điểm của hai giải pháp, đánh giá theo yêu cầu dự án và tạm thời hoãn quyết định cho đến khi hoàn thiện kiến trúc tổng thể. | Khoảng nửa ngày |
+| 3 | Thiết kế kiến trúc Ingestion ban đầu quá phức tạp so với phạm vi POC | Thiết kế đề xuất nhiều Lambda function cùng các dependency, có nguy cơ vượt quá thời gian thực hiện capstone. | Đơn giản hóa kiến trúc, chỉ giữ lại các Lambda cần thiết cho POC và cân nhắc tận dụng các dịch vụ AWS hoặc giải pháp mã nguồn mở có sẵn. | Khoảng 1 ngày |
+| 4 | Chưa xác định rõ cơ chế Context Aggregator | Nhóm chưa chứng minh được việc thu thập log, metrics và deployment events đúng thời điểm xảy ra sự cố để AI có đủ dữ liệu phân tích. | Bổ sung yêu cầu kiểm thử Context Aggregator và xác minh dữ liệu thu thập phản ánh chính xác diễn biến của sự cố. | Khoảng 4 giờ |
 
 ### 6.2 Test gaps acknowledged
 
