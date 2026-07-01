@@ -68,7 +68,7 @@ variable "alarm_thresholds" {
     api_gw_latency       = optional(number, 2000)
     api_gw_4xx_rate      = optional(number, 5)
     api_gw_5xx_rate      = optional(number, 1)
-    lambda_error_rate    = optional(number, 1)
+    lambda_error_rate    = optional(number, 5) # Percent
     lambda_duration      = optional(number, 5000)
     lambda_throttle_rate = optional(number, 1)
     sqs_queue_depth      = optional(number, 1000)

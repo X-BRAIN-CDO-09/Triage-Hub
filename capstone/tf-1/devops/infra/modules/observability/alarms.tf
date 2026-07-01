@@ -42,7 +42,7 @@ resource "aws_cloudwatch_metric_alarm" "api_gw_latency" {
   metric_name         = "Latency"
   namespace           = "AWS/ApiGateway"
   period              = 60
-  statistic           = "Average"
+  extended_statistic  = "p99"
   threshold           = var.alarm_thresholds.api_gw_latency
   alarm_description   = "API Gateway latency is too high"
   alarm_actions       = local.alarm_actions
@@ -97,20 +97,45 @@ resource "aws_cloudwatch_metric_alarm" "api_gw_5xx" {
 
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   for_each            = toset(var.lambda_functions)
-  alarm_name          = "${each.value}-errors-high"
+  alarm_name          = "${each.value}-error-rate-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
-  period              = 60
-  statistic           = "Sum"
   threshold           = var.alarm_thresholds.lambda_error_rate
   alarm_description   = "Lambda ${each.value} error rate is too high"
   alarm_actions       = local.alarm_actions
   ok_actions          = local.alarm_actions
 
-  dimensions = {
-    FunctionName = each.value
+  metric_query {
+    id          = "e1"
+    expression  = "IF(m2 == 0, 0, m1 / m2 * 100)"
+    label       = "Error Rate"
+    return_data = true
+  }
+
+  metric_query {
+    id = "m1"
+    metric {
+      metric_name = "Errors"
+      namespace   = "AWS/Lambda"
+      period      = 60
+      stat        = "Sum"
+      dimensions = {
+        FunctionName = each.value
+      }
+    }
+  }
+
+  metric_query {
+    id = "m2"
+    metric {
+      metric_name = "Invocations"
+      namespace   = "AWS/Lambda"
+      period      = 60
+      stat        = "Sum"
+      dimensions = {
+        FunctionName = each.value
+      }
+    }
   }
 }
 

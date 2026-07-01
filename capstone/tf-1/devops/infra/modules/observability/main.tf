@@ -27,8 +27,8 @@ locals {
     {
       type = "metric", x = 6, y = 1, width = 6, height = 4
       properties = {
-        metrics = [["AWS/ApiGateway", "Latency", "ApiName", var.api_gateway_name, { "stat" : "Average" }]]
-        view    = "singleValue", region = var.aws_region, title = "API Latency", period = 300
+        metrics = [["AWS/ApiGateway", "Latency", "ApiName", var.api_gateway_name, { "stat" : "p99" }]]
+        view    = "singleValue", region = var.aws_region, title = "API Latency (p99)", period = 300
       }
     },
     {
@@ -119,7 +119,7 @@ locals {
     {
       type = "metric", x = 7, y = 10, width = 4, height = 6
       properties = {
-        metrics = [["AWS/SQS", "NumberOfMessagesSent", "QueueName", "${var.project_name}-buffer-queue", { "stat" : "Sum" }]]
+        metrics = [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${var.project_name}-buffer-queue", { "stat" : "Maximum" }]]
         view    = "timeSeries", region = var.aws_region, title = "3. Buffer Queue", period = 300
       }
     },
@@ -162,8 +162,8 @@ locals {
         ["AWS/ApiGateway", "Count", "ApiName", var.api_gateway_name, { "stat" : "Sum" }],
         [".", "4XXError", ".", ".", { "stat" : "Sum" }],
         [".", "5XXError", ".", ".", { "stat" : "Sum" }],
-        [".", "Latency", ".", ".", { "stat" : "Average" }],
-        [".", "IntegrationLatency", ".", ".", { "stat" : "Average" }],
+        [".", "Latency", ".", ".", { "stat" : "p99" }],
+        [".", "IntegrationLatency", ".", ".", { "stat" : "p99" }],
         [".", "CacheHitCount", ".", ".", { "stat" : "Sum" }],
         [".", "CacheMissCount", ".", ".", { "stat" : "Sum" }]
       ]
@@ -367,6 +367,33 @@ locals {
     }
   }]
 
+  # --- 6. COST & SERVICELENS ---
+  improvements_y_offset = local.logs_y_offset + 20
+  improvements_header = [{
+    type       = "text", x = 0, y = local.improvements_y_offset, width = 24, height = 1
+    properties = { markdown = "## Cost Monitoring & ServiceLens" }
+  }]
+
+  cost_widget = [{
+    type = "metric", x = 0, y = local.improvements_y_offset + 1, width = 12, height = 6
+    properties = {
+      metrics = [
+        ["AWS/Billing", "EstimatedCharges", "Currency", "USD", { "stat": "Maximum" }]
+      ]
+      view   = "timeSeries"
+      region = "us-east-1"
+      title  = "Estimated AWS Charges (USD)"
+      period = 21600
+    }
+  }]
+
+  servicelens_widget = [{
+    type = "text", x = 12, y = local.improvements_y_offset + 1, width = 12, height = 6
+    properties = {
+      markdown = "### 🔍 Deep Dive with AWS ServiceLens\n\nServiceLens integrates X-Ray traces with CloudWatch metrics and logs to provide a unified view of your application.\n\n[**👉 Click here to open ServiceLens Map**](https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#servicelens:map)\n\n*Use ServiceLens to trace requests end-to-end and find bottlenecks across API Gateway, Lambda, SQS, and DynamoDB.*"
+    }
+  }]
+
   all_widgets = concat(
     local.health_overview_header,
     local.health_overview_widgets,
@@ -384,7 +411,10 @@ locals {
     local.logs_header,
     local.logs_widgets,
     local.alarms_header,
-    local.alarms_widget
+    local.alarms_widget,
+    local.improvements_header,
+    local.cost_widget,
+    local.servicelens_widget
   )
 }
 

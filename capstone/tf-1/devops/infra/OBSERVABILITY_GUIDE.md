@@ -42,6 +42,10 @@ Khi truy cập vào CloudWatch Dashboard (`triage-hub-dashboard-sandbox`), bạn
 - **Ý nghĩa**: Trung tâm kiểm soát tổng hợp trạng thái cảnh báo tự động.
 - **Nội dung hiển thị**: Danh sách tất cả các Alarm đang được thiết lập. Cho phép đội vận hành biết ngay lập tức Alarm nào đang `OK` (Bình thường), `ALARM` (Đang có lỗi), hoặc `INSUFFICIENT_DATA` (Thiếu dữ liệu).
 
+### 6. Cost Monitoring & ServiceLens
+- **Ý nghĩa**: Theo dõi ước tính chi phí AWS hiện tại và liên kết trực tiếp tới bản đồ dịch vụ ServiceLens.
+- **Nội dung hiển thị**: Biểu đồ Time Series hiển thị `EstimatedCharges` (USD) từ `AWS/Billing` và một đường link truy cập nhanh sang AWS X-Ray Service Map giúp phân tích tương quan giữa Log, Metric và Trace.
+
 ---
 
 ## 3. Giải Thích Các Chỉ Số (Metrics) Chi Tiết Và Trường Dữ Liệu
@@ -252,3 +256,18 @@ kubectl scale deployment/customer-app --replicas=3 -n default
 1. Truy cập **CloudWatch > Insights > Container Insights**.
 2. Chọn Cluster `triage-hub-eks-sandbox`.
 3. Nhìn vào biểu đồ **Pod Count**, bạn sẽ thấy số lượng Pod tăng lên. Các chỉ số CPU và Memory Utilization của EKS Node sẽ hiển thị dữ liệu dao động realtime.
+
+---
+
+## 6. Những Điểm Cần Cải Tiến (Observability Improvements)
+
+Hiện tại hệ thống Observability cơ bản đã được thiết lập tốt, nhưng vẫn có thể nâng cấp thêm để vận hành tối ưu hơn ở môi trường Production:
+
+**Các tính năng đã triển khai thành công:**
+- **✅ Application Signals & ServiceLens**: Đã bổ sung đường link truy cập nhanh sang bản đồ Service Map, liên kết trực tiếp giữa Metric, Log và Trace trên cùng một màn hình (correlation) để hỗ trợ tìm kiếm nguyên nhân gốc rễ (Root Cause Analysis).
+- **✅ Giám sát Chi phí (Cost Monitoring)**: Đã bổ sung Widget theo dõi chi phí (Estimated Charges) vào ngay Dashboard, phòng trường hợp bị DDOS hoặc Lambda gọi lặp vô hạn gây phát sinh hóa đơn lớn.
+
+**Các cải tiến đề xuất cho tương lai:**
+1. **Anomaly Detection Alarms**: Thay vì sử dụng ngưỡng tĩnh (Static Thresholds) cho CPU hay số lượng Error, nên kết hợp Machine Learning của CloudWatch (Anomaly Detection) để cảnh báo linh hoạt dựa trên hành vi thông thường của hệ thống.
+2. **Tự động khắc phục sự cố (Auto-remediation)**: Hiện tại khi có Alarm, hệ thống mới chỉ báo qua SNS (Email/SMS). Cần tích hợp thêm AWS EventBridge và Systems Manager Automation để tự động khởi động lại (restart) các dịch vụ bị treo, hoặc flush Queue khi quá tải.
+3. **Tích hợp Chatbot (Slack/Microsoft Teams)**: Cảnh báo gửi qua Email rất dễ bị bỏ qua hoặc rơi vào mục Spam. Việc cấu hình AWS Chatbot gửi cảnh báo ngay vào group Slack của team sẽ hiệu quả hơn nhiều.
