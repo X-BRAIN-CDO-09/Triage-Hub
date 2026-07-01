@@ -167,6 +167,28 @@
 
 ---
 
+## ADR-007 - Sử dụng CloudWatch làm Observability Stack chính yếu thay vì Prometheus/Grafana toàn hệ thống (Owner: Nhật)
+
+- **Status**: Accepted
+- **Date**: 2026-07-01
+- **Context**:
+  - Hệ thống bao gồm nhiều thành phần phân tán: Serverless (API Gateway, Lambda, SQS, DynamoDB) và Containerized (AI Engine trên EKS).
+  - Yêu cầu khả năng giám sát (Observability) toàn diện cho quy mô hệ thống phục vụ 50 tenant và hơn 20,000 user.
+  - Cần đánh giá giữa việc tự triển khai cụm Prometheus + Grafana + OpenTelemetry cho toàn bộ hạ tầng so với việc sử dụng giải pháp Managed (Native CloudWatch).
+- **Decision**:
+  - Sử dụng **Amazon CloudWatch** (Metrics, Logs, Dashboards, Alarms) làm giải pháp Observability chính yếu cho toàn bộ nền tảng hạ tầng (API Gateway, Lambda, SQS, DynamoDB, v.v.).
+  - Việc dùng **Prometheus** bị giới hạn phạm vi, **chỉ triển khai cho cụm EKS** để thu thập Custom App Metrics (chi phí LLM, rate limit, v.v.) từ AI Engine.
+- **Consequence**:
+  - ✅ **Tránh rủi ro Conflict & Giảm Overhead Code**: Với Serverless, nếu dùng Prometheus/OTel, ta phải cài đặt custom exporter, SDK/layer vào tất cả các hàm Lambda. Việc chỉnh sửa hàng loạt file source code này dễ gây conflict khi nhiều team cùng làm, đồng thời tăng đáng kể thời gian code và bảo trì. CloudWatch là giải pháp Agentless, giám sát native mà không yêu cầu sửa code ứng dụng Serverless.
+  - ✅ **Tiết kiệm thời gian triển khai**: Setup một cụm Prometheus HA cho toàn bộ hệ thống phân tán từ đầu tốn rất nhiều thời gian kỹ thuật (config scrape targets, persistent storage, cross-AZ). Ngược lại, Prometheus triển khai cho EKS qua Helm chart (`kube-prometheus-stack`) rất dễ dàng, nên việc giới hạn Prometheus ở EKS giúp cân bằng effort.
+  - ✅ **Ổn định ở quy mô lớn**: Với quy mô 50 tenant và hơn 20,000 user, tự quản lý Prometheus/Grafana đòi hỏi tài nguyên máy chủ lớn, cấu hình HA phức tạp và nhân sự vận hành 24/7. Giải pháp Managed như CloudWatch tự động co giãn, đảm bảo độ ổn định cao vượt trội cho lưu lượng khổng lồ này mà không sợ nghẽn cổ chai đo lường.
+  - ✅ Dù CloudWatch có phát sinh phí theo volume, hệ thống đã cấu hình các mức giảm thiểu chi phí (ví dụ: Log retention, gom các dashboard cần thiết, hạn chế custom metrics độ phân giải cao ngoài EKS). Xét bài toán TCO (Total Cost of Ownership), CloudWatch tối ưu hơn việc thuê server và đội ngũ nuôi hệ thống Grafana.
+  - ⚠️ Hệ thống bị phân mảnh một phần (Log/Standard Metrics xem ở CloudWatch, AI Engine Custom Metrics đôi khi phải xem ở Prometheus/Grafana trên EKS).
+- **Alternatives considered**:
+  - **Self-hosted Prometheus/Grafana + OTel cho toàn hạ tầng**: Bị từ chối vì tốn quá nhiều nhân lực để inject OTel agent vào các tầng Serverless, tạo ra boilerplate code lớn, rủi ro conflict cao.
+
+---
+
 <!-- Append ADR mới ở dưới. Khi 1 ADR bị superseded, đánh dấu Status + link forward.
 
 Suggested ADR areas (tham khảo, không bắt buộc đủ):

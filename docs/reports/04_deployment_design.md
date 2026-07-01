@@ -160,7 +160,7 @@ Total time target: < 30 min for the capstone design. Full self-service onboardin
 | Logs | CloudWatch Logs (`/aws/lambda/triage-hub-*`, EKS via Container Insights add-on); JSON structured log qua `aiops.engine` logger |
 | Traces | AWS X-Ray (ServiceLens — API Gateway, Lambda, SQS) + OpenTelemetry OTLP (`aiops.engine` spans trong AI Engine) |
 | Dashboards | CloudWatch Dashboard `triage-hub-dashboard-sandbox` (6 sections: Health Overview, Pipeline, Detailed Metrics, Logs Insights, Alarms, Cost & ServiceLens) |
-| Alerts | CloudWatch Alarms (~22 alarms) + SNS `triage-hub-alerts-sandbox` (Email/SMS) + EventBridge → Lambda `broadcast-notifier` → Slack |
+| Alerts | CloudWatch Alarms (~22 alarms) + SNS `triage-hub-alerts-sandbox` (Email/SMS)|
 
 ## 9. Open questions (Owner: Kiên)
 
