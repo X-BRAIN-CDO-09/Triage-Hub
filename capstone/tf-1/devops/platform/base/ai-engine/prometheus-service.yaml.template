@@ -1,13 +1,22 @@
+# Headless Service (clusterIP: None): DNS trả THẲNG IP EC2, bỏ qua kube-proxy
+# iptables DNAT. Trước đây dùng ClusterIP thường (port 9090 -> targetPort 9000)
+# nhưng route ClusterIP -> IP ngoài cluster qua iptables bị intermittent (đã
+# verify sống: query trực tiếp EC2:9000 luôn 100% thành công, còn qua ClusterIP
+# thì lúc được lúc timeout — dấu hiệu kube-proxy/conntrack không ổn định với
+# Endpoints trỏ ra ngoài VPC, càng rõ hơn vì EC2 IP đổi liên tục mỗi lần
+# recreate). Headless loại bỏ hẳn lớp kube-proxy khỏi đường đi này.
+# LƯU Ý: headless KHÔNG remap port — client phải dùng đúng port EC2 đang listen
+# thật (9000, port duy nhất SG cho phép), không còn "giả vờ" là 9090 nữa.
 apiVersion: v1
 kind: Service
 metadata:
   name: prometheus-operated
   namespace: monitoring
 spec:
+  clusterIP: None
   ports:
     - name: http
-      port: 9090
-      targetPort: 9000
+      port: 9000
       protocol: TCP
 ---
 apiVersion: v1
@@ -22,3 +31,4 @@ subsets:
       - name: http
         port: 9000
         protocol: TCP
+

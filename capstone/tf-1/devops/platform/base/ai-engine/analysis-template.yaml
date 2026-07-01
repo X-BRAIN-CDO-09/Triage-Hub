@@ -1,10 +1,12 @@
 # AnalysisTemplate cho canary tf1-api — abort criteria theo deployment-contract.md:
 #   - p99 latency > 800ms  → fail → Rollout tự abort + rollback về stable
 #   - error rate (5xx) > 1% → fail
-# Nguồn metric: Prometheus in-cluster (kube-prometheus-stack).
-# Prometheus endpoint: prometheus-operated.monitoring.svc.cluster.local:9090
-#   → Đây là địa chỉ chuẩn của kube-prometheus-stack (prometheus-operator).
-#   → Đã xác nhận khớp với prometheus-adapter ArgoCD app trong cluster này.
+# Nguồn metric: Prometheus chạy trên EC2 monitoring (ngoài cluster), qua shim
+# Headless Service prometheus-operated:9000 (xem prometheus-service.yaml.template).
+# Headless (clusterIP: None) để DNS trả thẳng IP EC2, KHÔNG qua kube-proxy
+# iptables — route ClusterIP thường -> Endpoints ngoài VPC từng bị intermittent
+# timeout (đã verify: query trực tiếp EC2:9000 luôn ổn định, qua ClusterIP thì
+# không), nên bỏ hẳn lớp kube-proxy khỏi đường đi này thay vì query :9090.
 #
 # Best practice notes:
 #   - timeout: 60  → Đủ cho Prometheus compute histogram_quantile; tránh false-positive
@@ -27,7 +29,7 @@ spec:
       failureLimit: 2    # tolerant với 1 lần timeout transient
       provider:
         prometheus:
-          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9000
           timeout: 60    # tránh context deadline exceeded từ Go auth struct defaults
           query: |
             histogram_quantile(0.99,
@@ -44,7 +46,7 @@ spec:
       failureLimit: 2    # tolerant với 1 lần timeout transient
       provider:
         prometheus:
-          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9000
           timeout: 60    # tránh context deadline exceeded từ Go auth struct defaults
           query: |
             (sum(rate(http_requests_total{job="tf1-api",status=~"5.."}[2m]))
