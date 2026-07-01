@@ -1,5 +1,12 @@
 # Constraint instances áp dụng ConstraintTemplates vào namespace triage-hub.
 #
+# sync-wave = "0" (mặc định, KHÔNG phải "1"): Constraint không phụ thuộc gì vào
+# vòng đời deploy của tf1-api/tf1-worker — chỉ cần ConstraintTemplate (wave -1)
+# tồn tại trước. Nếu để wave "1" (sau Rollout), mỗi lần tf1-api đi qua canary
+# pause bình thường (health=Suspended, KHÔNG phải lỗi) thì việc sync Constraint
+# sẽ bị treo tạm thời theo — ghép nhầm 2 vòng đời độc lập với nhau. Constraint
+# ở cùng wave với phần lớn resource khác trong base/ là đúng.
+#
 # enforcementAction: dryrun cho TẤT CẢ constraint mới ở lần rollout đầu tiên.
 # Đây là rollout an toàn có chủ đích: Gatekeeper sẽ AUDIT và ghi vi phạm vào
 # `status.violations` của từng Constraint (xem bằng `kubectl get <kind> <name>
@@ -13,7 +20,7 @@ kind: K8sRequiredSecurityContext
 metadata:
   name: require-security-context
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -31,7 +38,7 @@ kind: K8sAllowedRepos
 metadata:
   name: allow-only-project-ecr
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -48,7 +55,7 @@ kind: K8sRequiredResources
 metadata:
   name: require-resource-requests-limits
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -62,7 +69,7 @@ kind: K8sRequiredProbes
 metadata:
   name: require-liveness-readiness-probes
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -76,7 +83,7 @@ kind: K8sRequiredLabels
 metadata:
   name: require-app-labels
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -93,7 +100,7 @@ kind: K8sDisallowedTags
 metadata:
   name: disallow-latest-and-untagged
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
@@ -110,7 +117,7 @@ kind: K8sRequireNetworkPolicy
 metadata:
   name: require-networkpolicy-per-namespace
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   enforcementAction: dryrun
   match:
