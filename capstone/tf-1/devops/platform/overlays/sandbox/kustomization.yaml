@@ -59,4 +59,4 @@ patches:
               identityOwner: operator
 images:
   - name: 730335441285.dkr.ecr.us-east-1.amazonaws.com/triage-hub-tf1-engine
-    newTag: "e811e1e"
+    newTag: "920d708"
