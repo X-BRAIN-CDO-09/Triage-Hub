@@ -97,7 +97,7 @@ promtail:
         template: '{{ if and (eq .message "request complete") .took_ms }}true{{ else }}false{{ end }}'
     - template:
         source: took_seconds
-        template: '{{ if eq .is_request_complete "true" }}{{ mul (atof .took_ms) 0.001 }}{{ end }}'
+        template: '{{ if eq .is_request_complete "true" }}{{ divf (float64 .took_ms) 1000.0 }}{{ end }}'
     - metrics:
         grpc_server_handling_seconds:
           type: Histogram
