@@ -47,11 +47,10 @@ Các ảnh này giúp minh chứng rằng hệ thống không chỉ chấp nhậ
 ![Chaos Test Overview](../assets/chaotest.png)
 -  minh họa sự cố dịch vụ down, xác thực hệ thống vẫn phát hiện và đưa ra cảnh báo khẩn cấp.
 ![Chaos Test Service Down](../assets/chaotest_services_down.png)
--  thể hiện tình huống dữ liệu nhiễu / inhibitor, kiểm thử khả năng phân biệt cảnh báo thật và giả.
+-  minh hoạ sự cố phản hồi chậm hệ thống vẫn phát hiện và đưa ra cảnh báo
 ![Chaos Test Inhibitor](../assets/chaotest_infoinhibitor.png)
--  cảnh báo CPU noise, kiểm tra hệ thống với tín hiệu biến động và chế độ cảnh báo flapping.
-![Chaos Test CPU Noise](../assets/chaotest_cpu_noise.png)
-
+-  không có thông báo mới sau sự cố phản hồi chậm thể hiện tình huống dữ liệu nhiễu / inhibitor, kiểm thử khả năng phân biệt cảnh báo thật và giả.
+![alt](../assets/chaotest_infoinhibitor.png)
 Các ảnh này mở rộng bộ minh họa bằng trường hợp chaos test, chứng minh hệ thống xử lý tốt kịch bản gián đoạn dịch vụ, nhiễu tín hiệu và sự cố hiệu năng trong môi trường thử nghiệm.
 
 ## 2. SLO evidence (Owner: Khang & Nhật)
