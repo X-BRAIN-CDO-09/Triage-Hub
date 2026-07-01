@@ -1,0 +1,127 @@
+# Constraint instances áp dụng ConstraintTemplates vào namespace triage-hub.
+#
+# enforcementAction: dryrun cho TẤT CẢ constraint mới ở lần rollout đầu tiên.
+# Đây là rollout an toàn có chủ đích: Gatekeeper sẽ AUDIT và ghi vi phạm vào
+# `status.violations` của từng Constraint (xem bằng `kubectl get <kind> <name>
+# -o yaml`) nhưng KHÔNG chặn deploy. Sau khi xác nhận zero/known violations
+# trong 1 chu kỳ audit, đổi enforcementAction sang "deny" theo từng constraint.
+# Đây cũng chính là khác biệt so với việc bật "deny" ngay từ đầu cho policy
+# chưa qua kiểm chứng trên workload thật — tránh biến 1 policy hạ tầng thành
+# outage cho AI engine.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredSecurityContext
+metadata:
+  name: require-security-context
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+  parameters:
+    # readOnlyRootFilesystem hiện = false ở tf1-api/tf1-worker (rollout.yaml,
+    # ai-worker/deployment.yaml) -> để false trước, bật true sau khi hardening.
+    requireReadOnlyRootFilesystem: false
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRepos
+metadata:
+  name: allow-only-project-ecr
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+  parameters:
+    repos:
+      - "730335441285.dkr.ecr.us-east-1.amazonaws.com/"
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredResources
+metadata:
+  name: require-resource-requests-limits
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredProbes
+metadata:
+  name: require-liveness-readiness-probes
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: require-app-labels
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+  parameters:
+    labels:
+      - "app"
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowedTags
+metadata:
+  name: disallow-latest-and-untagged
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["triage-hub"]
+  parameters:
+    disallowedTags:
+      - ":latest"
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireNetworkPolicy
+metadata:
+  name: require-networkpolicy-per-namespace
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Namespace"]
+    excludedNamespaces:
+      - "kube-system"
+      - "kube-node-lease"
+      - "kube-public"
+      - "argocd"
+      - "gatekeeper-system"
+      - "monitoring"
+      - "default"

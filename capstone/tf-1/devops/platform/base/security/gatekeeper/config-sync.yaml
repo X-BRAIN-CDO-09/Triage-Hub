@@ -1,0 +1,21 @@
+# Đồng bộ Namespace + NetworkPolicy vào cache nội bộ của Gatekeeper (data.inventory)
+# để ConstraintTemplate K8sRequireNetworkPolicy (constraint tham chiếu chéo) có
+# dữ liệu để truy vấn. Không đồng bộ = Rego luôn thấy "0 NetworkPolicy" dù thực
+# tế có, nên bắt buộc phải có resource này trước khi constraint tương ứng hoạt
+# động đúng.
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: Config
+metadata:
+  name: config
+  namespace: gatekeeper-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  sync:
+    syncOnly:
+      - group: ""
+        version: "v1"
+        kind: "Namespace"
+      - group: "networking.k8s.io"
+        version: "v1"
+        kind: "NetworkPolicy"

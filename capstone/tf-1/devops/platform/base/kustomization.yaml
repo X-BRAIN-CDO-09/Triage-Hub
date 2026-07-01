@@ -24,5 +24,10 @@ resources:
   - secrets/cluster-secret-store.yaml
   - secrets/external-secret.yaml
   - security/cluster-image-policy.yaml
-
   - security/rbac.yaml
+  # Gatekeeper: ConstraintTemplate (sync-wave -1) phải apply trước Constraint
+  # (sync-wave 1). Tất cả enforcementAction=dryrun ban đầu — xem comment trong
+  # constraints.yaml về lộ trình chuyển sang deny.
+  - security/gatekeeper/constraint-templates.yaml
+  - security/gatekeeper/config-sync.yaml
+  - security/gatekeeper/constraints.yaml

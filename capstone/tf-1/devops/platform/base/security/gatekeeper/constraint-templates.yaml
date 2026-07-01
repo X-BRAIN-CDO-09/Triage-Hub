@@ -1,0 +1,321 @@
+# ConstraintTemplates cho triage-hub. Phải sync TRƯỚC constraints.yaml (Gatekeeper
+# từ chối Constraint nếu CRD của template chưa tồn tại) -> sync-wave "-1".
+#
+# So với baseline phổ biến (deny privileged / require labels / require limits),
+# bộ policy này mở rộng thêm:
+#   - Siết security context toàn diện (không chỉ chặn privileged) theo chuẩn
+#     Pod Security "Restricted".
+#   - Chặn registry ngoài allowlist (phòng thủ độc lập với Cosign/Sigstore đã có
+#     ở cluster-image-policy.yaml — cái đó verify chữ ký cho *đúng* image
+#     triage-hub-tf1-*, còn constraint này chặn mọi image lạ từ đầu, kể cả loại
+#     image Sigstore policy không cover).
+#   - Bắt buộc cả requests LẪN limits (không chỉ limits) — quan trọng ở kiến trúc
+#     multi-tenant dùng chung node pool, tránh 1 workload chiếm hết capacity của
+#     tenant khác (noisy neighbor) khi scale nhiều tenant trên cùng cluster.
+#   - Bắt buộc liveness/readiness probe — production-readiness, không có ở
+#     baseline chỉ tập trung security.
+#   - Chặn tag :latest / floating tag — biến quy ước đã ghi trong comment
+#     ci-ai-engine.yml ("KHÔNG dùng :latest cho deployment") thành policy có
+#     enforcement thật, không chỉ dựa vào con người nhớ đọc comment.
+#   - K8sRequireNetworkPolicy: constraint tham chiếu chéo (referential) — kiểm
+#     tra namespace có ít nhất 1 NetworkPolicy trước khi cho phép tồn tại. Đây
+#     là kỹ thuật Gatekeeper nâng cao (cần đồng bộ dữ liệu qua Config resource),
+#     biến "namespace nào cũng phải có NetworkPolicy" từ quy ước thành invariant
+#     được admission controller tự kiểm tra — trực tiếp phục vụ yêu cầu cách ly
+#     tenant khi scale nhiều tenant dùng chung cluster.
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredsecuritycontext
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredSecurityContext
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            requireReadOnlyRootFilesystem:
+              type: boolean
+              description: "Nếu true, container phải set readOnlyRootFilesystem=true"
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredsecuritycontext
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.runAsNonRoot == true
+          msg := sprintf("container '%v' phải set securityContext.runAsNonRoot=true", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.allowPrivilegeEscalation == false
+          msg := sprintf("container '%v' phải set allowPrivilegeEscalation=false", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not contains_all(c.securityContext.capabilities.drop, ["ALL"])
+          msg := sprintf("container '%v' phải drop capability ALL", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          c.securityContext.privileged == true
+          msg := sprintf("container '%v' không được chạy privileged", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          input.parameters.requireReadOnlyRootFilesystem == true
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.readOnlyRootFilesystem == true
+          msg := sprintf("container '%v' phải set readOnlyRootFilesystem=true", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          input.review.object.spec.hostNetwork == true
+          msg := "Pod không được dùng hostNetwork"
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          input.review.object.spec.hostPID == true
+          msg := "Pod không được dùng hostPID"
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          input.review.object.spec.hostIPC == true
+          msg := "Pod không được dùng hostIPC"
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          v := input.review.object.spec.volumes[_]
+          v.hostPath
+          msg := sprintf("volume '%v' không được dùng hostPath", [v.name])
+        }
+
+        contains_all(arr, items) {
+          count({x | x := items[_]; x == arr[_]}) == count(items)
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sallowedrepos
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAllowedRepos
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            repos:
+              type: array
+              items:
+                type: string
+              description: "Danh sách prefix registry được phép, vd 730335441285.dkr.ecr.us-east-1.amazonaws.com/"
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedrepos
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not image_allowed(c.image)
+          msg := sprintf("image '%v' không thuộc registry được phép (%v)", [c.image, input.parameters.repos])
+        }
+
+        image_allowed(image) {
+          prefix := input.parameters.repos[_]
+          startswith(image, prefix)
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredresources
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredResources
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredresources
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.resources.requests.cpu
+          msg := sprintf("container '%v' thiếu resources.requests.cpu", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.resources.requests.memory
+          msg := sprintf("container '%v' thiếu resources.requests.memory", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.resources.limits.cpu
+          msg := sprintf("container '%v' thiếu resources.limits.cpu", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.resources.limits.memory
+          msg := sprintf("container '%v' thiếu resources.limits.memory", [c.name])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredprobes
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredProbes
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredprobes
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.livenessProbe
+          msg := sprintf("container '%v' thiếu livenessProbe", [c.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not c.readinessProbe
+          msg := sprintf("container '%v' thiếu readinessProbe", [c.name])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+
+        violation[{"msg": msg}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label | label := input.parameters.labels[_]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("thiếu label bắt buộc: %v", [missing])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sdisallowedtags
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sDisallowedTags
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            disallowedTags:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sdisallowedtags
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          tag := input.parameters.disallowedTags[_]
+          endswith(c.image, tag)
+          msg := sprintf("container '%v' dùng tag bị cấm (%v) — bắt buộc tag bất biến (sha)", [c.name, tag])
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not contains(c.image, ":")
+          msg := sprintf("container '%v' không có tag (mặc định :latest) — bắt buộc tag bất biến", [c.name])
+        }
+---
+# Constraint tham chiếu chéo: kiểm tra Namespace có NetworkPolicy hay chưa.
+# Cần Config resource (config-sync.yaml) đồng bộ Namespace + NetworkPolicy vào
+# data.inventory để Rego truy vấn được.
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequirenetworkpolicy
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequireNetworkPolicy
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequirenetworkpolicy
+
+        violation[{"msg": msg}] {
+          input.review.object.kind == "Namespace"
+          ns := input.review.object.metadata.name
+          policies := data.inventory.namespace[ns]["networking.k8s.io/v1"]["NetworkPolicy"]
+          count(policies) == 0
+          msg := sprintf("namespace '%v' chưa có NetworkPolicy nào — vi phạm yêu cầu cách ly tenant", [ns])
+        }
