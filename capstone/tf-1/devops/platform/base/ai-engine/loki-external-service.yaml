@@ -1,3 +1,8 @@
+# Headless Service (clusterIP: None) — cùng lý do với prometheus-service.yaml.template:
+# ClusterIP -> Endpoints ngoài VPC qua kube-proxy iptables bị intermittent đã
+# verify sống. Headless để DNS trả thẳng IP EC2, bỏ qua kube-proxy. Port dùng
+# thống nhất 9000 (nginx proxy thật + port duy nhất SG cho phép) thay vì giả
+# 3100 — nginx tự route theo path /loki/ bất kể client gọi cổng nào.
 apiVersion: v1
 kind: Service
 metadata:
