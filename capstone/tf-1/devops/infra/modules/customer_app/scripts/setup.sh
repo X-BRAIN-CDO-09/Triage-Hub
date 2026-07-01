@@ -2,21 +2,7 @@
 # Wait for internet connectivity
 sleep 10
 apt-get update -y
-apt-get install -y curl unzip
-
-# Install AWS CLI v2
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
-./aws/install
-rm -rf awscliv2.zip aws
-
-# Install Argo Rollouts CLI plugin
-curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
-chmod +x ./kubectl-argo-rollouts-linux-amd64
-mv ./kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
-
-# Export PATH to ensure /usr/local/bin is available
-export PATH=$PATH:/usr/local/bin
+apt-get install -y curl
 
 # 1. Install K3s (BẺ KHÓA dải cổng sang 80-40000 và cấp quyền đọc config)
 export K3S_KUBECONFIG_MODE="644"
@@ -64,12 +50,11 @@ alertmanager:
       group_wait: 10s
       group_interval: 10s
       repeat_interval: 1h
-      receiver: 'triage-hub-webhook'
+      receiver: 'null'
       routes:
-      - match:
-          alertname: Watchdog
-        receiver: 'null'
-      - receiver: 'triage-hub-webhook'
+      - match_re:
+          alertname: CartServiceDown|FrontendLatencyHigh|CpuSpikeNoise
+        receiver: 'triage-hub-webhook'
     receivers:
     - name: 'null'
     - name: 'triage-hub-webhook'
