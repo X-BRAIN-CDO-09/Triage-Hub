@@ -31,9 +31,6 @@ on:
       - "capstone/tf-1/devops/app/slack-notifier/**"
       - "capstone/tf-1/devops/app/shared/**"
       - ".github/workflows/ci-app.yml"
-  workflow_run:
-    workflows: ["Infra CI/CD"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       deploy:
@@ -72,15 +69,6 @@ env:
 jobs:
   detect-changes:
     name: Detect app changes
-    if: |
-      github.event_name != 'workflow_run' ||
-      (
-        github.event.workflow_run.conclusion == 'success' &&
-        (
-          github.event.workflow_run.event == 'schedule' ||
-          github.event.workflow_run.event == 'workflow_dispatch'
-        )
-      )
     runs-on: ubuntu-latest
     outputs:
       app_changed: ${{ steps.filter.outputs.app }}
@@ -126,15 +114,7 @@ jobs:
     needs: detect-changes
     if: |
       needs.detect-changes.outputs.app_changed == 'true' ||
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        (
-          github.event.workflow_run.event == 'schedule' ||
-          github.event.workflow_run.event == 'workflow_dispatch'
-        )
-      )
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -257,7 +237,6 @@ jobs:
           fi
 
       - name: Gitleaks secret scan
-        if: github.event_name != 'workflow_run'
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -268,15 +247,7 @@ jobs:
     needs: [detect-changes, lint-test]
     if: |
       needs.detect-changes.outputs.lambdas == 'true' ||
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        (
-          github.event.workflow_run.event == 'schedule' ||
-          github.event.workflow_run.event == 'workflow_dispatch'
-        )
-      )
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -360,14 +331,6 @@ jobs:
         )
       ) ||
       (
-        github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        (
-          github.event.workflow_run.event == 'schedule' ||
-          github.event.workflow_run.event == 'workflow_dispatch'
-        )
-      ) ||
-      (
         github.event_name == 'workflow_dispatch' &&
         github.event.inputs.deploy == 'true'
       )
@@ -435,14 +398,6 @@ jobs:
           (
             github.ref == 'refs/heads/develop' ||
             github.ref == 'refs/heads/main'
-          )
-        ) ||
-        (
-          github.event_name == 'workflow_run' &&
-          github.event.workflow_run.conclusion == 'success' &&
-          (
-            github.event.workflow_run.event == 'schedule' ||
-            github.event.workflow_run.event == 'workflow_dispatch'
           )
         ) ||
         (

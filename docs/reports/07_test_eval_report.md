@@ -183,6 +183,29 @@ Hệ thống đã tiến hành thực hiện bài kiểm thử tải cấu hình
 **Cross-tenant queue contamination**
 ![Cross-tenant queue contamination](../assets/AreadB.png)
 - Việc ngăn chặn dữ liệu chéo đã được xác thực ở tầng API (kết quả test tenant_header_label_mismatch). Dữ liệu không hợp lệ bị loại bỏ ngay tại bước nhập (Ingestion), đảm bảo không có bất kỳ message nào chứa dữ liệu tenant-A lọt vào hàng đợi của tenant-B
+
+**DB row-level security — Audit record tenant isolation**
+
+> **Phương pháp:** Test thực hiện qua **pytest/TestClient** (in-process) thay vì live endpoint.
+> Lý do: App Runner dùng ephemeral filesystem — audit record ghi vào file không persist giữa các HTTP request độc lập. TestClient chạy toàn bộ trong cùng một Python process nên triage ghi và audit đọc lại từ cùng memory, phản ánh đúng application-layer logic.
+
+| # | Test case | Method | Expected | Actual | Pass/Fail |
+|---|---|---|---|---|---|
+| 1 | Tenant B cố đọc audit record của Tenant A | `X-Tenant-Id: tenant-B` → `GET /v1/audit/<audit_id_của_A>` | 404 (no leak) | **404** | ✅ PASS |
+| 2 | Tenant A đọc record của chính mình | `X-Tenant-Id: tenant-A` → `GET /v1/audit/<audit_id_của_A>` | 200 + `tenant_id=tenant-A` | **200**, `tenant_id=tenant-A` | ✅ PASS |
+| 3 | Thiếu X-Tenant-Id header | Không có header → `GET /v1/audit/<audit_id>` | 422 | **422** | ✅ PASS |
+| 4 | audit_id không tồn tại | `GET /v1/audit/audit-doesnotexist` | 404 | **404** | ✅ PASS |
+
+**Kết quả:** 4/4 PASSED — `tests/test_unit_validation.py` (18 passed in 5.75s)
+
+**Phân tích cơ chế isolation:**
+- DynamoDB **không có** native row-level security. Toàn bộ isolation do **application layer** enforce trong `main.py`:
+  ```python
+  if record.get("tenant_id") != x_tenant_id:
+      raise HTTPException(status_code=404, detail="Audit record not found")
+  ```
+- Engine trả **404** thay vì 403 để không leak sự tồn tại của record (security best practice).
+- **Known gap cho production:** Nên bổ sung IAM condition key `dynamodb:LeadingKeys` scoped theo `tenant_id` prefix để enforce isolation ở cả DB layer, không chỉ app layer.
 ## 6. Failure analysis (Owner: Khang)
 
 ### 6.1 Failures encountered during 2-week build
