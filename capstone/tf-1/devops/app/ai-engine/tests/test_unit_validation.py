@@ -244,3 +244,105 @@ def test_triage_ticket_payload_shape():
     assert isinstance(ticket["labels"], list)
     assert "fields" in ticket
     assert "audit_id" in ticket["fields"]
+
+
+# ---------------------------------------------------------------------------
+# DB row-level security — Audit record tenant isolation
+# Tested via pytest/TestClient (in-process) vì App Runner dùng ephemeral
+# filesystem — audit record không persist giữa các HTTP request thực.
+#
+# Cơ chế: engine enforce tenant_id ở application layer (main.py):
+#   if record.get("tenant_id") != x_tenant_id → 404
+# DynamoDB không có native RLS; isolation do app layer đảm bảo.
+# ---------------------------------------------------------------------------
+
+
+def test_audit_cross_tenant_read_blocked():
+    """
+    Tenant B không thể đọc audit record của Tenant A dù biết audit_id.
+    Engine trả 404 (không leak sự tồn tại) thay vì 403.
+
+    Sequence:
+      1. Tenant A gọi /v1/triage  → engine ghi audit record tenant_id="tenant-A"
+      2. Tính audit_id theo thuật toán engine: sha256(tenant:corr:incident)[:12]
+      3. Verify audit_id từ response khớp với tính tay
+      4. Tenant B gọi GET /v1/audit/{audit_id} → phải nhận 404
+    """
+    import hashlib
+
+    tenant_a_headers = _valid_headers(
+        tenant_id="tenant-A",
+        correlation_id="corr-rls-001",
+    )
+    tenant_a_payload = _valid_payload(
+        tenant_id="tenant-A",
+        correlation_id="corr-rls-001",
+        incident_id="inc-rls-001",
+    )
+
+    # Bước 1: Tạo triage request từ tenant-A
+    triage_resp = client.post("/v1/triage", json=tenant_a_payload, headers=tenant_a_headers)
+    assert triage_resp.status_code == 200
+
+    # Bước 2: Tính audit_id bằng tay (xem build_audit_id trong main.py)
+    seed = "tenant-A:corr-rls-001:inc-rls-001"
+    expected_audit_id = "audit-" + hashlib.sha256(seed.encode()).hexdigest()[:12]
+
+    # Bước 3: Verify audit_id trong response khớp
+    actual_audit_id = triage_resp.json()["audit_id"]
+    assert actual_audit_id == expected_audit_id, (
+        f"audit_id không khớp: expected={expected_audit_id}, got={actual_audit_id}"
+    )
+
+    # Bước 4: Tenant B cố đọc audit record của Tenant A → phải 404
+    intruder_resp = client.get(
+        f"/v1/audit/{actual_audit_id}",
+        headers={"X-Tenant-Id": "tenant-B"},
+    )
+    assert intruder_resp.status_code == 404, (
+        f"SECURITY FAIL: Tenant B đọc được record của Tenant A. "
+        f"status={intruder_resp.status_code}, body={intruder_resp.text[:200]}"
+    )
+
+
+def test_audit_owner_can_read_own_record():
+    """
+    Sau khi triage, tenant chủ sở hữu đọc được record của mình.
+    (Chỉ pass khi audit store persist trong cùng process — TestClient đảm bảo điều này.)
+    """
+    headers = _valid_headers(
+        tenant_id="tenant-A",
+        correlation_id="corr-rls-002",
+    )
+    payload = _valid_payload(
+        tenant_id="tenant-A",
+        correlation_id="corr-rls-002",
+        incident_id="inc-rls-002",
+    )
+
+    triage_resp = client.post("/v1/triage", json=payload, headers=headers)
+    assert triage_resp.status_code == 200
+
+    audit_id = triage_resp.json()["audit_id"]
+
+    owner_resp = client.get(
+        f"/v1/audit/{audit_id}",
+        headers={"X-Tenant-Id": "tenant-A"},
+    )
+    assert owner_resp.status_code == 200
+    assert owner_resp.json().get("tenant_id") == "tenant-A"
+
+
+def test_audit_missing_tenant_header_returns_422():
+    """Thiếu X-Tenant-Id header khi gọi audit endpoint → 422."""
+    resp = client.get("/v1/audit/audit-abc123456def")
+    assert resp.status_code == 422
+
+
+def test_audit_nonexistent_id_returns_404():
+    """audit_id không tồn tại → 404, không lộ thông tin hệ thống."""
+    resp = client.get(
+        "/v1/audit/audit-doesnotexist",
+        headers={"X-Tenant-Id": "tenant-A"},
+    )
+    assert resp.status_code == 404
