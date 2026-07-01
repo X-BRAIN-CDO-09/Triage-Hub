@@ -21,7 +21,7 @@ export const options = {
 };
 
 export default function () {
-  const url = 'https://4u3u2yzfvi.execute-api.us-east-1.amazonaws.com/sandbox/alerts';
+  const url = 'https://8d1j9a80b7.execute-api.us-east-1.amazonaws.com/sandbox/alerts';
 
   const scenarios = [
     {
