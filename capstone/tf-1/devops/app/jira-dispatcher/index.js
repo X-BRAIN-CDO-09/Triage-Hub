@@ -11,7 +11,6 @@
 const { DynamoDBClient, PutItemCommand, GetItemCommand } = require("@aws-sdk/client-dynamodb");
 const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
 const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
-const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
 const crypto = require("crypto");
 
 // Timeout mặc định cho các request HTTP bên ngoài (ms)
@@ -23,19 +22,15 @@ const BASE_RETRY_DELAY_MS = 500;
 
 let cachedJiraSecret = null;
 let cachedSlackSigningSecret = null;
-let cachedSlackBotToken = null;
 
 const dynamoClient = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
-const eventBridgeClient = new EventBridgeClient({});
 
 // Environment variables (set by Terraform)
 const DYNAMODB_TABLE = process.env.DYNAMODB_TABLE;
 const JIRA_SECRET_ARN = process.env.JIRA_SECRET_ARN;
 const SLACK_SIGNING_SECRET_ARN = process.env.SLACK_SIGNING_SECRET_ARN;
-const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
-const SLACK_BOT_TOKEN_ARN = process.env.SLACK_BOT_TOKEN_ARN;
 
 // =============================================================================
 // Helper: Lấy secret từ AWS Secrets Manager (có cache)
@@ -65,68 +60,6 @@ async function getSlackSigningSecret() {
   return cachedSlackSigningSecret;
 }
 
-async function getSlackBotToken() {
-  if (cachedSlackBotToken) return cachedSlackBotToken;
-  const raw = await getSecret(SLACK_BOT_TOKEN_ARN);
-  try {
-    const parsed = JSON.parse(raw);
-    cachedSlackBotToken = parsed.token || parsed.bot_token || raw;
-  } catch (err) {
-    cachedSlackBotToken = raw.trim();
-  }
-  return cachedSlackBotToken;
-}
-
-// =============================================================================
-// GĐ 3: Map Slack user (người bấm "Assign Me") -> Jira accountId
-//   Slack users.info (cần scope users:read.email) -> email
-//   -> Jira /user/search?query=email -> accountId
-// =============================================================================
-async function getSlackUserEmail(botToken, slackUserId) {
-  const response = await fetchWithRetry(
-    `https://slack.com/api/users.info?user=${encodeURIComponent(slackUserId)}`,
-    { method: "GET", headers: { Authorization: `Bearer ${botToken}` } }
-  );
-  if (!response || !response.ok) {
-    throw new Error(`Slack users.info HTTP ${response ? response.status : "timeout"}`);
-  }
-  const data = await response.json();
-  if (!data.ok) {
-    throw new Error(`Slack users.info error: ${data.error}`);
-  }
-  const email = data.user?.profile?.email;
-  if (!email) {
-    throw new Error("Slack user profile has no email (thiếu scope users:read.email?)");
-  }
-  return email;
-}
-
-async function findJiraAccountIdByEmail(jiraCreds, email) {
-  const { email: jiraEmail, token, base_url } = jiraCreds;
-  const auth = Buffer.from(`${jiraEmail}:${token}`).toString("base64");
-
-  const response = await fetchWithRetry(
-    `${base_url}/rest/api/3/user/search?query=${encodeURIComponent(email)}`,
-    { method: "GET", headers: { Authorization: `Basic ${auth}`, Accept: "application/json" } }
-  );
-  if (!response || !response.ok) {
-    throw new Error(`Jira user search HTTP ${response ? response.status : "timeout"}`);
-  }
-  const users = await response.json();
-  if (!Array.isArray(users) || users.length === 0) {
-    throw new Error(`No Jira user matched email ${email}`);
-  }
-  // Ưu tiên khớp chính xác email + account atlassian (tránh app/bot account)
-  const exact = users.find(
-    (u) => (u.emailAddress || "").toLowerCase() === email.toLowerCase() && u.accountType === "atlassian"
-  );
-  const chosen = exact || users.find((u) => u.accountType === "atlassian") || users[0];
-  if (!chosen.accountId) {
-    throw new Error(`Jira user for ${email} has no accountId`);
-  }
-  return { accountId: chosen.accountId, displayName: chosen.displayName, emailAddress: chosen.emailAddress };
-}
-
 // =============================================================================
 // Helper: Fetch with retry (exponential backoff + jitter)
 // =============================================================================
@@ -138,31 +71,44 @@ async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
     let response;
     try {
       response = await fetch(url, { ...options, signal: controller.signal });
-    } catch (err) {
-      logStructured("WARN", `Fetch error on attempt ${attempt}`, { error: err.message });
     } finally {
       clearTimeout(timeout);
     }
 
-    if (response) {
-      const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
-      if (!isRetryable || attempt === retries) {
-        return response;
-      }
-    } else if (attempt === retries) {
-      return null;
+    const isRetryable = response.status === 429 || (response.status >= 500 && response.status < 600);
+    if (!isRetryable || attempt === retries) {
+      return response;
     }
 
     const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 100;
     logStructured("WARN", "Retryable response, backing off", {
       attempt,
-      status: response ? response.status : "error",
+      status: response.status,
       delay_ms: Math.round(delay),
       url: url.split("/").pop(),
     });
     await new Promise((r) => setTimeout(r, delay));
   }
   return null;
+}
+
+// =============================================================================
+// Helper: Update Slack Message via response_url
+// =============================================================================
+async function updateSlackMessage(responseUrl, blocks) {
+  const response = await fetchWithRetry(responseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      replace_original: true,
+      blocks: blocks,
+    }),
+  });
+  if (response && !response.ok) {
+    logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
+  } else if (response) {
+    logStructured("INFO", "Slack message updated successfully via response_url", { response_url: responseUrl });
+  }
 }
 
 // =============================================================================
@@ -225,12 +171,12 @@ async function assignJiraTicket(jiraCreds, issueKey, accountId) {
     body: JSON.stringify({ accountId }),
   });
 
-  if (!response || !response.ok) {
+  if (!response.ok) {
     logStructured("ERROR", "Jira assign error", {
       issue_key: issueKey,
-      status: response ? response.status : "timeout/null",
+      status: response.status,
     });
-    throw new Error(`Jira assign error: status ${response ? response.status : "timeout"}`);
+    throw new Error(`Jira assign error: status ${response.status}`);
   }
 
   logStructured("INFO", "Jira ticket assigned", { issue_key: issueKey, account_id: accountId });
@@ -293,8 +239,8 @@ async function updateSlackMessage(responseUrl, updatedBlocks) {
       }),
     });
 
-    if (!response || !response.ok) {
-      logStructured("ERROR", "Slack response_url error", { status: response ? response.status : "timeout/null", response_url: responseUrl });
+    if (!response.ok) {
+      logStructured("ERROR", "Slack response_url error", { status: response.status, response_url: responseUrl });
     } else {
       logStructured("INFO", "Slack message updated via response_url", { response_url: responseUrl });
     }
@@ -429,10 +375,8 @@ async function processAsyncSlackCallback(event) {
 
     // Hiển thị tên từ payload (được truyền sẵn từ notify-dispatcher) để tiết kiệm thời gian lấy data
     let assigneeName = assigneeAccountId || "N/A";
-    let broadcastAssigneeName = assigneeName;
     if (actionValue.assignee_name) {
       assigneeName = `*${actionValue.assignee_name}*`;
-      broadcastAssigneeName = actionValue.assignee_name;
       if (actionValue.assignee_email) assigneeName += ` (${actionValue.assignee_email})`;
     }
     let jiraBaseUrl = jiraCreds?.base_url || "";
@@ -457,142 +401,48 @@ async function processAsyncSlackCallback(event) {
       await updateSlackMessage(responseUrl, updatedBlocks);
     }
     
-    // Broadcast notification via EventBridge
-    if (EVENT_BUS_NAME && status === "SUCCESS") {
-      try {
-        const command = new PutEventsCommand({
-          Entries: [{
-            EventBusName: EVENT_BUS_NAME,
-            Source: "triage-hub.jira",
-            DetailType: "IncidentAssigned",
-            Detail: JSON.stringify({
-              incident_id: incidentId,
-              jira_issue_key: issueKey,
-              assignee_name: broadcastAssigneeName,
-              slack_user_id: slackUserId,
-              title: actionValue.title || "Untitled incident",
-              service: actionValue.service || "unknown",
-              severity: actionValue.severity || "medium",
-              jira_url: actionValue.jira_url || jiraLink,
-              target_channel: "#incident-updates"
-            })
-          }]
-        });
-        await eventBridgeClient.send(command);
-        logStructured("INFO", "Published broadcast event to EventBridge");
-      } catch (err) {
-        logStructured("ERROR", "Failed to publish broadcast event", { error: err.message });
-      }
-    }
-    
     return { statusCode: 200, body: "" };
   }
 
   if (action.action_id === "self_assign_incident_action") {
-    // Self-assign: map Slack user (người bấm) -> email -> Jira accountId -> assign THẬT
     let status = "SUCCESS";
-    let assigneeAccountId = null;
-    let assigneeLabel = `<@${slackUserId}>`;
-    let failureReason = null;
-
-    if (!issueKey) {
-      status = "MISSING_INFO";
-      failureReason = "Thiếu jira_issue_key";
-    } else if (!SLACK_BOT_TOKEN_ARN) {
-      status = "FAILED_CONFIG";
-      failureReason = "SLACK_BOT_TOKEN_ARN chưa được cấu hình cho jira-dispatcher";
-      logStructured("ERROR", "SLACK_BOT_TOKEN_ARN not configured — cannot resolve Slack→Jira for self-assign");
-    } else {
-      try {
-        const [jiraCreds, botToken] = await Promise.all([jiraCredsPromise, getSlackBotToken()]);
-        const email = await getSlackUserEmail(botToken, slackUserId);
-        const jiraUser = await findJiraAccountIdByEmail(jiraCreds, email);
-        assigneeAccountId = jiraUser.accountId;
-
-        await assignJiraTicket(jiraCreds, issueKey, assigneeAccountId);
-
-        assigneeLabel = jiraUser.displayName
-          ? `*${jiraUser.displayName}*${jiraUser.emailAddress ? ` (${jiraUser.emailAddress})` : ""}`
-          : `<@${slackUserId}>`;
-        let broadcastAssigneeName = jiraUser.displayName || `<@${slackUserId}>`;
-        logStructured("INFO", "Self-assign succeeded", {
-          issue_key: issueKey, account_id: assigneeAccountId, slack_user: slackUserName,
-        });
-      } catch (err) {
-        status = "FAILED_API";
-        failureReason = err.message;
-        logStructured("ERROR", "Self-assign failed", {
-          issue_key: issueKey, slack_user: slackUserName, error: err.message,
-        });
+    let jiraCreds;
+    try {
+      jiraCreds = await jiraCredsPromise;
+      if (issueKey) {
+        // Gán cho chính tài khoản API (accountId: "-1")
+        await assignJiraTicket(jiraCreds, issueKey, "-1");
       }
+    } catch (err) {
+      logStructured("ERROR", "Self-assign ticket failed", { issue_key: issueKey, error: err.message });
+      status = "FAILED_API";
     }
 
-    await saveCallbackAudit(
-      incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, assigneeAccountId || "lookup_failed", status
-    ).catch((err) => logStructured("WARN", "Failed to save audit", { error: err.message }));
+    await saveCallbackAudit(incidentId, tenantId, slackUser, "SELF_ASSIGN", issueKey, "self_api_user", status);
 
     // Cập nhật Slack message qua response_url (chạy nền)
     const originalBlocks = payload.message?.blocks || [];
     const updatedBlocks = originalBlocks.filter(b => b.type !== "actions");
-
+    
+    let assignMessage = `🙋 *Ticket ${issueKey || "N/A"}* was self-assigned by <@${slackUserId}>.`;
     if (status === "SUCCESS") {
-      const jiraCreds = await jiraCredsPromise.catch(() => null);
-      const jiraBaseUrl = jiraCreds?.base_url || "";
-      const jiraLink = issueKey && jiraBaseUrl
-        ? `<${jiraBaseUrl}/browse/${issueKey}|${issueKey}>`
-        : (issueKey || "N/A");
-      updatedBlocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `✅ *Assigned!*\n• *Ticket:* ${jiraLink}\n• *Assigned to:* ${assigneeLabel}\n• *Self-assigned by:* <@${slackUserId}>`
-        }
-      });
-      
-      // Broadcast notification via EventBridge
-      if (EVENT_BUS_NAME) {
-        try {
-          const command = new PutEventsCommand({
-            Entries: [{
-              EventBusName: EVENT_BUS_NAME,
-              Source: "triage-hub.jira",
-              DetailType: "IncidentAssigned",
-              Detail: JSON.stringify({
-                incident_id: incidentId,
-                jira_issue_key: issueKey,
-                assignee_name: broadcastAssigneeName,
-                slack_user_id: slackUserId,
-                title: actionValue.title || "Untitled incident",
-                service: actionValue.service || "unknown",
-                severity: actionValue.severity || "medium",
-                jira_url: actionValue.jira_url || jiraLink,
-                target_channel: "#incident-updates"
-              })
-            }]
-          });
-          await eventBridgeClient.send(command);
-          logStructured("INFO", "Published broadcast event to EventBridge for self-assign");
-        } catch (err) {
-          logStructured("ERROR", "Failed to publish broadcast event for self-assign", { error: err.message });
-        }
-      }
+      assignMessage = `✅ *Ticket ${issueKey || "N/A"}* has been successfully assigned to you in Jira! (Confirmed by <@${slackUserId}>)`;
     } else {
-      // KHÔNG báo thành công giả — hiển thị lỗi rõ ràng + giữ nút để retry
-      updatedBlocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `⚠️ *Chưa gán được ${issueKey || "ticket"} trên Jira*\nLý do: ${failureReason || status}. Hãy thử lại hoặc gán thủ công.`
-        }
-      });
-      const retryActions = originalBlocks.find(b => b.type === "actions");
-      if (retryActions) updatedBlocks.push(retryActions);
+      assignMessage = `⚠️ Failed to assign *Ticket ${issueKey || "N/A"}* in Jira. Check logs.`;
     }
+
+    updatedBlocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: assignMessage
+      }
+    });
 
     if (responseUrl) {
       await updateSlackMessage(responseUrl, updatedBlocks);
     }
-
+    
     return { statusCode: 200, body: "" };
   }
 
