@@ -89,6 +89,7 @@ module "sqs" {
       content_based_deduplication = true
     }
     "buffer-queue" = {
+      visibility_timeout_seconds  = 120
       fifo_queue                  = true
       content_based_deduplication = true
     }
