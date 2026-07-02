@@ -22,7 +22,7 @@ metadata:
   namespace: monitoring
 subsets:
   - addresses:
-      - ip: 32.194.212.107
+      - ip: 44.218.24.179
     ports:
       - name: http
         port: 9000
