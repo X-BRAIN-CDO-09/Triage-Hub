@@ -69,8 +69,40 @@ env:
   TF_VAR_public_access_cidrs: ${{ vars.PUBLIC_ACCESS_CIDRS || '["0.0.0.0/0"]' }}
 
 jobs:
+  schedule-window-guard:
+    name: Schedule window guard
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.guard.outputs.should_run }}
+    steps:
+      - name: Allow only the expected ICT schedule window
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Non-schedule event; continuing."
+            exit 0
+          fi
+
+          current_hour_ict="$(TZ=Asia/Bangkok date +%H)"
+          current_time_ict="$(TZ=Asia/Bangkok date '+%Y-%m-%d %H:%M:%S %Z')"
+
+          if [ "$current_hour_ict" = "07" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Scheduled run started in the allowed window: $current_time_ict"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping delayed scheduled run outside 07:00-07:59 ICT. Current time: $current_time_ict"
+          fi
+
   terraform-static-checks:
     name: Terraform format, validate, scan
+    needs: schedule-window-guard
+    if: needs.schedule-window-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
