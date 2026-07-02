@@ -13,6 +13,8 @@ GitHub Actions cron expressions use UTC. The current schedules are:
 
 - `17 0 * * *` -> `07:17` ICT
 
+Scheduled infra runs also have a time-window guard. If GitHub Actions starts the cron run outside `07:00-07:59` ICT, the workflow skips the Terraform jobs so a delayed scheduler event cannot recreate the sandbox hours after an intentional destroy.
+
 ## App deploy after infra apply
 
 `ci-app.yml` deploys Lambda code automatically when app code is pushed to `develop` or `main`.
