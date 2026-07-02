@@ -24,9 +24,10 @@ from app.audit_store import (
 )
 from app.context_enrichment import enrich_triage_context
 from app.context_tools import ToolRegistry, ToolScopeError, scope_from_request
-from app.dynamodb_store import IdempotencyCompletedError, IdempotencyInProgressError
 from app.evidence_budget import compact_request_evidence
 from app.idempotency_store import (
+    IdempotencyCompletedError,
+    IdempotencyInProgressError,
     complete_record,
     fail_record,
     is_stale,
@@ -42,6 +43,7 @@ from app.llm import (
     reword_catalog_actions,
     synthesize_investigation_summary,
 )
+from app.ml_classifier import apply_ml_decision, predict_ml_classification
 from app.observability import (
     BUDGET_EXCEEDED_TOTAL,
     DEGRADED_MODE_TOTAL,
@@ -449,6 +451,9 @@ def triage_request(
             with span("deterministic_rca", audit_id=audit_id):
                 rca = analyze_request(request)
             decision = classify(request, rca)
+            with span("ml_classifier", audit_id=audit_id):
+                ml_metadata = predict_ml_classification(request, rca)
+                decision = apply_ml_decision(decision, ml_metadata)
 
             with span("mode_selection", audit_id=audit_id):
                 mode_selection = select_investigation_mode(request, decision, rca, agent_platform_enabled())
@@ -492,6 +497,8 @@ def triage_request(
                     agent_metadata and agent_metadata.get("fallback")
                 ):
                     decision = classify(request, rca)
+                    ml_metadata = predict_ml_classification(request, rca)
+                    decision = apply_ml_decision(decision, ml_metadata)
                 else:
                     decision = decision.copy()
                     decision["rca"] = rca
@@ -515,6 +522,7 @@ def triage_request(
                         "mode_selection": mode_selection.metadata(),
                         "tool_investigation": tool_metadata,
                         "agent_platform": agent_metadata,
+                        "ml_classifier": ml_metadata,
                         "qa": qa_metadata,
                         "evidence_budget": evidence_budget_metadata,
                         "idempotency": idempotency_metadata,
@@ -672,6 +680,7 @@ def classify(request: TriageRequest, rca: dict[str, Any] | None = None) -> dict[
         ]
     ).lower()
     anomaly_text = anomaly_signal_text(rca)
+    signal_text = f"{alert_context_text} {anomaly_text}".lower()
     family_scores = fault_family_scores(request, rca, alert_context_text)
     service_features = primary_service_features(request)
     resource_score = family_scores["resource_cpu"] + family_scores["resource_mem"] + family_scores["resource_disk"]
